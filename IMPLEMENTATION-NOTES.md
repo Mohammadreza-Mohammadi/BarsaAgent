@@ -1,47 +1,42 @@
-# Implementation Notes — v1.1
+# BarsaAgent v1.2 — Implementation Notes
 
-## تغییر معماری این نسخه
+## Source baseline
 
-نسخه‌ی قبلی یک `protocol-patch` داخلی داشت. در v1.1 این coupling عمداً حذف شد.
+Built from BarsaAgent v1.1.3 and integrated with `docs/reference/create-task-flow.md`.
 
-### حذف شد
+## Major changes
 
-- `protocol-patch/scripts/manager.js`
-- `protocol-patch/scripts/run-agent.js`
-- `protocol-patch/scripts/verify.js`
-- `protocol-patch/scripts/lib/manifest.cjs`
-- `install-protocol-patch.ps1`
+- No protocol patch files; Manager remains external.
+- New `/api/tasks/create` accepts confirmed task drafts.
+- Import payload: `repo/type/slug/requestText/source?`.
+- Manual task creation supported by omitting `source`.
+- Sequential imports; one failure does not stop later items.
+- Global run queue with configurable `maxConcurrent`.
+- `autoStartOnCreate` and `autoResumeAfterAnswer`.
+- Clarification answer uses temp UTF-8 file and `--clarify --file`.
+- Merge rejection supports `--route implementer|architect`.
+- Health endpoint invokes `npm run validate-agent-work --silent` and returns persistent status to UI.
+- Issue adapter supports POST JSON/form, current UserId, and double-serialized JSON response.
+- Issue mapping updated to `externalId/title/body/url/status/labels` with fallback mapping.
+- UI has issue stepper/create draft, manual task, queued badge, merge evidence, health status.
 
-### اضافه شد
+## Test status
 
-- `docs/manager-api-contract.md`
-- `server/src/protocol-contract.js`
-- `server/check-manager.js`
-- `manager.js capabilities --json` به‌عنوان handshake رسمی
-- fail-fast startup برای Contract ناسازگار
-- نمایش Manager/Contract version در UI
+`node --test server/test/*.test.js`: 16 passed, 0 failed.
 
-## نتیجه
+Coverage includes:
+- CLI-only board/task/events
+- artifact traversal rejection
+- duplicate run rejection
+- SSE replay/token masking
+- POST issue JSON/form
+- double-serialized issue response
+- create + auto-start
+- clarification file + auto-resume
+- import failure isolation
+- maxConcurrent queue
+- Manager Contract handshake
 
-BarsaAgent از این نسخه به بعد هیچ تغییری در implementation پروژه‌ی Agent Protocol نمی‌دهد. تیم Agent Protocol می‌تواند `manager.js`، `run-agent.js` و `verify.js` را مستقل توسعه دهد؛ تا وقتی Manager Contract v1 ثابت بماند، UI نیاز به تغییر ندارد.
+## Build note
 
-## مسئولیت Server
-
-- فقط `manager.js` را spawn می‌کند.
-- هیچ access مستقیم به `.agent-work` ندارد.
-- هیچ git command ندارد.
-- ProcessRegistry برای یک run فعال به‌ازای repo/task.
-- SSE + ring buffer.
-- token redaction.
-- issue adapter و temporary JSON برای import.
-- path traversal defense روی artifact endpoint.
-
-## مسئولیت Angular
-
-- Kanban و task details.
-- awaitingHuman gates.
-- timeline/attempt/artifact views.
-- issue inbox.
-- log SSE.
-- notification و scope overlap warning.
-- نمایش نسخه‌ی Manager و Contract متصل.
+The execution container has Node 22.16.0 while Angular 22 package metadata in this project requires Node `^22.22.3 || ^24.15.0 || >=26`. Server tests are valid; perform the final Angular build on a supported Node version.

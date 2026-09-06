@@ -37,8 +37,10 @@ export interface Task {
   blocker?: { kind?: string | null; reason?: string | null } | null;
   source?: SourceRef | null;
   budget?: Record<string, BudgetItem>;
-  scope?: { allow?: string[]; deny?: string[] };
+  scope?: { allow?: string[]; deny?: string[]; exception?: unknown };
+  scopeException?: unknown;
   verify?: Record<string, unknown>;
+  diff?: { files?: Array<{ path?: string; added?: number; deleted?: number }> } | null;
   worktree?: { status?: string | null; path?: string | null } | null;
   git?: { base?: string | null; baseCommit?: string | null; headCommit?: string | null; mergeCommit?: string | null } | null;
   lastAttempt?: { n?: number; role?: string | null; outcome?: string | null; at?: string | null } | null;
@@ -65,12 +67,21 @@ export interface ManagerInfo {
   errors?: string[];
 }
 
-export interface Repo { id: string; path: string; manager?: ManagerInfo | null }
+export interface RunSettings {
+  maxConcurrent: number;
+  autoStartOnCreate: boolean;
+  autoResumeAfterAnswer: boolean;
+}
+
+export interface Repo { id: string; path: string; manager?: ManagerInfo | null; run?: RunSettings }
 
 export interface RunningTask {
   taskId: string;
+  queuedAt?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+  queued?: boolean;
+  queuePosition?: number | null;
   running: boolean;
   exitCode?: number | null;
 }
@@ -82,15 +93,45 @@ export interface Issue {
   url?: string;
   status?: string;
   labels?: string[];
+  fetchedAt?: string;
+  system?: string;
   importedTaskId?: string | null;
   importedRepoId?: string | null;
 }
 
-export interface ImportResult {
-  id: string;
+export interface CreateTaskDraft {
+  repo: string;
+  type: 'task' | 'spike';
+  slug: string;
+  requestText: string;
+  source?: SourceRef;
+  displayId?: string;
+  skipped?: boolean;
+}
+
+export interface CreateTaskResult {
+  key: string;
   ok: boolean;
   taskId?: string;
+  repoId?: string;
+  slug?: string;
+  queued?: boolean;
+  started?: boolean;
+  duplicate?: boolean;
   message?: string;
+}
+
+export interface CreateTasksResponse {
+  succeeded: number;
+  failed: number;
+  results: CreateTaskResult[];
+}
+
+export interface HealthResult {
+  ok: boolean;
+  checkedAt: string;
+  code: number;
+  output: string;
 }
 
 export interface AgentEvent extends Record<string, unknown> {

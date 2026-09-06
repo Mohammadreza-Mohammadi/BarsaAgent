@@ -1,86 +1,34 @@
-# کار لازم در پروژه Agent Protocol برای اتصال به BarsaAgent UI
+# اتصال Agent Protocol به BarsaAgent v1.2
 
-این فایل را می‌توان مستقیماً به Agent/Developer مسئول `manager.js` داد.
-
-## هدف
-
-پروژه Agent Protocol مستقل باقی بماند. BarsaAgent UI نباید هیچ فایل آن را patch کند. فقط `manager.js` باید **BarsaAgent Manager Contract v1** را به‌صورت backward-compatible ارائه کند.
-
-مرجع کامل: `manager-api-contract.md`.
-
-## تغییر اجباری اول: handshake
-
-این فرمان را اضافه/حفظ کن:
-
-```bash
-node scripts/manager.js capabilities --json
-```
-
-خروجی stdout فقط JSON:
-
-```json
-{
-  "contract": "barsa-agent-manager",
-  "contractVersion": 1,
-  "managerVersion": "<VERSION>",
-  "protocolVersion": "<OPTIONAL_VERSION>",
-  "capabilities": {
-    "status": true,
-    "taskStatus": true,
-    "events": true,
-    "artifact": true,
-    "run": true,
-    "answer": {
-      "approve": true,
-      "reject": true,
-      "clarify": true
-    },
-    "importIssue": true
-  }
-}
-```
-
-فقط capabilityای را `true` اعلام کن که واقعاً کار می‌کند.
-
-## Interface لازم
+BarsaAgent هیچ patchی از Manager نگه نمی‌دارد. repo اصلی Agent Protocol در `barsa-agent.config.yml` معرفی می‌شود و تنها قرارداد CLI زیر مصرف می‌شود:
 
 ```text
-manager.js capabilities --json
-manager.js status --json
-manager.js status --json --task <id>
-manager.js events <id> --json
-manager.js artifact <id> --path <relative-path>
-manager.js run <id>
-manager.js answer <id> --approve
-manager.js answer <id> --reject --reason <text>
-manager.js answer <id> --clarify --text <text>
-manager.js import-issue --file <json-file>
+capabilities --json
+status --json [--task <id>]
+events <id> --json
+artifact <id> --path <path>
+import-issue --file <tmp.json>
+run <id>
+answer <id> --approve
+answer <id> --reject --reason <text> [--route implementer|architect]
+answer <id> --clarify --file <tmp.txt>
 ```
 
-## محدودیت مهم
+برای flow ساخت task، `import-issue` باید payload `repo/type/slug/requestText/source?` را بپذیرد و `taskId` را در JSON stdout برگرداند. `requestText` بدون template یا AC اضافه عیناً `request.md` می‌شود.
 
-- معماری داخلی Manager را برای UI بازطراحی نکن.
-- BarsaAgent نباید `run-agent.js` یا `verify.js` را بشناسد.
-- orchestration داخلی آن‌ها همچنان در اختیار Manager است.
-- schema داخلی `.agent-work` می‌تواند تکامل پیدا کند؛ خروجی Contract باید stable بماند.
-- JSON commandها روی stdout فقط JSON بدهند و diagnosticها stderr باشند.
-- `run` برای log زنده stdout/stderr عادی دارد.
+BarsaAgent queue، `maxConcurrent`، auto-start و auto-resume را مدیریت می‌کند. Manager مالک state machine، agent invocation، verification، worktree، git و `.agent-work` باقی می‌ماند.
 
-## Done criteria
-
-در repo Agent Protocol این فرمان‌ها موفق باشند:
+تست اتصال:
 
 ```powershell
 node scripts/manager.js capabilities --json
 node scripts/manager.js status --json
-node scripts/manager.js status --json --task <REAL_TASK_ID>
-node scripts/manager.js events <REAL_TASK_ID> --json
+npm run validate-agent-work
 ```
 
-و بعد در پروژه BarsaAgent:
+و از BarsaAgent:
 
 ```powershell
 npm run check:manager
+npm test
 ```
-
-باید `OK` بدهد.

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { collect, collectJson } from './cli.js';
+import { collect, collectJson, validateAgentWork } from './cli.js';
 import { fetchIssues } from './issues.js';
 import { ProcessRegistry } from './process-registry.js';
 
@@ -15,12 +15,7 @@ const MIME = new Map([
 ]);
 
 function baseHeaders(extra = {}) {
-  return {
-    'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'no-referrer',
-    ...extra
-  };
+  return { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...extra };
 }
 function send(res, status, value, type = JSON_TYPE, extraHeaders = {}) {
   const body = type.startsWith('application/json') ? JSON.stringify(value) : String(value);
@@ -31,7 +26,7 @@ async function readBody(req) {
   let data = '';
   for await (const chunk of req) {
     data += chunk;
-    if (data.length > 1_000_000) throw Object.assign(new Error('درخواست بیش از حد بزرگ است.'), { status: 413 });
+    if (data.length > 2_000_000) throw Object.assign(new Error('درخواست بیش از حد بزرگ است.'), { status: 413 });
   }
   if (!data) return {};
   try { return JSON.parse(data); }
@@ -79,11 +74,39 @@ function serveStatic(req, res, root, pathname) {
   res.end(data);
   return true;
 }
+function slugify(value, fallback = 'task') {
+  const slug = String(value || '').normalize('NFKC').toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^\p{L}\p{N}-]+/gu, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return slug || fallback;
+}
+function parseTaskId(stdout) {
+  const text = String(stdout || '').trim();
+  if (!text) return null;
+  try {
+    const payload = JSON.parse(text);
+    return payload?.taskId == null ? null : String(payload.taskId);
+  } catch {
+    const match = /(?:taskId|task)\s*[:=]\s*["']?([^\s"'}]+)/i.exec(text);
+    return match?.[1] ?? null;
+  }
+}
 
-export function createApp(config, { registry = new ProcessRegistry(), issueFetcher = fetchIssues } = {}) {
+export function createApp(config, deps = {}) {
+  const runConfig = {
+    maxConcurrent: Math.max(1, Number(config.run?.maxConcurrent ?? 2)),
+    autoStartOnCreate: config.run?.autoStartOnCreate !== false,
+    autoResumeAfterAnswer: config.run?.autoResumeAfterAnswer !== false
+  };
+  const registry = deps.registry ?? new ProcessRegistry({ maxConcurrent: runConfig.maxConcurrent, maxLines: 2000 });
+  const issueFetcher = deps.issueFetcher ?? fetchIssues;
   const repos = new Map(config.repos.map(x => [x.id, x]));
   let issueCache = { at: 0, data: [] };
+  const healthCache = new Map();
   const root = staticRoot(config);
+
   const repoFor = id => {
     const repo = repos.get(id);
     if (!repo) throw Object.assign(new Error('مخزن پیدا نشد.'), { status: 404 });
@@ -100,6 +123,41 @@ export function createApp(config, { registry = new ProcessRegistry(), issueFetch
     }
     return issueCache.data;
   };
+  const queueTask = (repo, taskId) => {
+    const run = registry.enqueue(repo, taskId);
+    return run ? { queued: run.queued, started: !run.queued } : { duplicate: true, queued: false, started: false };
+  };
+  const createOne = async (draft, startOverride) => {
+    const repo = repoFor(draft.repo || config.repos[0].id);
+    const type = draft.type === 'spike' ? 'spike' : 'task';
+    const requestText = String(draft.requestText || '');
+    const slug = slugify(draft.slug, draft.source?.externalId ? `task-${draft.source.externalId}` : 'manual-task');
+    if (!requestText.trim()) throw Object.assign(new Error('متن request الزامی است.'), { status: 400 });
+    if (!slug.trim()) throw Object.assign(new Error('slug الزامی است.'), { status: 400 });
+
+    const payload = { repo: repo.id, type, slug, requestText };
+    if (draft.source?.externalId != null && String(draft.source.externalId).trim()) {
+      payload.source = {
+        system: draft.source.system || 'internal',
+        externalId: String(draft.source.externalId),
+        url: draft.source.url || '',
+        fetchedAt: draft.source.fetchedAt || new Date().toISOString()
+      };
+    }
+
+    const tmp = path.join(os.tmpdir(), `barsa-task-${process.pid}-${randomUUID()}.json`);
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
+      const output = await collect(repo, ['import-issue', '--file', tmp]);
+      const taskId = parseTaskId(output.stdout);
+      if (!taskId) throw new Error('Manager taskId ساخته‌شده را در خروجی import-issue برنگرداند.');
+      const shouldStart = startOverride ?? runConfig.autoStartOnCreate;
+      const queue = shouldStart ? queueTask(repo, taskId) : { queued: false, started: false };
+      return { ok: true, taskId, repoId: repo.id, slug, ...queue };
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
+  };
 
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -107,9 +165,8 @@ export function createApp(config, { registry = new ProcessRegistry(), issueFetch
     try {
       if (req.method === 'GET' && pathname === '/api/repos') {
         return send(res, 200, config.repos.map(({ id, path: repoPath }) => ({
-          id,
-          path: repoPath,
-          manager: config.managerInfo?.[id] || null
+          id, path: repoPath, manager: config.managerInfo?.[id] || null,
+          run: runConfig
         })));
       }
 
@@ -138,21 +195,41 @@ export function createApp(config, { registry = new ProcessRegistry(), issueFetch
       }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/run', pathname))) {
         const repo = repoFor(p.repo);
-        const run = registry.start(repo, p.id);
-        return run
-          ? send(res, 202, { started: true, taskId: p.id, startedAt: run.startedAt })
-          : send(res, 409, { error: 'این task هم‌اکنون در حال اجراست.' });
+        const run = registry.enqueue(repo, p.id);
+        if (!run) return send(res, 409, { error: 'این task هم‌اکنون در حال اجرا یا در صف است.' });
+        const current = registry.list(repo).find(x => x.taskId === String(p.id));
+        return send(res, 202, {
+          accepted: true,
+          taskId: p.id,
+          queued: current?.queued === true,
+          queuePosition: current?.queuePosition ?? null,
+          startedAt: current?.startedAt ?? null
+        });
       }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/answer', pathname))) {
         const input = await readBody(req);
         if (!['approve', 'reject', 'clarify'].includes(input.mode)) return send(res, 400, { error: 'mode نامعتبر است.' });
         if (input.mode === 'reject' && !input.reason?.trim()) return send(res, 400, { error: 'دلیل رد الزامی است.' });
         if (input.mode === 'clarify' && !input.text?.trim()) return send(res, 400, { error: 'متن پاسخ الزامی است.' });
+        if (input.route && !['implementer', 'architect'].includes(input.route)) return send(res, 400, { error: 'route نامعتبر است.' });
+
+        const repo = repoFor(p.repo);
         const args = ['answer', p.id, `--${input.mode}`];
-        if (input.reason) args.push('--reason', String(input.reason));
-        if (input.text) args.push('--text', String(input.text));
-        await collect(repoFor(p.repo), args);
-        return send(res, 200, { ok: true });
+        let tmp = null;
+        try {
+          if (input.mode === 'clarify') {
+            tmp = path.join(os.tmpdir(), `barsa-clarification-${process.pid}-${randomUUID()}.txt`);
+            fs.writeFileSync(tmp, String(input.text), { encoding: 'utf8', mode: 0o600 });
+            args.push('--file', tmp);
+          }
+          if (input.reason) args.push('--reason', String(input.reason));
+          if (input.route) args.push('--route', String(input.route));
+          await collect(repo, args);
+        } finally {
+          if (tmp) fs.rmSync(tmp, { force: true });
+        }
+        const resumed = runConfig.autoResumeAfterAnswer ? queueTask(repo, p.id) : { queued: false, started: false };
+        return send(res, 200, { ok: true, autoResumed: runConfig.autoResumeAfterAnswer, ...resumed });
       }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/tasks/:id/stream', pathname))) {
         const repo = repoFor(p.repo);
@@ -186,6 +263,20 @@ export function createApp(config, { registry = new ProcessRegistry(), issueFetch
         });
         return;
       }
+      if (req.method === 'GET' && (p = route('/api/repos/:repo/health', pathname))) {
+        const repo = repoFor(p.repo);
+        const cached = healthCache.get(repo.id);
+        if (cached && Date.now() - cached.at < 20_000 && url.searchParams.get('refresh') !== '1') return send(res, 200, cached.value);
+        let value;
+        try {
+          const result = await validateAgentWork(repo);
+          value = { ok: true, checkedAt: new Date().toISOString(), code: 0, output: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() };
+        } catch (error) {
+          value = { ok: false, checkedAt: new Date().toISOString(), code: error.code ?? 1, output: [error.stdout, error.stderr, error.message].filter(Boolean).join('\n').trim() };
+        }
+        healthCache.set(repo.id, { at: Date.now(), value });
+        return send(res, 200, value);
+      }
 
       if (req.method === 'GET' && pathname === '/api/issues') {
         const issues = await refreshIssues(url.searchParams.get('refresh') === '1');
@@ -204,28 +295,48 @@ export function createApp(config, { registry = new ProcessRegistry(), issueFetch
           return { ...issue, importedTaskId: match?.taskId, importedRepoId: match?.repoId };
         }));
       }
+
+      if (req.method === 'POST' && pathname === '/api/tasks/create') {
+        const input = await readBody(req);
+        const items = Array.isArray(input.items) ? input.items : [];
+        if (!items.length) return send(res, 400, { error: 'حداقل یک draft برای ساخت لازم است.' });
+        const results = [];
+        for (let index = 0; index < items.length; index += 1) {
+          const draft = items[index];
+          const key = draft.source?.externalId != null ? String(draft.source.externalId) : `manual-${index + 1}`;
+          try {
+            const result = await createOne(draft, input.start == null ? undefined : !!input.start);
+            results.push({ key, ...result });
+          } catch (error) {
+            results.push({ key, ok: false, message: error.message || 'ساخت task شکست خورد.' });
+          }
+        }
+        const succeeded = results.filter(x => x.ok).length;
+        return send(res, succeeded === results.length ? 200 : 207, { succeeded, failed: results.length - succeeded, results });
+      }
+
+      // سازگاری با نسخهٔ قبلی UI؛ مسیر جدید /api/tasks/create است.
       if (req.method === 'POST' && pathname === '/api/issues/import') {
         const input = await readBody(req);
         const ids = Array.isArray(input.ids) ? input.ids.map(String) : [];
         if (!ids.length) return send(res, 400, { error: 'حداقل یک issue انتخاب کنید.' });
-        const repo = repoFor(input.repo || config.repos[0].id);
         const sourceIssues = await refreshIssues(false);
         const byId = new Map(sourceIssues.map(issue => [String(issue.externalId), issue]));
         const results = [];
         for (const id of ids) {
           const issue = byId.get(id);
           if (!issue) { results.push({ id, ok: false, message: 'issue در آخرین fetch پیدا نشد.' }); continue; }
-          const tmp = path.join(os.tmpdir(), `barsa-issue-${process.pid}-${randomUUID()}.json`);
           try {
-            fs.writeFileSync(tmp, JSON.stringify(issue), { encoding: 'utf8', mode: 0o600 });
-            const output = await collect(repo, ['import-issue', '--file', tmp]);
-            let taskId;
-            try { taskId = JSON.parse(output.stdout).taskId; } catch { /* manager may be older */ }
-            results.push({ id, ok: true, taskId });
+            const result = await createOne({
+              repo: input.repo || config.repos[0].id,
+              type: 'task',
+              slug: slugify(issue.title, `task-${id}`),
+              requestText: [issue.title, issue.body].filter(Boolean).join('\n\n'),
+              source: { system: issue.system || 'internal', externalId: issue.externalId, url: issue.url || '', fetchedAt: issue.fetchedAt }
+            });
+            results.push({ id, ...result });
           } catch (error) {
             results.push({ id, ok: false, message: error.message || 'import شکست خورد.' });
-          } finally {
-            fs.rmSync(tmp, { force: true });
           }
         }
         return send(res, 207, { results });

@@ -91,3 +91,85 @@ test('بستن SSE فرآیند run را نمی‌کشد و بافر برای ا
   assert.match(replay, /starting/);
   assert.match(replay, /done/);
 });
+
+test('ساخت task payload تأییدشده را ترتیبی با import-issue می‌فرستد و auto-start می‌کند', async t => {
+  const repo = makeFakeRepo(t);
+  // manager تست اصلی externalId را در root انتظار دارد؛ برای این تست manager سازگار با flow می‌سازیم.
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const fs = require('node:fs');
+const args = process.argv.slice(2); const cmd = args[0];
+if (cmd === 'status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else if (cmd === 'import-issue') { const p=JSON.parse(fs.readFileSync(args[args.indexOf('--file')+1],'utf8')); process.stdout.write(JSON.stringify({ok:true,taskId:p.source?.externalId || '0099'})); }
+else if (cmd === 'run') { console.log('flow-run'); setTimeout(()=>process.exit(10),80); }
+else if (cmd === 'events') process.stdout.write('[]');
+else if (cmd === 'artifact') process.stdout.write('');
+else if (cmd === 'answer') process.stdout.write(JSON.stringify({ok:true}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, run: { maxConcurrent: 1, autoStartOnCreate: true, autoResumeAfterAnswer: true }, issueSource: {} });
+  const response = await fetch(`${base}/api/tasks/create`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: [{ repo:'fake', type:'task', slug:'sample', requestText:'متن خام', source:{system:'internal',externalId:'2041',url:'',fetchedAt:new Date().toISOString()} }] }) });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.succeeded, 1);
+  assert.equal(body.results[0].taskId, '2041');
+  const running = await (await fetch(`${base}/api/repos/fake/running`)).json();
+  assert.equal(running[0].taskId, '2041');
+});
+
+test('clarification از فایل می‌رود و پاسخ موفق auto-resume می‌شود', async t => {
+  const repo = makeFakeRepo(t);
+  const capture = path.join(repo.path, 'answer-capture.json');
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const fs=require('node:fs'); const path=require('node:path'); const args=process.argv.slice(2); const cmd=args[0];
+if(cmd==='answer'){ const i=args.indexOf('--file'); const file=i>=0?args[i+1]:null; fs.writeFileSync(path.join(process.cwd(),'answer-capture.json'),JSON.stringify({args,text:file?fs.readFileSync(file,'utf8'):null})); process.stdout.write(JSON.stringify({ok:true})); }
+else if(cmd==='run'){ console.log('resume'); setTimeout(()=>process.exit(10),70); }
+else if(cmd==='status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, run: { maxConcurrent: 1, autoResumeAfterAnswer: true }, issueSource: {} });
+  const response = await fetch(`${base}/api/repos/fake/tasks/2041/answer`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({mode:'clarify',text:'فقط همین scope'}) });
+  assert.equal(response.status, 200);
+  const captured = JSON.parse(fs.readFileSync(capture,'utf8'));
+  assert.ok(captured.args.includes('--clarify'));
+  assert.ok(captured.args.includes('--file'));
+  assert.equal(captured.text, 'فقط همین scope');
+  const running = await (await fetch(`${base}/api/repos/fake/running`)).json();
+  assert.equal(running[0].taskId, '2041');
+});
+
+test('شکست یک import بقیه draftها را متوقف نمی‌کند', async t => {
+  const repo = makeFakeRepo(t);
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const fs=require('node:fs'); const args=process.argv.slice(2);
+if(args[0]==='import-issue'){ const p=JSON.parse(fs.readFileSync(args[args.indexOf('--file')+1],'utf8')); const id=p.source?.externalId; if(id==='2'){ console.error('duplicate'); process.exit(1); } process.stdout.write(JSON.stringify({ok:true,taskId:id})); }
+else if(args[0]==='status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos:[repo], server:{}, run:{autoStartOnCreate:false}, issueSource:{} });
+  const items = ['1','2','3'].map(id => ({ repo:'fake', type:'task', slug:`task-${id}`, requestText:`request ${id}`, source:{system:'internal',externalId:id} }));
+  const response = await fetch(`${base}/api/tasks/create`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({items,start:false}) });
+  assert.equal(response.status, 207);
+  const body = await response.json();
+  assert.equal(body.succeeded, 2);
+  assert.equal(body.failed, 1);
+  assert.deepEqual(body.results.map(x => x.ok), [true,false,true]);
+});
+
+test('maxConcurrent اضافی‌ها را در queue نگه می‌دارد', async t => {
+  const repo = makeFakeRepo(t);
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const args=process.argv.slice(2); if(args[0]==='run'){ console.log('run '+args[1]); setTimeout(()=>process.exit(10),220); } else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos:[repo], server:{}, run:{maxConcurrent:1}, issueSource:{} });
+  const first = await fetch(`${base}/api/repos/fake/tasks/1/run`, {method:'POST'});
+  const second = await fetch(`${base}/api/repos/fake/tasks/2/run`, {method:'POST'});
+  assert.equal(first.status, 202); assert.equal(second.status, 202);
+  const list = await (await fetch(`${base}/api/repos/fake/running`)).json();
+  const one = list.find(x => x.taskId === '1'); const two = list.find(x => x.taskId === '2');
+  assert.equal(one.running, true);
+  assert.equal(two.queued, true);
+  assert.equal(two.queuePosition, 1);
+  await new Promise(resolve => setTimeout(resolve, 280));
+  const after = await (await fetch(`${base}/api/repos/fake/running`)).json();
+  assert.equal(after.find(x => x.taskId === '2').running, true);
+});

@@ -98,3 +98,25 @@ test('fetch issue از POST form-urlencoded هم پشتیبانی می‌کند'
   assert.match(requestedOptions.headers['Content-Type'], /^application\/x-www-form-urlencoded/);
   assert.equal(new URLSearchParams(requestedOptions.body).get('UserId'), 'abc');
 });
+
+test('fetch issue پاسخ JSON دوبار serialize شدهٔ BarsaWebService را باز می‌کند', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    headers: { get() { return 'application/json'; } },
+    async text() {
+      return JSON.stringify(JSON.stringify({ data: { items: [{ externalId: '1', title: 'نمونه', status: 'در حال انجام', labels: [] }] } }));
+    }
+  });
+  try {
+    const result = await fetchIssues({
+      baseUrl: 'https://example.test', listPath: '/issues', method: 'POST', body: {},
+      itemsPath: 'data.items', mapping: { externalId: 'externalId', title: 'title', status: 'status', labels: 'labels' }
+    });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].externalId, '1');
+    assert.equal(result[0].title, 'نمونه');
+  } finally { globalThis.fetch = originalFetch; }
+});

@@ -13,25 +13,42 @@ export function managerCommand(repo, args, options = {}) {
   });
 }
 
-export function collect(repo, args) {
+function collectChild(child) {
   return new Promise((resolve, reject) => {
-    const child = managerCommand(repo, args);
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', d => { stdout += d; });
-    child.stderr.on('data', d => { stderr += d; });
+    child.stdout?.on('data', d => { stdout += d; });
+    child.stderr?.on('data', d => { stderr += d; });
     child.on('error', reject);
     child.on('close', code => {
-      if (code === 0) return resolve({ stdout, stderr: redact(stderr) });
       const secrets = environmentSecrets();
-      const message = redact(stderr.trim() || stdout.trim() || `manager با کد ${code} متوقف شد`, secrets);
-      reject(Object.assign(new Error(message), { code }));
+      const safeOut = redact(stdout, secrets);
+      const safeErr = redact(stderr, secrets);
+      if (code === 0) return resolve({ stdout: safeOut, stderr: safeErr, code: 0 });
+      const message = safeErr.trim() || safeOut.trim() || `فرآیند با کد ${code} متوقف شد`;
+      reject(Object.assign(new Error(message), { code, stdout: safeOut, stderr: safeErr }));
     });
   });
+}
+
+export function collect(repo, args) {
+  return collectChild(managerCommand(repo, args));
 }
 
 export async function collectJson(repo, args) {
   const { stdout } = await collect(repo, args);
   try { return JSON.parse(stdout.trim()); }
   catch { throw new Error('خروجی JSON مدیر معتبر نیست.'); }
+}
+
+export function validateAgentWork(repo) {
+  const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const child = spawn(command, ['run', 'validate-agent-work', '--silent'], {
+    cwd: repo.path,
+    shell: false,
+    windowsHide: true,
+    env: { ...process.env },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  return collectChild(child);
 }
