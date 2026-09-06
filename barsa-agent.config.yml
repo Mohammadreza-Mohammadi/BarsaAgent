@@ -5,7 +5,7 @@ repos:
     path: "C:/ng-web-systemsaz-1"
     managerScript: "scripts/manager.js"
 issueSource:
-  baseUrl: "https://portal.basasoft.com"
+  baseUrl: "https://portal.barsasoft.com"
   apiKeyHeader: "X-Api-Key"
   apiKeyEnv: "BARSA_ISSUE_API_KEY"
   listPath: "/api2/Issue/0.1/GetIssues"
