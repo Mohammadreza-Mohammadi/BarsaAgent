@@ -1,0 +1,23 @@
+server:
+  port: 4310
+repos:
+  - id: barsa-novin-ray
+    path: "C:/ng-web-systemsaz-1"
+    managerScript: "scripts/manager.js"
+issueSource:
+  baseUrl: "https://portal.barsasoft.com"
+  apiKeyHeader: "X-Api-Key"
+  apiKeyEnv: "BARSA_ISSUE_API_KEY"
+  listPath: "/api2/Issue/0.1/GetIssues"
+  method: "POST"
+  bodyFormat: "json"
+  body:
+    UserId: "20b785b0-db71-4507-9757-b5280460b0cb"
+  itemsPath: "data.items"
+  mapping:
+    externalId: "id"
+    title: "subject"
+    body: "description"
+    url: "permalink"
+    status: "state"
+    labels: "tags"

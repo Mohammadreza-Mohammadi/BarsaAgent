@@ -1,0 +1,14 @@
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\bin\Debug\net10.0-windows\BarsaAgent.exe
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\bin\Debug\net10.0-windows\BarsaAgent.deps.json
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\bin\Debug\net10.0-windows\BarsaAgent.runtimeconfig.json
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\bin\Debug\net10.0-windows\BarsaAgent.dll
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\bin\Debug\net10.0-windows\BarsaAgent.pdb
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\BarsaAgent.GeneratedMSBuildEditorConfig.editorconfig
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\BarsaAgent.AssemblyInfoInputs.cache
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\BarsaAgent.AssemblyInfo.cs
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\BarsaAgent.csproj.CoreCompileInputs.cache
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\BarsaAgent.dll
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\refint\BarsaAgent.dll
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\BarsaAgent.pdb
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\BarsaAgent.genruntimeconfig.cache
+F:\Barsa_Issue_Automation_Resolver\BarsaAgent\BarsaAgent\obj\Debug\net10.0-windows\ref\BarsaAgent.dll
