@@ -29,11 +29,13 @@ test('کانفیگ چند مخزنی و mapping تو در تو parse می‌شو
 });
 
 
-test('fetch issue پارامتر UserId تنظیم‌شده را به وب‌سرویس ارسال می‌کند', async () => {
+test('fetch issue در حالت POST پارامتر UserId را در JSON body ارسال می‌کند', async () => {
   const originalFetch = globalThis.fetch;
   let requestedUrl = '';
-  globalThis.fetch = async (url) => {
+  let requestedOptions = null;
+  globalThis.fetch = async (url, options) => {
     requestedUrl = String(url);
+    requestedOptions = options;
     return {
       ok: true,
       status: 200,
@@ -47,8 +49,10 @@ test('fetch issue پارامتر UserId تنظیم‌شده را به وب‌س�
     await fetchIssues({
       baseUrl: 'https://example.test',
       listPath: '/api/issues',
+      method: 'POST',
+      bodyFormat: 'json',
+      body: { UserId: '20b785b0-db71-4507-9757-b5280460b0cb' },
       itemsPath: 'data.items',
-      query: { UserId: '20b785b0-db71-4507-9757-b5280460b0cb' },
       mapping: {}
     });
   } finally {
@@ -56,5 +60,41 @@ test('fetch issue پارامتر UserId تنظیم‌شده را به وب‌س�
   }
 
   const url = new URL(requestedUrl);
-  assert.equal(url.searchParams.get('UserId'), '20b785b0-db71-4507-9757-b5280460b0cb');
+  assert.equal(url.searchParams.get('UserId'), null);
+  assert.equal(requestedOptions.method, 'POST');
+  assert.equal(requestedOptions.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(requestedOptions.body), { UserId: '20b785b0-db71-4507-9757-b5280460b0cb' });
+});
+
+test('fetch issue از POST form-urlencoded هم پشتیبانی می‌کند', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedOptions = null;
+  globalThis.fetch = async (_url, options) => {
+    requestedOptions = options;
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get() { return 'application/json'; } },
+      async text() { return JSON.stringify({ data: { items: [] } }); }
+    };
+  };
+
+  try {
+    await fetchIssues({
+      baseUrl: 'https://example.test',
+      listPath: '/api/issues',
+      method: 'POST',
+      bodyFormat: 'form',
+      body: { UserId: 'abc' },
+      itemsPath: 'data.items',
+      mapping: {}
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(requestedOptions.method, 'POST');
+  assert.match(requestedOptions.headers['Content-Type'], /^application\/x-www-form-urlencoded/);
+  assert.equal(new URLSearchParams(requestedOptions.body).get('UserId'), 'abc');
 });

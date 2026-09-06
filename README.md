@@ -619,3 +619,36 @@ http://localhost:4200/api/issues?refresh=1
 ```
 
 > توجه: body خام وب‌سرویس در حالت debug روی کنسول چاپ می‌شود؛ در محیط production اگر پاسخ شامل داده حساس است این logging را غیرفعال یا محدود کنید.
+
+
+## Issue Web Service — POST
+
+`GetIssues` در این نسخه از طریق POST قابل فراخوانی است. تنظیم نمونه:
+
+```yaml
+issueSource:
+  baseUrl: "https://portal.basasoft.com"
+  listPath: "/api2/Issue/0.1/GetIssues"
+  method: "POST"
+  bodyFormat: "json"
+  body:
+    UserId: "20b785b0-db71-4507-9757-b5280460b0cb"
+  itemsPath: "data.items"
+```
+
+در حالت `json` درخواست به شکل زیر ارسال می‌شود:
+
+```http
+POST /api2/Issue/0.1/GetIssues
+Content-Type: application/json
+
+{"UserId":"20b785b0-db71-4507-9757-b5280460b0cb"}
+```
+
+اگر وب‌سرویس Barsa پارامترها را به صورت form می‌خواهد، فقط این مقدار را عوض کنید:
+
+```yaml
+bodyFormat: "form"
+```
+
+در این حالت body برابر `UserId=...` و Content-Type برابر `application/x-www-form-urlencoded` خواهد بود. URL نهایی، method، body ارسالی، HTTP status و response خام در کنسول Node لاگ می‌شوند.
