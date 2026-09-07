@@ -41,6 +41,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly board = signal<Board | null>(null);
   readonly running = signal<Record<string, RunningTask>>({});
   readonly health = signal<HealthResult | null>(null);
+  readonly healthLoading = signal(false);
+  readonly healthError = signal('');
   readonly loading = signal(true);
   readonly error = signal('');
   readonly info = signal('');
@@ -105,15 +107,18 @@ export class AppComponent implements OnInit, OnDestroy {
 
   async refresh(silent = false): Promise<void> {
     if (!this.repoId()) return;
+
+    // Health مستقل از board/running بارگذاری می‌شود. خرابی یا تأخیر یکی نباید
+    // وضعیت دیگری را مبهم کند یا Health را به‌اشتباه «ناسالم» نشان دهد.
+    const healthPromise = this.refreshHealth(false, true);
+
     try {
-      const [board, running, health] = await Promise.all([
+      const [board, running] = await Promise.all([
         firstValueFrom(this.api.board(this.repoId())),
-        firstValueFrom(this.api.running(this.repoId())),
-        firstValueFrom(this.api.health(this.repoId()))
+        firstValueFrom(this.api.running(this.repoId()))
       ]);
       this.board.set(board);
       this.running.set(Object.fromEntries(running.map(x => [x.taskId, x])));
-      this.health.set(health);
       this.notifyNewHumanTasks(board.tasks);
       const selected = this.selected();
       if (selected) {
@@ -124,11 +129,24 @@ export class AppComponent implements OnInit, OnDestroy {
     } catch (e) {
       if (!silent) this.fail(e);
     }
+
+    await healthPromise;
   }
 
-  async refreshHealth(): Promise<void> {
-    try { this.health.set(await firstValueFrom(this.api.health(this.repoId(), true))); }
-    catch (e) { this.fail(e); }
+  async refreshHealth(force = true, silent = false): Promise<void> {
+    if (!this.repoId()) return;
+    this.healthLoading.set(true);
+    this.healthError.set('');
+    try {
+      const health = await firstValueFrom(this.api.health(this.repoId(), force));
+      this.health.set(health);
+    } catch (e) {
+      this.health.set(null);
+      this.healthError.set(this.errorText(e));
+      if (!silent) this.fail(e);
+    } finally {
+      this.healthLoading.set(false);
+    }
   }
 
   tasksFor(states: readonly string[]): Task[] {
@@ -213,7 +231,18 @@ export class AppComponent implements OnInit, OnDestroy {
     if (p === 'unsupported') return 'اعلان ناموجود';
     return 'فعال‌کردن اعلان';
   }
-  healthLabel(): string { return this.health()?.ok ? 'Agent-work سالم' : 'Agent-work نیاز به بررسی دارد'; }
+  healthLabel(): string {
+    if (this.healthLoading() && !this.health()) return 'در حال بررسی Agent-work…';
+    if (this.healthError()) return 'بررسی Agent-work انجام نشد';
+    const health = this.health();
+    if (!health) return 'وضعیت Agent-work هنوز بررسی نشده';
+    return health.ok ? 'Agent-work سالم' : 'Agent-work نیاز به بررسی دارد';
+  }
+
+  healthDetails(): string {
+    if (this.healthError()) return this.healthError();
+    return this.health()?.output || '';
+  }
 
   exitCodeFor(t: Task | null): number | null | undefined {
     if (!t) return undefined;
@@ -484,9 +513,12 @@ export class AppComponent implements OnInit, OnDestroy {
   private compact(value: unknown): string { if (value == null) return '—'; if (typeof value === 'string') return value; try { return JSON.stringify(value); } catch { return String(value); } }
   private escapeHtml(value: string): string { return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
   private inlineMarkdown(value: string): string { return value.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\*([^*]+)\*/g, '<em>$1</em>'); }
-  private fail(e: unknown): void {
+  private errorText(e: unknown): string {
     const candidate = e as { error?: { error?: string } | string; message?: string };
     const nested = typeof candidate?.error === 'object' ? candidate.error?.error : candidate?.error;
-    this.error.set(nested || candidate?.message || 'خطای ناشناخته');
+    return nested || candidate?.message || 'خطای ناشناخته';
+  }
+  private fail(e: unknown): void {
+    this.error.set(this.errorText(e));
   }
 }

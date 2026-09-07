@@ -14,10 +14,17 @@
 </header>
 
 <main>
-  <section class="health-strip" [class.bad]="health() && !health()?.ok">
-    <div><b>{{healthLabel()}}</b><span>{{runSettingsLabel()}}</span></div>
-    <pre *ngIf="health() && !health()?.ok">{{health()?.output}}</pre>
-    <button class="secondary" (click)="refreshHealth()">بررسی دوباره</button>
+  <section class="health-strip"
+           [class.bad]="!!healthError() || (health() && !health()?.ok)"
+           [class.checking]="healthLoading() && !health()">
+    <div>
+      <b>{{healthLabel()}}</b>
+      <span>{{runSettingsLabel()}}</span>
+    </div>
+    <pre *ngIf="healthError() || (health() && !health()?.ok)">{{healthDetails()}}</pre>
+    <button class="secondary" [disabled]="healthLoading()" (click)="refreshHealth()">
+      {{healthLoading() ? 'در حال بررسی…' : 'بررسی دوباره'}}
+    </button>
   </section>
 
   <section class="human-strip" [class.clear]="humanTasks().length === 0">

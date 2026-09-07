@@ -40,3 +40,16 @@ Coverage includes:
 ## Build note
 
 The execution container has Node 22.16.0 while Angular 22 package metadata in this project requires Node `^22.22.3 || ^24.15.0 || >=26`. Server tests are valid; perform the final Angular build on a supported Node version.
+
+
+## v1.2.1 — Health UI fix
+
+- Health null/loading دیگر به‌عنوان failure نمایش داده نمی‌شود.
+- Health fetch از board/running مستقل شد.
+- معیار سالم بودن validator فقط exit code است؛ warningهای stdout سبز را قرمز نمی‌کنند.
+- خطای خود endpoint سلامت از failure واقعی Agent-work جدا نمایش داده می‌شود.
+
+## 1.2.2 — Windows health fix
+- Health validator با `node scripts/validate-agent-work.js` اجرا می‌شود، نه `npm.cmd`.
+- warning/known-exception با exit code صفر سالم محسوب می‌شود.
+- تست integration برای warning روی stdout/stderr با exit code 0 اضافه شد.

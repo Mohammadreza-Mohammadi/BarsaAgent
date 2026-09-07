@@ -42,8 +42,14 @@ export async function collectJson(repo, args) {
 }
 
 export function validateAgentWork(repo) {
-  const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const child = spawn(command, ['run', 'validate-agent-work', '--silent'], {
+  // Health must behave exactly like the protocol validator itself, especially on Windows.
+  // Spawning npm.cmd with shell:false is unreliable on Windows and can make a healthy
+  // repository look unhealthy. Run the validator script directly with the current Node.
+  const script = path.resolve(
+    repo.path,
+    repo.validateScript || 'scripts/validate-agent-work.js'
+  );
+  const child = spawn(process.execPath, [script], {
     cwd: repo.path,
     shell: false,
     windowsHide: true,

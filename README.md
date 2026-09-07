@@ -2,6 +2,17 @@
 
 کنسول محلی Angular + Node برای اداره Agent Protocol از طریق `manager.js` خارجی.
 
+## Health status
+
+نوار سلامت Agent-work سه حالت مستقل دارد:
+
+- `در حال بررسی Agent-work…` — هنوز نتیجهٔ validator دریافت نشده است.
+- `Agent-work سالم` — فرمان `npm run validate-agent-work` با exit code صفر تمام شده است؛ پیام‌های `ℹ️` و `⚠️` داخل stdout به‌تنهایی خطا محسوب نمی‌شوند.
+- `Agent-work نیاز به بررسی دارد` — validator با exit code غیرصفر تمام شده است و خروجی خام در نوار نمایش داده می‌شود.
+
+اگر خود endpoint سلامت قابل دسترس نباشد، UI به‌جای ناسالم اعلام کردن Agent-work، `بررسی Agent-work انجام نشد` را نمایش می‌دهد.
+
+
 ## معماری
 
 ```text
@@ -183,3 +194,15 @@ npm test
 - `docs/manager-api-contract.md`
 - `docs/agent-protocol-integration.md`
 - `docs/reference/create-task-flow.md`
+
+### Health روی Windows
+
+از نسخه 1.2.2، Health Check دیگر `npm.cmd` را از child process اجرا نمی‌کند. Server مستقیماً `scripts/validate-agent-work.js` را با همان Node فعلی اجرا می‌کند. بنابراین اگر validator با exit code `0` تمام شود، وجود پیام‌های `ℹ️` یا `⚠️` در خروجی باعث ناسالم شدن Agent-work نمی‌شود.
+
+برای بررسی مستقیم API:
+
+```text
+GET http://127.0.0.1:4310/api/repos/<repo-id>/health?refresh=1
+```
+
+خروجی سالم باید `"ok": true` و `"code": 0` داشته باشد.

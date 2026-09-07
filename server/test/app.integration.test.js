@@ -173,3 +173,25 @@ const args=process.argv.slice(2); if(args[0]==='run'){ console.log('run '+args[1
   const after = await (await fetch(`${base}/api/repos/fake/running`)).json();
   assert.equal(after.find(x => x.taskId === '2').running, true);
 });
+
+test('health روی validator مستقیم Node تکیه می‌کند و warning با exit 0 را سالم می‌داند', async t => {
+  const repo = makeFakeRepo(t);
+  const scripts = path.join(repo.path, 'scripts');
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.writeFileSync(path.join(scripts, 'validate-agent-work.js'), `
+console.log('ℹ️ known exception');
+console.error('⚠️ Phase 0 reminder');
+console.log('Level 4A: 2 Task بررسی شد، مشکلی پیدا نشد.');
+process.exit(0);
+`, 'utf8');
+
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+  const response = await fetch(`${base}/api/repos/fake/health?refresh=1`);
+  assert.equal(response.status, 200);
+  const health = await response.json();
+  assert.equal(health.ok, true);
+  assert.equal(health.code, 0);
+  assert.match(health.output, /known exception/);
+  assert.match(health.output, /Phase 0 reminder/);
+  assert.match(health.output, /مشکلی پیدا نشد/);
+});
