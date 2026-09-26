@@ -191,6 +191,28 @@ export class AppComponent implements OnInit, OnDestroy {
     return ({ 'spec-approval': 'تأیید spec', clarification: 'پاسخ به سؤال', 'merge-approval': 'تأیید merge' } as Record<string, string>)[this.gateKind(t)] ?? 'اقدام انسانی';
   }
 
+  // حادثه‌ی ۲۶ سپتامبر، بند «د»: قفل سراسری/کثیفی بی‌صاحب مسائل سطح مخزن‌اند،
+  // نه یک task خاص — قبلاً هیچ‌جای UI دیده نمی‌شدند. یک نوار بالای برد،
+  // مشتق از همان health که Manager در status --json حساب کرده (نه منطق تازه‌ی UI).
+  repositoryHealthProblem(): boolean {
+    const h = this.board()?.repository?.health;
+    if (!h) return false;
+    return (h.managerLock !== null && h.managerLock.alive !== false) || h.unownedDirtyFiles.length > 0 || !h.acceptsOperations;
+  }
+  repositoryHealthLabel(): string {
+    const h = this.board()?.repository?.health;
+    if (!h) return '';
+    const parts: string[] = [];
+    if (h.managerLock) {
+      const lock = h.managerLock;
+      const alive = lock.alive === true ? 'زنده' : lock.alive === false ? 'مرده' : 'نامشخص';
+      parts.push(`قفل سراسری (task ${lock.task || '؟'}، pid ${lock.pid ?? '؟'}، ${alive})`);
+    }
+    if (h.unownedDirtyFiles.length) parts.push(`${h.unownedDirtyFiles.length} فایل کثیفِ بی‌صاحب`);
+    if (!h.acceptsOperations) parts.push('مخزن الان پذیرای عملیات تازه نیست');
+    return parts.join(' · ');
+  }
+
   mergeBranch(t: Task): string | null { return t.git?.branch || null; }
   managerMerges(): boolean { return this.board()?.repo?.mergedBy === 'manager'; }
   mergeCommand(t: Task): string | null { const b = this.mergeBranch(t); return b ? `git merge --no-ff ${b}` : null; }

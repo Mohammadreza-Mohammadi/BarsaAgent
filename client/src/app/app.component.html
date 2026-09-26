@@ -46,6 +46,12 @@
     <small>هشدار UI بر اساس هم‌پوشانی مسیرهای <code>scope.allow</code>؛ تصمیم نهایی همچنان با Manager است.</small>
   </section>
 
+  <section class="repo-health-strip" *ngIf="repositoryHealthProblem()">
+    <b>⚠ مخزن</b>
+    <span>{{repositoryHealthLabel()}}</span>
+    <small>این‌ها سطح مخزن‌اند، نه یک task خاص — از health.repository در status --json Manager.</small>
+  </section>
+
   <div class="notice error" *ngIf="error()"><span>{{error()}}</span><button (click)="error.set('')">×</button></div>
   <div class="notice info" *ngIf="info()"><span>{{info()}}</span><button (click)="info.set('')">×</button></div>
 

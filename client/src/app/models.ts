@@ -99,6 +99,16 @@ export interface Board {
   // شماره‌ی نسخه که می‌توانند بی‌سروصدا از هم عقب بمانند.
   generatedAt: string;
   repo: { id: string; path: string; head?: string | null; mergedBy?: 'manager' | 'human' };
+  // حادثه‌ی ۲۶ سپتامبر، بند «د»: قفل سراسری (.manager.lock) و فایل‌های کثیفِ
+  // بی‌صاحب مسائل سطح مخزن‌اند، نه یک task خاص — قبلاً هیچ‌جای برد دیده
+  // نمی‌شدند. Manager حسابش می‌کند (computeRepositoryHealth)، نه UI.
+  repository?: {
+    health: {
+      managerLock: { pid: number | null; alive: boolean | null; task: string | null; startedAt: string | null } | null;
+      unownedDirtyFiles: string[];
+      acceptsOperations: boolean;
+    };
+  };
   tasks: Task[];
   error?: string;
 }
