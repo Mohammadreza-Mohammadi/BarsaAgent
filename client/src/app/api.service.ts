@@ -19,9 +19,27 @@ export class ApiService {
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/artifact`,
     { params: { path }, responseType: 'text' }
   );
+  openEditor = (repo: string, id: string) => this.http.post<{ ok: boolean; worktreePath: string }>(
+    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/open-editor`, {}
+  );
   run = (repo: string, id: string) => this.http.post<{ accepted: boolean; queued?: boolean; queuePosition?: number | null }>(`/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/run`, {});
-  answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect' }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
+  answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect'; respec?: boolean }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/answer`, body
+  );
+  voidTask = (repo: string, id: string, reason: string) => this.http.post<{ ok: boolean }>(
+    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/void`, { reason }
+  );
+  cancelTask = (repo: string, id: string, reason: string) => this.http.post<{ ok: boolean }>(
+    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/cancel`, { reason }
+  );
+  rebaseTask = (repo: string, id: string) => this.http.post<{ ok: boolean }>(
+    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/rebase`, {}
+  );
+  // دریچه‌ی اضطراری بازیابی — فقط manager.js unlock را صدا می‌زند. force فقط
+  // وقتی لازم است که transitionLock.alive === null باشد (Manager خودش رد/قبول
+  // می‌کند؛ اینجا فقط پاس داده می‌شود، حدس زده نمی‌شود).
+  unlockTask = (repo: string, id: string, reason: string, force = false) => this.http.post<{ ok: boolean }>(
+    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/unlock`, { reason, force }
   );
   issues = (refresh = false) => this.http.get<Issue[]>('/api/issues', { params: refresh ? new HttpParams().set('refresh', '1') : undefined });
   createTasks = (items: CreateTaskDraft[], start?: boolean) => this.http.post<CreateTasksResponse>('/api/tasks/create', { items, start });

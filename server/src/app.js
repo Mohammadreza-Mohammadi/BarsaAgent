@@ -3,9 +3,49 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { collect, collectJson, validateAgentWork } from './cli.js';
 import { fetchIssues } from './issues.js';
 import { ProcessRegistry } from './process-registry.js';
+
+// علت ریشه‌ای «بازیابی از داخل ابزار» بند ۴ — یک شنونده‌ی SIGINT/SIGTERM
+// سراسری در سطح ماژول (نه داخل createApp)، چون createApp در تست‌ها بارها در
+// همین یک process فراخوانی می‌شود؛ اگر شنونده داخل createApp ثبت می‌شد، هر
+// فراخوانی یکی اضافه می‌کرد (نشتِ listener، هشدار MaxListenersExceeded).
+// همیشه فقط آخرین سرور/registry ثبت‌شده را می‌بندد.
+let activeShutdownTarget = null;
+let shutdownListenersRegistered = false;
+function registerShutdownOnce() {
+  if (shutdownListenersRegistered) return;
+  shutdownListenersRegistered = true;
+  let shuttingDown = false;
+  const shutdown = signal => {
+    if (!activeShutdownTarget) return;
+    const { server, registry } = activeShutdownTarget;
+    const active = registry.activeCount();
+    if (active > 0 && !shuttingDown) {
+      shuttingDown = true;
+      console.warn(
+        `⚠️  ${active} اجرا در حال انجام است — منتظر پایانش می‌مانم (Ctrl+C دوباره برای خروج فوری و کشتن اجرای در جریان).`
+      );
+      const interval = setInterval(() => {
+        if (registry.activeCount() === 0) {
+          clearInterval(interval);
+          server.close(() => process.exit(0));
+        }
+      }, 500);
+      process.once(signal, () => {
+        clearInterval(interval);
+        console.warn('⚠️  خروج فوری — اجرای در جریان manager.js کشته می‌شود (احتمال قفل جامانده).');
+        process.exit(1);
+      });
+      return;
+    }
+    server.close(() => process.exit(0));
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const MIME = new Map([
@@ -83,15 +123,21 @@ function slugify(value, fallback = 'task') {
   return slug || fallback;
 }
 function parseTaskId(stdout) {
+  // strict: بازبینی فاز ۲ — یک fallback با regex یعنی قراردادی که شکستنِ خودش
+  // را تحمل می‌کند، و دیگر کسی متوجه شکستنش نمی‌شود. اگر manager.js روی
+  // import-issue خروجی JSON معتبر ندهد، خطای صریح بده، حدس نزن.
   const text = String(stdout || '').trim();
-  if (!text) return null;
+  if (!text) throw Object.assign(new Error('manager.js import-issue خروجی خالی داد — انتظار JSON با taskId بود.'), { status: 502 });
+  let payload;
   try {
-    const payload = JSON.parse(text);
-    return payload?.taskId == null ? null : String(payload.taskId);
+    payload = JSON.parse(text);
   } catch {
-    const match = /(?:taskId|task)\s*[:=]\s*["']?([^\s"'}]+)/i.exec(text);
-    return match?.[1] ?? null;
+    throw Object.assign(new Error(`manager.js import-issue خروجی JSON معتبر نداد: ${text.slice(0, 300)}`), { status: 502 });
   }
+  if (payload?.taskId == null) {
+    throw Object.assign(new Error('manager.js import-issue پاسخ JSON داد ولی فیلد taskId ندارد.'), { status: 502 });
+  }
+  return String(payload.taskId);
 }
 
 export function createApp(config, deps = {}) {
@@ -102,6 +148,7 @@ export function createApp(config, deps = {}) {
   };
   const registry = deps.registry ?? new ProcessRegistry({ maxConcurrent: runConfig.maxConcurrent, maxLines: 2000 });
   const issueFetcher = deps.issueFetcher ?? fetchIssues;
+  const spawnEditor = deps.spawnEditor ?? spawn;
   const repos = new Map(config.repos.map(x => [x.id, x]));
   let issueCache = { at: 0, data: [] };
   const healthCache = new Map();
@@ -122,6 +169,29 @@ export function createApp(config, deps = {}) {
       issueCache = { at: Date.now(), data: await issueFetcher(config.issueSource) };
     }
     return issueCache.data;
+  };
+  // manager.js وقتی صریح رد می‌کند (exit code غیرصفر روی answer/void/cancel/
+  // rebase/import-issue) این یک شکست کسب‌وکاری است («اثبات merge پاس نشد»،
+  // «externalId تکراری»، ...)، نه خرابی سرور — بازبینی فاز ۲. بدون این، همه‌ی
+  // این‌ها به 500 عمومی می‌افتند و UI فرقی بین «Manager رد کرد» و «سرور شکست»
+  // نمی‌بیند. پیام خام (stdout/stderr واقعی manager.js) دست‌نخورده می‌ماند.
+  const collectAction = async (repo, args) => {
+    try {
+      return await collect(repo, args);
+    } catch (error) {
+      if (typeof error.code === 'number') error.status = 422;
+      throw error;
+    }
+  };
+  const runReasoned = async (repo, verb, taskId, reason, extraArgs = []) => {
+    // متن آزاد هرگز argv نمی‌شود — همان دلیل بند A1.
+    const tmp = path.join(os.tmpdir(), `barsa-${verb}-${process.pid}-${randomUUID()}.txt`);
+    try {
+      fs.writeFileSync(tmp, String(reason), { encoding: 'utf8', mode: 0o600 });
+      return await collectAction(repo, [verb, taskId, '--reason-file', tmp, ...extraArgs]);
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
   };
   const queueTask = (repo, taskId) => {
     const run = registry.enqueue(repo, taskId);
@@ -148,9 +218,8 @@ export function createApp(config, deps = {}) {
     const tmp = path.join(os.tmpdir(), `barsa-task-${process.pid}-${randomUUID()}.json`);
     try {
       fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
-      const output = await collect(repo, ['import-issue', '--file', tmp]);
+      const output = await collectAction(repo, ['import-issue', '--file', tmp]);
       const taskId = parseTaskId(output.stdout);
-      if (!taskId) throw new Error('Manager taskId ساخته‌شده را در خروجی import-issue برنگرداند.');
       const shouldStart = startOverride ?? runConfig.autoStartOnCreate;
       const queue = shouldStart ? queueTask(repo, taskId) : { queued: false, started: false };
       return { ok: true, taskId, repoId: repo.id, slug, ...queue };
@@ -159,7 +228,7 @@ export function createApp(config, deps = {}) {
     }
   };
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
     try {
@@ -190,6 +259,44 @@ export function createApp(config, deps = {}) {
         const result = await collect(repoFor(p.repo), ['artifact', p.id, '--path', artifact]);
         return send(res, 200, result.stdout, 'text/plain; charset=utf-8');
       }
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/open-editor', pathname))) {
+        const repo = repoFor(p.repo);
+        // وضعیت باید در لحظهٔ کلیک از Manager خوانده شود؛ board سه‌ثانیه‌ای ممکن است
+        // به worktree حذف‌شده اشاره کند و UI نیز حق بازسازی مسیر را ندارد.
+        const status = await collectJson(repo, ['status', '--json', '--task', p.id]);
+        const task = status.tasks?.[0];
+        if (!task) return send(res, 404, { error: 'task پیدا نشد.' });
+        const worktreeRawPath = task.worktree?.path ? String(task.worktree.path) : '';
+        if (task.worktree?.status !== 'active' || !worktreeRawPath) {
+          return send(res, 409, { error: 'worktree این task زنده نیست.', worktreePath: worktreeRawPath || null });
+        }
+        // manager.js مسیر worktree را نسبت به ریشهٔ repo (worktreeRelPath) در manifest می‌نویسد،
+        // نه نسبت به cwd این سرور — باید نسبت به repo.path resolve شود.
+        const worktreePath = path.isAbsolute(worktreeRawPath) ? worktreeRawPath : path.resolve(repo.path, worktreeRawPath);
+        if (!fs.existsSync(worktreePath)) {
+          return send(res, 409, { error: `مسیر worktree پیدا نشد: ${worktreePath}`, worktreePath });
+        }
+        const editorCommand = String(config.editor?.command || '').trim();
+        if (!editorCommand) {
+          return send(res, 409, { error: `editor.command تنظیم نشده است. مسیر worktree: ${worktreePath}`, worktreePath });
+        }
+        try {
+          const child = spawnEditor(editorCommand, [worktreePath], {
+            detached: true, stdio: 'ignore', shell: false, windowsHide: true
+          });
+          await new Promise((resolve, reject) => {
+            child.once('spawn', resolve);
+            child.once('error', reject);
+          });
+          child.unref();
+        } catch (error) {
+          return send(res, 500, {
+            error: `باز کردن editor شکست خورد: ${error?.message || String(error)}. مسیر worktree: ${worktreePath}`,
+            worktreePath
+          });
+        }
+        return send(res, 200, { ok: true, worktreePath });
+      }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/running', pathname))) {
         return send(res, 200, registry.list(repoFor(p.repo)));
       }
@@ -216,20 +323,54 @@ export function createApp(config, deps = {}) {
         const repo = repoFor(p.repo);
         const args = ['answer', p.id, `--${input.mode}`];
         let tmp = null;
+        let reasonTmp = null;
         try {
           if (input.mode === 'clarify') {
             tmp = path.join(os.tmpdir(), `barsa-clarification-${process.pid}-${randomUUID()}.txt`);
             fs.writeFileSync(tmp, String(input.text), { encoding: 'utf8', mode: 0o600 });
             args.push('--file', tmp);
+            if (input.respec) args.push('--respec');
           }
-          if (input.reason) args.push('--reason', String(input.reason));
+          if (input.reason) {
+            // متن آزاد هرگز argv نمی‌شود — کنسول ویندوز فارسی را به ??? می‌شکند.
+            reasonTmp = path.join(os.tmpdir(), `barsa-reason-${process.pid}-${randomUUID()}.txt`);
+            fs.writeFileSync(reasonTmp, String(input.reason), { encoding: 'utf8', mode: 0o600 });
+            args.push('--reason-file', reasonTmp);
+          }
           if (input.route) args.push('--route', String(input.route));
-          await collect(repo, args);
+          await collectAction(repo, args);
         } finally {
           if (tmp) fs.rmSync(tmp, { force: true });
+          if (reasonTmp) fs.rmSync(reasonTmp, { force: true });
         }
         const resumed = runConfig.autoResumeAfterAnswer ? queueTask(repo, p.id) : { queued: false, started: false };
         return send(res, 200, { ok: true, autoResumed: runConfig.autoResumeAfterAnswer, ...resumed });
+      }
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/void', pathname))) {
+        const input = await readBody(req);
+        if (!input.reason?.trim()) return send(res, 400, { error: 'دلیل الزامی است.' });
+        await runReasoned(repoFor(p.repo), 'void', p.id, input.reason);
+        return send(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/cancel', pathname))) {
+        const input = await readBody(req);
+        if (!input.reason?.trim()) return send(res, 400, { error: 'دلیل الزامی است.' });
+        await runReasoned(repoFor(p.repo), 'cancel', p.id, input.reason);
+        return send(res, 200, { ok: true });
+      }
+      // دریچه‌ی اضطراری بازیابی — فقط manager.js unlock را صدا می‌زند (هیچ فایل/
+      // gitای مستقیم لمس نمی‌شود، طبق همان قاعده‌ی void/cancel بالا). --force
+      // فقط وقتی لازم است که transitionLock.alive === null باشد (بخش «بازیابی
+      // از داخل ابزار»، بند ۱) — Manager خودش این را رد/قبول می‌کند، UI فقط پاس می‌دهد.
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/unlock', pathname))) {
+        const input = await readBody(req);
+        if (!input.reason?.trim()) return send(res, 400, { error: 'دلیل الزامی است.' });
+        await runReasoned(repoFor(p.repo), 'unlock', p.id, input.reason, input.force ? ['--force'] : []);
+        return send(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/rebase', pathname))) {
+        await collectAction(repoFor(p.repo), ['rebase', p.id]);
+        return send(res, 200, { ok: true });
       }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/tasks/:id/stream', pathname))) {
         const repo = repoFor(p.repo);
@@ -351,4 +492,17 @@ export function createApp(config, deps = {}) {
       return send(res, error.status || 500, { error: error.message || 'خطای داخلی' });
     }
   });
+
+  // علت ریشه‌ای «بازیابی از داخل ابزار» بند ۴ (گزینه‌ی «ب» — حداقلِ قابل‌قبول،
+  // نه detach کامل): بستن/ری‌استارت این سرور بدون این هشدار، فرزندِ در جریانِ
+  // manager.js (اگر task ای همین الان run می‌شود) را وسط یک transition می‌کشد —
+  // دقیقاً همان چیزی که باعث شد یک قفل جامانده بدون هیچ رد پایی در events.jsonl
+  // بماند (رفع شد در manager.js#reclaimStaleTransitionLock: run.abandoned).
+  // این کاملاً علامت را حل نمی‌کند (force-kill/کرش هنوز خطرناک است) ولی مسیر
+  // عادی close/restart را ایمن می‌کند: اگر اجرایی در جریان است صبر می‌کند، نه
+  // این‌که بی‌سروصدا بکشدش.
+  activeShutdownTarget = { server, registry };
+  registerShutdownOnce();
+
+  return server;
 }

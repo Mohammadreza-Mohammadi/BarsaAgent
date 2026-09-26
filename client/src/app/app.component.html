@@ -64,9 +64,13 @@
         <article class="task" *ngFor="let t of tasksFor(lane.states)" [class.human]="t.awaitingHuman" [class.running]="isRunning(t)" [class.queued]="isQueued(t)" (click)="openTask(t)">
           <div class="task-top"><code>#{{t.id}}</code><span class="state">{{t.state}}</span></div>
           <h3>{{t.title || t.slug || 'بدون عنوان'}}</h3>
+          <span class="task-badge stuck" *ngIf="t.health?.stuck" [title]="stuckReasonsTitle(t)" (click)="openRecovery(t, $event)">🔒 گیرکرده — {{stuckReasonsLabel(t)}}</span>
+          <span class="task-badge unknown-lock" *ngIf="!t.health?.stuck && t.health?.transitionLock?.alive === null" [title]="'قفل هست ولی زنده/مرده بودنش نامشخص است (pid یا host نامعتبر) — قرمز نیست چون اثبات نشده.'" (click)="openRecovery(t, $event)">؟ قفل نامشخص</span>
+          <span class="task-badge gate-off" *ngIf="t.verify?.disabled?.length" [title]="'گیت‌های غیرفعال: ' + disabledGatesTitle(t)">⚠ گیت غیرفعال</span>
           <div class="run-badge" *ngIf="isRunning(t)"><span></span> در حال اجرا</div>
           <div class="queue-badge" *ngIf="isQueued(t)">⌛ در صف · {{queuePosition(t) || '—'}}</div>
           <div class="scope-conflict" *ngIf="conflictTasks(t).length">⚠ تداخل scope با {{conflictTasks(t).length}} task</div>
+          <span class="editor-wrap" [title]="editorTitle(t)"><button class="editor-action" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ VSCode</button></span>
           <button class="human-action" *ngIf="t.awaitingHuman" (click)="$event.stopPropagation(); openTask(t, true)">⚡ {{gateLabel(t)}}</button>
           <div class="meta">
             <span *ngIf="budget(t) as b" [class.warn]="b.max > 0 && b.used >= b.max - 1">{{budgetLabel(t)}} {{b.used}}/{{b.max}}</span>
@@ -81,7 +85,7 @@
 
   <section class="terminal" *ngIf="terminalTasks().length">
     <h2>متوقف و کنارگذاشته‌شده <span>{{terminalTasks().length}}</span></h2>
-    <div><button *ngFor="let t of terminalTasks()" (click)="openTask(t)"><code>#{{t.id}}</code> {{t.title || t.slug}} <em>{{t.state}}</em><small *ngIf="t.blocker?.kind">{{t.blocker?.kind}}</small></button></div>
+    <div><button *ngFor="let t of terminalTasks()" (click)="openTask(t)"><code>#{{t.id}}</code> {{t.title || t.slug}} <em>{{t.state}}</em><small *ngIf="t.blocker?.kind">{{blockerLabel(t)}}<span class="blocker-hint" *ngIf="blockerHint(t)">{{blockerHint(t)}}</span></small></button></div>
   </section>
   <section class="terminal error-lane" *ngIf="errorTasks().length">
     <h2>Taskهای دارای خطای manifest <span>{{errorTasks().length}}</span></h2>
@@ -152,13 +156,61 @@
         <div class="empty-artifact" *ngIf="!actionArtifactEntries().length">Artifact موردنیاز این gate پیدا نشد.</div>
       </div>
 
-      <div class="merge-evidence" *ngIf="gateKind(t) === 'merge-approval'">
-        <section><h4>خلاصه diff</h4><div *ngIf="diffFiles(t).length; else noDiff"><p *ngFor="let f of diffFiles(t)"><code>{{f.path || 'file'}}</code><span>+{{f.added || 0}} −{{f.deleted || 0}}</span></p></div><ng-template #noDiff><small>اگر Manager فیلد diff را در status بدهد اینجا نمایش داده می‌شود؛ changes.diff بالا همچنان قابل مشاهده است.</small></ng-template></section>
-        <section><h4>Verification</h4><pre>{{verifyText(t)}}</pre></section>
-        <section><h4>Scope</h4><code *ngFor="let x of t.scope?.allow">{{x}}</code><small *ngIf="t.scopeException">⚠ scopeException ثبت شده است</small><small *ngIf="!t.scopeException">بدون scopeException</small></section>
-      </div>
+      <ng-container *ngIf="gateKind(t) === 'merge-approval'">
+        <div class="merge-human-note" *ngIf="managerMerges()">تصمیم merge انسانی است؛ پس از تأیید، Manager تازگی گیت را بررسی می‌کند و merge محلی را انجام می‌دهد. هیچ push یا auto-mergeای انجام نمی‌شود.</div>
+        <div class="merge-human-note" *ngIf="!managerMerges()">Manager merge نمی‌کند — merge کار توست. تأیید اینجا یعنی «من merge کردم»؛ Manager بعد از تأیید مکانیکی اثبات می‌کند کار واقعاً به base رسیده و بعد task را می‌بندد.</div>
 
-      <label class="answer-box" *ngIf="gateKind(t) === 'clarification'"><span>پاسخ به سؤال</span><textarea [(ngModel)]="answerText" placeholder="پاسخ شما…"></textarea><small class="budget-note">این چرخه budget مصرف نمی‌کند؛ پاسخ از فایل موقت به <code>answer --clarify --file</code> می‌رود.</small></label>
+        <div class="merge-copy" *ngIf="!managerMerges() && mergeCommand(t) as cmd">
+          <div class="copy-row"><pre>{{cmd}}</pre><button class="secondary" (click)="copyMergeCommand(t)">کپی</button></div>
+          <small>پیام merge باید با commitlint بخواند؛ <code>merge:</code> یک type مجاز نیست.</small>
+        </div>
+        <div class="disabled-gate-warning" *ngIf="!managerMerges() && !mergeCommand(t)">Manager نام branch را نداد — دستور merge را نمی‌توان آماده کرد. برای اطمینان از نام شاخه‌ی درست، بخش «Attemptها»/`git.branch` این task را بررسی کن.</div>
+
+        <section class="diff-view">
+          <header><div><h4>تغییرات همین گیت</h4><small *ngIf="diffHeadCommit()">headCommit: <code>{{diffHeadCommit()}}</code></small></div><span *ngIf="diffLineCount()">{{diffLineCount()}} خط</span></header>
+          <p class="diff-limit" *ngIf="diffTruncated()">{{diffLineCount() | number}} خط — فقط {{diffLimit() | number}} خط اول نمایش داده شد. فهرست فایل‌ها پایین کامل است.</p>
+          <pre *ngIf="diffText(); else noGateDiff">{{diffPreview()}}</pre>
+          <ng-template #noGateDiff><div class="disabled-gate-warning">artifact ثابت <code>changes.diff</code> برای این گیت در دسترس نیست.</div></ng-template>
+        </section>
+
+        <div class="merge-evidence">
+          <section><h4>خلاصه diff</h4><div *ngIf="diffFiles(t).length; else noDiff"><p *ngFor="let f of diffFiles(t)"><code>{{f.path || 'file'}}</code><span>+{{f.added || 0}} −{{f.deleted || 0}}</span></p></div><ng-template #noDiff><small>اگر Manager فیلد diff را در status بدهد اینجا نمایش داده می‌شود؛ changes.diff بالا همچنان قابل مشاهده است.</small></ng-template></section>
+          <div class="disabled-gate-warning" *ngIf="!hasStatusCapability('review')">این Manager هنوز evidence داوری را در status نمی‌دهد (نسخه‌ی قدیم‌تر) — پایین فقط verification خام دیده می‌شود، نه چون evidence خالی است.</div>
+          <section class="evidence-section" *ngIf="t.review as r; else rawVerify">
+            <h4>Evidence داوری (attempt {{r.attempt}})</h4>
+            <div class="evidence-missing-note" *ngIf="r.evidenceStatus === 'missing'">ℹ این attempt قبل از قرارداد <code>evidence:</code> ساختاریافته نوشته شده — جدول پایین خالی است چون این Reviewer اصلاً چنین بلوکی ننوشته، نه چون مشکلی پیدا شده. برای شواهد واقعی، <code>review.md</code> بالا را بخوان.</div>
+            <div class="review-inconsistent" *ngIf="r.evidenceStatus === 'malformed'">⚠ این Reviewer بلوک <code>evidence:</code> نوشته ولی خراب/ناقص است — جدول پایین خالی است چون شواهدی برای نمایش قابل‌اعتماد نیست، نه چون همه‌چیز pass است. <span *ngIf="r.problems.length">{{r.problems.join(' · ')}}</span></div>
+            <div class="review-inconsistent" *ngIf="r.inconsistentWithReviewMd">⚠ تعداد ردیف‌های verdict در review.md با evidence نمی‌خواند — فقط هشدار؛ تصمیم از evidence گرفته شده، نه از review.md.</div>
+            <table class="evidence-table" *ngIf="r.evidence.acceptance.length">
+              <thead><tr><th>AC</th><th>Verdict</th><th>شاهد</th></tr></thead>
+              <tbody><tr *ngFor="let row of r.evidence.acceptance"><td>{{row.ac}}</td><td><span class="verdict" [ngClass]="row.verdict">{{row.verdict}}</span></td><td>{{row.basis}}</td></tr></tbody>
+            </table>
+            <table class="evidence-table" *ngIf="r.evidence.testCoverage.length">
+              <thead><tr><th>Case</th><th>Verdict</th><th>تست</th></tr></thead>
+              <tbody><tr *ngFor="let row of r.evidence.testCoverage"><td>{{row.case}}</td><td><span class="verdict" [ngClass]="row.verdict">{{row.verdict}}</span></td><td>{{row.test}}</td></tr></tbody>
+            </table>
+            <ng-container *ngIf="r.evidence.additionalChecks.length">
+              <h4>بررسی‌های اضافه <small>(تصمیم را عوض نمی‌کنند، ولی fail باید دیده شود)</small></h4>
+              <table class="evidence-table">
+                <thead><tr><th>Check</th><th>Verdict</th><th>شاهد</th></tr></thead>
+                <tbody><tr *ngFor="let row of r.evidence.additionalChecks"><td>{{row.check}}</td><td><span class="verdict" [ngClass]="row.verdict">{{row.verdict}}</span></td><td>{{row.basis}}</td></tr></tbody>
+              </table>
+            </ng-container>
+          </section>
+          <ng-template #rawVerify><section><h4>Verification</h4><pre>{{verifyText(t)}}</pre></section></ng-template>
+          <section><h4>Scope</h4><code *ngFor="let x of t.scope?.allow">{{x}}</code><small *ngIf="t.scopeException">⚠ scopeException ثبت شده است</small><small *ngIf="!t.scopeException">بدون scopeException</small></section>
+        </div>
+
+        <div class="disabled-gate-warning" *ngIf="!hasStatusCapability('verify')">این Manager هنوز نمی‌گوید کدام گیت verification غیرفعال بوده — نمی‌توان مطمئن شد. با نسخه‌ی جدیدتر Manager این هشدار قابل‌اعتماد می‌شود.</div>
+        <div class="disabled-gate-warning" *ngFor="let d of t.verify?.disabled">این task بدون گیت <code>{{d.gate}}</code> تأیید می‌شود. <small>{{d.reason}}</small></div>
+
+        <label class="merge-ack" *ngIf="!managerMerges()"><input type="checkbox" [ngModel]="mergeAck()" (ngModelChange)="mergeAck.set($event)"><span>دستور merge را اجرا کردم</span></label>
+      </ng-container>
+
+      <label class="answer-box" *ngIf="gateKind(t) === 'clarification'"><span>پاسخ به سؤال</span><textarea [(ngModel)]="answerText" placeholder="پاسخ شما…"></textarea><small class="budget-note">این چرخه budget مصرف نمی‌کند؛ پاسخ از فایل موقت به <code>answer --clarify --file</code> می‌رود.</small>
+        <label class="respec-check"><input type="checkbox" [(ngModel)]="respec"><span>این پاسخ مشخصات را عوض می‌کند (<code>--respec</code>)</span></label>
+        <small class="budget-note" *ngIf="respec">تیک‌خورده یعنی spec عوض شده؛ Intake از نو اجرا می‌شود و گیت تأیید spec دوباره باز می‌شود.</small>
+      </label>
       <label class="answer-box" *ngIf="gateKind(t) !== 'clarification'"><span>دلیل رد (هنگام رد اجباری)</span><textarea [(ngModel)]="reason" placeholder="اگر تصمیم رد است، دلیل را بنویسید…"></textarea></label>
     </div>
     <footer class="gate-footer">
@@ -167,7 +219,7 @@
 
       <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim()" (click)="answer('reject','implementer')">رد → پیاده‌سازی</button><small>نقشه درست بود، اجرا نه؛ implementerRuns مصرف می‌شود.</small></div>
       <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim()" (click)="answer('reject','architect')">رد → معماری</button><small>نقشه غلط بود؛ budget پیاده‌سازی دست نمی‌خورد.</small></div>
-      <button class="primary" [disabled]="busy()" *ngIf="gateKind(t) === 'merge-approval'" (click)="answer('approve')">merge</button>
+      <button class="primary" [disabled]="busy() || (!managerMerges() && !mergeAck())" *ngIf="gateKind(t) === 'merge-approval'" (click)="answer('approve')">{{managerMerges() ? 'تأیید و merge' : 'merge کردم، ببند'}}</button>
       <button class="primary" [disabled]="busy() || !answerText.trim()" *ngIf="gateKind(t) === 'clarification'" (click)="answer('clarify')">ارسال پاسخ</button>
     </footer>
   </ng-container>
@@ -181,6 +233,18 @@
         <div><small>آخرین اجرا</small><b>{{isQueued(t) ? 'در صف · ' + (queuePosition(t) || '—') : isRunning(t) ? 'در حال اجرا' : exitLabel(exitCodeFor(t))}}</b></div>
       </div>
       <div class="source-box" *ngIf="t.source?.externalId"><span>منبع</span><b>{{t.source?.system || 'internal'}} #{{t.source?.externalId}}</b><a *ngIf="t.source?.url" [href]="t.source?.url || ''" target="_blank" rel="noopener">باز کردن issue ↗</a></div>
+      <div class="task-tools"><span class="editor-wrap" [title]="editorTitle(t)"><button class="secondary" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ باز کردن در VSCode</button></span></div>
+
+      <nav class="task-tabs"><button [class.active]="taskTab() === 'overview'" (click)="taskTab.set('overview')">جزئیات</button><button [class.active]="taskTab() === 'diff'" (click)="taskTab.set('diff')">Diff</button></nav>
+
+      <section class="detail-section diff-view" *ngIf="taskTab() === 'diff'">
+        <header><div><h3>Diff</h3><small *ngIf="diffHeadCommit()">headCommit: <code>{{diffHeadCommit()}}</code></small></div><span *ngIf="diffLineCount()">{{diffLineCount()}} خط</span></header>
+        <p class="diff-limit" *ngIf="diffTruncated()">{{diffLineCount() | number}} خط — فقط {{diffLimit() | number}} خط اول نمایش داده شد. فهرست فایل‌ها کامل می‌ماند.</p>
+        <pre *ngIf="diffText(); else noTaskDiff">{{diffPreview()}}</pre>
+        <ng-template #noTaskDiff><small>artifact <code>changes.diff</code> برای این task در دسترس نیست.</small></ng-template>
+      </section>
+
+      <ng-container *ngIf="taskTab() === 'overview'">
 
       <section class="detail-section"><div class="section-head"><div><h3>Timeline</h3><p>رویدادها از Manager</p></div><span class="count">{{events().length}}</span></div><div class="timeline"><div *ngFor="let e of events()"><i></i><div><b>{{eventLabel(e)}}</b><small>{{formatDate(e.at)}}</small><p *ngIf="eventDetails(e)">{{eventDetails(e)}}</p></div></div><div class="timeline-empty" *ngIf="!events().length">رویدادی ثبت نشده است.</div></div></section>
 
@@ -191,7 +255,85 @@
       <section class="detail-section scope"><div class="section-head"><div><h3>Scope</h3><p>قفل محدودهٔ تغییر</p></div></div><div class="scope-grid"><div><b>allow</b><code *ngFor="let x of t.scope?.allow">{{x}}</code><small *ngIf="!t.scope?.allow?.length">خالی</small></div><div><b>deny</b><code *ngFor="let x of t.scope?.deny">{{x}}</code><small *ngIf="!t.scope?.deny?.length">خالی</small></div></div></section>
 
       <section class="detail-section" *ngIf="logs().length || isRunning(t) || isQueued(t)"><div class="section-head"><div><h3>لاگ اجرا</h3><p>SSE · بافر حلقوی سمت سرور</p></div><span class="run-badge inline" *ngIf="isRunning(t)"><span></span> زنده</span></div><pre class="logs">{{logs().join('\n') || 'در انتظار خروجی…'}}</pre></section>
+
+      <section class="detail-section danger-zone">
+        <div class="section-head"><div><h3>منطقه خطر</h3><p>هر دو عمل غیرقابل‌بازگشت‌اند و دلیل اجباری دارند</p></div></div>
+        <div class="danger-actions" *ngIf="!dangerOpen()">
+          <button class="danger-outline" [disabled]="busy()" (click)="openDanger('void')">باطل کردن آخرین transition</button>
+          <button class="danger-outline" [disabled]="busy()" (click)="openDanger('cancel')">بستن task</button>
+        </div>
+        <div class="danger-confirm" *ngIf="dangerOpen() === 'void'">
+          <small>آخرین transition این task را برمی‌گرداند (<code>void --reason-file</code>).</small>
+          <textarea [(ngModel)]="dangerReason" placeholder="دلیل باطل‌کردن…"></textarea>
+          <div class="danger-confirm-actions"><button class="secondary" (click)="closeDanger()">انصراف</button><button class="danger" [disabled]="busy() || !dangerReason.trim()" (click)="confirmDanger()">تأیید نهایی — باطل کن</button></div>
+        </div>
+        <div class="danger-confirm" *ngIf="dangerOpen() === 'cancel'">
+          <small>task را می‌بندد (<code>cancel --reason-file</code>) — برنمی‌گردد.</small>
+          <textarea [(ngModel)]="dangerReason" placeholder="دلیل بستن…"></textarea>
+          <div class="danger-confirm-actions"><button class="secondary" (click)="closeDanger()">انصراف</button><button class="danger" [disabled]="busy() || !dangerReason.trim()" (click)="confirmDanger()">تأیید نهایی — ببند</button></div>
+        </div>
+      </section>
+      </ng-container>
     </div>
-    <footer class="task-footer"><span class="footer-note">{{isQueued(t) ? 'در صف اجرا' : isRunning(t) ? 'فرآیند فعال است' : exitLabel(exitCodeFor(t))}}</span><button class="primary" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.awaitingHuman || !!t.error" (click)="runTask()">▶ اجرا / ادامه</button></footer>
+    <footer class="task-footer">
+      <span class="footer-note">{{isQueued(t) ? 'در صف اجرا' : isRunning(t) ? 'فرآیند فعال است' : exitLabel(exitCodeFor(t))}}</span>
+      <button class="secondary" [disabled]="busy() || isRunning(t) || isQueued(t)" (click)="rebaseTask()" title="معمولاً لازم نیست — حلقه خودش این کار را می‌کند">rebase دستی</button>
+      <button class="primary" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.awaitingHuman || !!t.error" (click)="runTask()">▶ اجرا / ادامه</button>
+    </footer>
+  </ng-container>
+
+  <ng-container *ngIf="panel() === 'recovery' && selected() as t">
+    <div class="drawer-body recovery-panel">
+      <p class="recovery-explain">{{ t.health?.stuck ? ('🔒 ' + stuckReasonsLabel(t)) : '؟ وضعیت قفل این task نامشخص است' }}</p>
+      <p class="recovery-hint" *ngIf="t.health?.recovery?.reason">{{ t.health?.recovery?.reason }}</p>
+
+      <section class="detail-section" *ngIf="t.health?.transitionLock as lock">
+        <div class="section-head"><div><h3>قفل transition</h3></div></div>
+        <div class="facts">
+          <div><small>pid</small><b>{{ lock.pid ?? '—' }}</b></div>
+          <div><small>وضعیت</small><b>{{ lock.alive === true ? 'زنده' : lock.alive === false ? 'مرده' : 'نامشخص' }}</b></div>
+          <div><small>fromState</small><b>{{ lock.fromState || '—' }}</b></div>
+          <div><small>سن</small><b>{{ elapsed(lock.startedAt) }}</b></div>
+        </div>
+      </section>
+
+      <section class="detail-section" *ngIf="t.health?.dirtyPaths?.length">
+        <div class="section-head"><div><h3>مسیرهای commit‌نشده</h3></div><span class="count">{{ t.health?.dirtyPaths?.length }}</span></div>
+        <ul class="dirty-list">
+          <li *ngFor="let p of t.health?.dirtyPaths">
+            <span class="dirty-origin" [class.worktree]="p.startsWith('worktree:')">{{ p.startsWith('worktree:') ? 'worktree' : 'bookkeeping' }}</span>
+            <code>{{ p.startsWith('worktree:') ? p.slice(9) : p }}</code>
+          </li>
+        </ul>
+      </section>
+
+      <section class="detail-section recovery-actions" *ngIf="dangerOpen() !== 'unlock'">
+        <div class="section-head"><div><h3>قدم بعدی</h3><p>Manager حساب می‌کند، نه UI</p></div></div>
+        <small *ngIf="!t.health?.recovery?.commands?.length">Manager هیچ پیشنهاد خودکاری برای این وضعیت ندارد — بررسی دستی لازم است.</small>
+        <div class="danger-actions" *ngIf="t.health?.recovery?.commands?.length">
+          <button
+            *ngFor="let cmd of t.health?.recovery?.commands"
+            class="danger-outline"
+            [class.recovery-suggested]="cmd === t.health?.recovery?.suggested"
+            [disabled]="busy() || isRunning(t) || isQueued(t)"
+            (click)="cmd === 'run' ? runTask() : openDanger('unlock')">
+            {{ cmd === 'run' ? '▶ دوباره اجرا کن' : '🔓 آزاد کردن قفل' }}
+            <em *ngIf="cmd === t.health?.recovery?.suggested"> — پیشنهاد Manager</em>
+          </button>
+        </div>
+      </section>
+
+      <section class="detail-section danger-zone" *ngIf="dangerOpen() === 'unlock'">
+        <small>فقط <code>.transition.lock</code> همین task را آزاد می‌کند (<code>unlock --reason-file</code>) — manifest، worktree و تاریخچه دست‌نخورده می‌مانند.</small>
+        <textarea [(ngModel)]="dangerReason" placeholder="دلیل آزاد کردن قفل…"></textarea>
+        <label class="force-check" *ngIf="t.health?.transitionLock?.alive === null">
+          <input type="checkbox" [(ngModel)]="dangerForce" /> مطمئنم — با <code>--force</code> اجرا کن (Manager نمی‌تواند زنده/مرده بودن این قفل را اثبات کند)
+        </label>
+        <div class="danger-confirm-actions">
+          <button class="secondary" (click)="closeDanger()">انصراف</button>
+          <button class="danger" [disabled]="busy() || !dangerReason.trim() || (t.health?.transitionLock?.alive === null && !dangerForce)" (click)="confirmDanger()">تأیید نهایی — آزاد کن</button>
+        </div>
+      </section>
+    </div>
   </ng-container>
 </aside>

@@ -2,7 +2,6 @@ export interface HumanGate {
   kind: 'spec-approval' | 'clarification' | 'merge-approval' | string;
   artifact?: string | null;
   since?: string | null;
-  legacy?: boolean;
 }
 
 export interface BudgetItem { used: number; max: number }
@@ -25,6 +24,47 @@ export interface SourceRef {
   fetchedAt?: string | null;
 }
 
+export interface EvidenceRow {
+  ac?: string | null;
+  case?: string | null;
+  check?: string | null;
+  verdict?: string | null;
+  basis?: string | null;
+  test?: string | null;
+}
+
+export interface VerifyStatus {
+  build: string[];
+  test: string[];
+  lint: string[];
+  disabled: { gate: string; reason: string | null }[];
+}
+
+export interface ReviewStatus {
+  attempt: string;
+  decision: string | null;
+  evidence: { acceptance: EvidenceRow[]; testCoverage: EvidenceRow[]; additionalChecks: EvidenceRow[] };
+  inconsistentWithReviewMd: boolean;
+  // 'missing': evidence: در result.yaml اصلاً نیست (Task قدیمی‌تر از قرارداد؛
+  // بی‌خطر، نباید قرمز نشان داده شود). 'malformed': هست ولی خراب/ناقص است.
+  evidenceStatus: 'ok' | 'missing' | 'malformed';
+  malformed: boolean;
+  problems: string[];
+}
+
+export interface HealthStatus {
+  transitionLock: { pid: number | null; alive: boolean | null; fromState: string | null; startedAt: string | null } | null;
+  dirtyPaths: string[];
+  stuck: boolean;
+  // «no-progress» هرگز از status --json نمی‌آید — کد خروج ۳۰ از run است،
+  // BarsaAgent از EXIT_LABELS[30] می‌خواندش (بازبینی فاز ۲، بند ۳).
+  stuckReasons: ('stale-lock' | 'dirty-worktree' | string)[];
+  // Manager حسابش می‌کند (computeRecovery در manager.js)، نه UI — تا منطق
+  // بازیابی دو نسخه‌ی drift-کننده نداشته باشد. «reset» عمداً در enum نیست:
+  // رد شد (0004: run خودش قفل کهنه‌ی pid-مرده را بی‌کمک انسان پس می‌گیرد).
+  recovery: { suggested: 'unlock' | 'run' | null; reason: string | null; commands: ('unlock' | 'run')[] } | null;
+}
+
 export interface Task {
   id: string;
   slug?: string;
@@ -39,20 +79,26 @@ export interface Task {
   budget?: Record<string, BudgetItem>;
   scope?: { allow?: string[]; deny?: string[]; exception?: unknown };
   scopeException?: unknown;
-  verify?: Record<string, unknown>;
   diff?: { files?: Array<{ path?: string; added?: number; deleted?: number }> } | null;
   worktree?: { status?: string | null; path?: string | null } | null;
-  git?: { base?: string | null; baseCommit?: string | null; headCommit?: string | null; mergeCommit?: string | null } | null;
+  git?: { base?: string | null; baseCommit?: string | null; headCommit?: string | null; mergeCommit?: string | null; branch?: string | null } | null;
   lastAttempt?: { n?: number; role?: string | null; outcome?: string | null; at?: string | null } | null;
   attempts?: Attempt[];
   artifacts?: string[];
   error?: string;
+  verify?: VerifyStatus | null;
+  review?: ReviewStatus | null;
+  health?: HealthStatus | null;
 }
 
 export interface Board {
-  schemaVersion: number;
+  // schemaVersion عمداً اینجا نیست (بازبینی فاز ۲، بند ج): هیچ‌جای UI آن را
+  // نمی‌خواند/نمی‌سنجد — سازگاری واقعی از capability handshake
+  // (repo.manager.contractVersion، چک‌شده در assertManagersCompatible هنگام
+  // startup) گرفته می‌شود. نگه‌داشتن یک فیلد تعریف‌شده‌ولی‌چک‌نشده یعنی دو
+  // شماره‌ی نسخه که می‌توانند بی‌سروصدا از هم عقب بمانند.
   generatedAt: string;
-  repo: { id: string; path: string; head?: string | null };
+  repo: { id: string; path: string; head?: string | null; mergedBy?: 'manager' | 'human' };
   tasks: Task[];
   error?: string;
 }
@@ -64,6 +110,7 @@ export interface ManagerInfo {
   managerVersion?: string | null;
   protocolVersion?: string | null;
   capabilities?: Record<string, unknown>;
+  statusFields?: { verify: boolean; review: boolean; health: boolean };
   errors?: string[];
 }
 

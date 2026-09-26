@@ -23,7 +23,18 @@ const EXIT_LABELS: Record<number, string> = {
   1: 'خطای اجرایی'
 };
 
-type Panel = 'task' | 'action' | 'issues' | 'create' | null;
+const DIFF_RENDER_LIMIT = 2000;
+
+const BLOCKER_LABELS: Record<string, { label: string; hint: string }> = {
+  'budget-exhausted': { label: 'بودجه تمام شد', hint: 'باید budget این نقش را در manifest دستی افزایش دهی یا task را ببندی.' },
+  'environment': { label: 'مشکل محیط', hint: 'خطای ابزار/محیط اجرا — لاگ اجرای آخر را ببین، نه spec یا کد.' },
+  'unsatisfiable-gate': { label: 'گیت غیرقابل‌عبور', hint: 'شرط verification با تنظیمات فعلی repository.yaml قابل برآورده‌شدن نیست.' },
+  'rebase-conflict': { label: 'تداخل rebase', hint: 'rebase خودکار conflict داد — نیاز به rebase دستی یا بررسی انسانی دارد.' },
+  'spec-churn': { label: 'نوسان spec', hint: 'چرخه‌ی respec زیاد تکرار شده — spec را مستقیم بررسی کن.' },
+  'attempts-exhausted': { label: 'سقف تلاش‌ها', hint: 'شمارنده‌ی سراسری attempts پر شده — task را ببند یا بودجه را دستی زیاد کن.' }
+};
+
+type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | null;
 
 @Component({
   selector: 'ba-root',
@@ -58,6 +69,9 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly actionArtifacts = signal<Record<string, string>>({});
   readonly selectedAttempt = signal<Attempt | null>(null);
   readonly attemptArtifacts = signal<Record<string, string>>({});
+  readonly diffText = signal('');
+  readonly diffHeadCommit = signal<string | null>(null);
+  readonly taskTab = signal<'overview' | 'diff'>('overview');
 
   readonly issues = signal<Issue[]>([]);
   readonly createDrafts = signal<CreateTaskDraft[]>([]);
@@ -72,7 +86,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
   reason = '';
   answerText = '';
+  respec = false;
   createStart = true;
+  dangerReason = '';
+  dangerForce = false;
+  readonly dangerOpen = signal<'void' | 'cancel' | 'unlock' | null>(null);
+  readonly mergeAck = signal(false);
+  private readonly openedHeadCommit = signal<string | null | undefined>(undefined);
 
   async ngOnInit(): Promise<void> {
     try {
@@ -123,7 +143,17 @@ export class AppComponent implements OnInit, OnDestroy {
       const selected = this.selected();
       if (selected) {
         const fresh = board.tasks.find(x => x.id === selected.id);
-        if (fresh) this.selected.set(fresh);
+        if (fresh) {
+          this.selected.set(fresh);
+          const watched = this.openedHeadCommit();
+          if (
+            this.panel() === 'action' && watched !== undefined &&
+            this.gateKind(fresh) === 'merge-approval' && (fresh.git?.headCommit ?? null) !== watched
+          ) {
+            this.info.set('headCommit تغییر کرد (مثلاً rebase خودکار) — گیت merge دوباره تازه شد؛ تأیید قبلی باطل است.');
+            await this.openTask(fresh, true);
+          }
+        }
       }
       if (!silent) this.error.set('');
     } catch (e) {
@@ -159,6 +189,30 @@ export class AppComponent implements OnInit, OnDestroy {
   gateKind(t: Task | null): string { return t?.awaitingHuman?.kind ?? ''; }
   gateLabel(t: Task): string {
     return ({ 'spec-approval': 'تأیید spec', clarification: 'پاسخ به سؤال', 'merge-approval': 'تأیید merge' } as Record<string, string>)[this.gateKind(t)] ?? 'اقدام انسانی';
+  }
+
+  mergeBranch(t: Task): string | null { return t.git?.branch || null; }
+  managerMerges(): boolean { return this.board()?.repo?.mergedBy === 'manager'; }
+  mergeCommand(t: Task): string | null { const b = this.mergeBranch(t); return b ? `git merge --no-ff ${b}` : null; }
+  async copyMergeCommand(t: Task): Promise<void> {
+    const command = this.mergeCommand(t);
+    if (!command) return;
+    try { await navigator.clipboard.writeText(command); this.info.set('دستور merge کپی شد.'); }
+    catch { this.error.set('کپی خودکار ممکن نشد؛ دستور را دستی انتخاب کن.'); }
+  }
+  blockerLabel(t: Task): string { const kind = t.blocker?.kind || ''; return BLOCKER_LABELS[kind]?.label ?? kind ?? '—'; }
+  blockerHint(t: Task): string { const kind = t.blocker?.kind || ''; return BLOCKER_LABELS[kind]?.hint ?? ''; }
+  disabledGatesTitle(t: Task): string { return (t.verify?.disabled ?? []).map(d => d.gate).join('، '); }
+  stuckReasonsLabel(t: Task): string {
+    // «بدون پیشرفت» اینجا نیست عمداً — آن از exitCodeFor(t)===30 می‌آید (EXIT_LABELS)، نه health.stuckReasons.
+    const labels: Record<string, string> = { 'stale-lock': 'قفل جامانده', 'dirty-worktree': 'تغییرات commit‌نشده' };
+    return (t.health?.stuckReasons ?? []).map(r => labels[r] ?? r).join(' · ') || 'نامشخص';
+  }
+  stuckReasonsTitle(t: Task): string {
+    const lock = t.health?.transitionLock;
+    const lockPart = lock ? `state=${lock.fromState || '—'}، شروع ${this.formatDate(lock.startedAt)}` : '';
+    const dirtyPart = (t.health?.dirtyPaths?.length ?? 0) > 0 ? `${t.health?.dirtyPaths?.length} مسیر commit‌نشده` : '';
+    return [lockPart, dirtyPart].filter(Boolean).join(' · ');
   }
 
   elapsed(iso?: string | null): string {
@@ -213,6 +267,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   currentRepo(): Repo | undefined { return this.repos().find(r => r.id === this.repoId()); }
+  hasStatusCapability(key: 'verify' | 'review' | 'health'): boolean { return this.currentRepo()?.manager?.statusFields?.[key] === true; }
   managerLabel(): string {
     const manager = this.currentRepo()?.manager;
     if (!manager) return 'Manager —';
@@ -266,7 +321,16 @@ export class AppComponent implements OnInit, OnDestroy {
       ]);
       this.selected.set(fresh);
       this.events.set(events);
-      if (action) await this.loadActionArtifacts(fresh); else await this.loadInitialTaskArtifact(fresh);
+      if (action) {
+        await this.loadActionArtifacts(fresh);
+        if (this.gateKind(fresh) === 'merge-approval') {
+          this.openedHeadCommit.set(fresh.git?.headCommit ?? null);
+          await this.loadDiff(fresh);
+        }
+      } else {
+        await this.loadInitialTaskArtifact(fresh);
+        await this.loadDiff(fresh);
+      }
       this.connectStream(fresh.id);
     } catch (e) { this.fail(e); }
   }
@@ -293,6 +357,18 @@ export class AppComponent implements OnInit, OnDestroy {
     finally { this.busy.set(false); }
   }
 
+  worktreeLive(t: Task): boolean { return t.worktree?.status === 'active' && !!t.worktree?.path; }
+  editorTitle(t: Task): string { return this.worktreeLive(t) ? 'باز کردن worktree در editor' : 'worktree این task زنده نیست'; }
+  async openEditor(t: Task, event?: Event): Promise<void> {
+    event?.stopPropagation();
+    this.busy.set(true); this.error.set('');
+    try {
+      const result = await firstValueFrom(this.api.openEditor(this.repoId(), t.id));
+      this.info.set(`editor برای ${result.worktreePath} باز شد.`);
+    } catch (e) { this.fail(e); }
+    finally { this.busy.set(false); }
+  }
+
   async answer(mode: 'approve' | 'reject' | 'clarify', route?: 'implementer' | 'architect'): Promise<void> {
     const t = this.selected();
     if (!t) return;
@@ -304,10 +380,56 @@ export class AppComponent implements OnInit, OnDestroy {
         mode,
         reason: this.reason.trim() || undefined,
         text: this.answerText.trim() || undefined,
-        route
+        route,
+        respec: mode === 'clarify' ? this.respec : undefined
       }));
       this.info.set(result.autoResumed ? 'تصمیم ثبت شد؛ task به‌صورت خودکار برای ادامه در صف اجرا قرار گرفت.' : 'تصمیم ثبت شد.');
       this.panel.set(null);
+      await this.refresh();
+    } catch (e) { this.fail(e); }
+    finally { this.busy.set(false); }
+  }
+
+  openDanger(kind: 'void' | 'cancel' | 'unlock'): void { this.dangerOpen.set(kind); this.dangerReason = ''; this.dangerForce = false; }
+  closeDanger(): void { this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; }
+
+  // نشان قرمز کارت — «بازیابی از داخل ابزار» بند ۳: پنل جدا، جدا از جزئیات
+  // معمولی task، تا کاربر مجبور نباشد اول تب Diff/جزئیات را رد کند تا به
+  // چیزی که واقعاً خراب است برسد.
+  openRecovery(t: Task, event?: Event): void {
+    event?.stopPropagation();
+    this.selected.set(t);
+    this.panel.set('recovery');
+  }
+
+  async confirmDanger(): Promise<void> {
+    const t = this.selected();
+    const kind = this.dangerOpen();
+    if (!t || !kind) return;
+    if (!this.dangerReason.trim()) { this.error.set('برای این عمل، دلیل الزامی است.'); return; }
+    this.busy.set(true); this.error.set('');
+    try {
+      const reason = this.dangerReason.trim();
+      const call =
+        kind === 'void' ? this.api.voidTask(this.repoId(), t.id, reason) :
+        kind === 'cancel' ? this.api.cancelTask(this.repoId(), t.id, reason) :
+        this.api.unlockTask(this.repoId(), t.id, reason, this.dangerForce);
+      await firstValueFrom(call);
+      this.info.set(kind === 'void' ? 'transition باطل شد.' : kind === 'cancel' ? 'task بسته شد.' : 'قفل آزاد شد.');
+      this.closeDanger();
+      this.panel.set(null);
+      await this.refresh();
+    } catch (e) { this.fail(e); }
+    finally { this.busy.set(false); }
+  }
+
+  async rebaseTask(): Promise<void> {
+    const t = this.selected();
+    if (!t) return;
+    this.busy.set(true); this.error.set('');
+    try {
+      await firstValueFrom(this.api.rebaseTask(this.repoId(), t.id));
+      this.info.set('rebase انجام شد.');
       await this.refresh();
     } catch (e) { this.fail(e); }
     finally { this.busy.set(false); }
@@ -334,6 +456,10 @@ export class AppComponent implements OnInit, OnDestroy {
   attemptArtifactEntries(): [string, string][] { return Object.entries(this.attemptArtifacts()); }
   diffFiles(t: Task): Array<{ path?: string; added?: number; deleted?: number }> { return t.diff?.files ?? []; }
   verifyText(t: Task): string { try { return JSON.stringify(t.verify ?? {}, null, 2); } catch { return String(t.verify ?? ''); } }
+  diffLineCount(): number { return this.diffText() ? this.diffText().split(/\r?\n/).length : 0; }
+  diffPreview(): string { return this.diffText().split(/\r?\n/).slice(0, DIFF_RENDER_LIMIT).join('\n'); }
+  diffTruncated(): boolean { return this.diffLineCount() > DIFF_RENDER_LIMIT; }
+  diffLimit(): number { return DIFF_RENDER_LIMIT; }
 
   eventLabel(e: AgentEvent): string {
     if (e.error) return 'رویداد خراب';
@@ -475,12 +601,20 @@ export class AppComponent implements OnInit, OnDestroy {
       paths = ['review.md'];
       const latest = t.attempts?.at(-1);
       if (latest) {
-        const useful = ['changes.diff', 'verification/summary.yaml', 'verification/build.log', 'verification/test.log', 'verification/lint.log'];
+        const useful = ['verification/summary.yaml', 'verification/build.log', 'verification/test.log', 'verification/lint.log'];
         paths.push(...useful.filter(x => latest.artifacts.includes(x)).map(x => `attempts/${latest.id}/${x}`));
       }
     } else if (t.awaitingHuman?.artifact) paths = [t.awaitingHuman.artifact];
     const values = await Promise.all(paths.map(async p => [p, await this.tryArtifact(t.id, p)] as const));
     this.actionArtifacts.set(Object.fromEntries(values.filter((entry): entry is readonly [string, string] => entry[1] !== null)));
+  }
+  async loadDiff(t: Task): Promise<void> {
+    const headCommit = t.git?.headCommit ?? null;
+    const value = await this.tryArtifact(t.id, 'changes.diff');
+    // changes.diff یک snapshot متعلق به گیت است؛ head کنار آن نگه داشته می‌شود تا
+    // کاربر بداند دقیقاً کدام commit را داوری می‌کند.
+    this.diffText.set(value ?? '');
+    this.diffHeadCommit.set(value === null ? null : headCommit);
   }
   private async tryArtifact(taskId: string, path: string): Promise<string | null> {
     try { return await firstValueFrom(this.api.artifact(this.repoId(), taskId, path)); } catch { return null; }
@@ -502,9 +636,11 @@ export class AppComponent implements OnInit, OnDestroy {
   }
   private closeStream(): void { this.source?.close(); this.source = undefined; }
   private resetPanelState(): void {
-    this.closeStream(); this.error.set(''); this.reason = ''; this.answerText = '';
+    this.closeStream(); this.error.set(''); this.reason = ''; this.answerText = ''; this.respec = false; this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; this.mergeAck.set(false); this.openedHeadCommit.set(undefined);
     this.events.set([]); this.logs.set([]); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
     this.actionArtifacts.set({}); this.selectedAttempt.set(null); this.attemptArtifacts.set({});
+    this.diffText.set(''); this.diffHeadCommit.set(null);
+    this.taskTab.set('overview');
   }
   private slugify(value: string, fallback: string): string {
     const slug = String(value || '').normalize('NFKC').toLowerCase().replace(/[\s_]+/g, '-').replace(/[^\p{L}\p{N}-]+/gu, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
