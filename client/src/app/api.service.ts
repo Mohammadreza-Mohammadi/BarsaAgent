@@ -23,7 +23,7 @@ export class ApiService {
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/open-editor`, {}
   );
   run = (repo: string, id: string) => this.http.post<{ accepted: boolean; queued?: boolean; queuePosition?: number | null }>(`/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/run`, {});
-  answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect'; respec?: boolean }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
+  answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect'; respec?: boolean; releaseNoteText?: string; noReleaseNote?: boolean }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/answer`, body
   );
   voidTask = (repo: string, id: string, reason: string) => this.http.post<{ ok: boolean }>(

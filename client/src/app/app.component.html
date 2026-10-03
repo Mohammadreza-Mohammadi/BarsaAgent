@@ -69,7 +69,7 @@
       <div class="cards">
         <article class="task" *ngFor="let t of tasksFor(lane.states)" [class.human]="t.awaitingHuman" [class.running]="isRunning(t)" [class.queued]="isQueued(t)" (click)="openTask(t)">
           <div class="task-top"><code>#{{t.id}}</code><span class="state">{{t.state}}</span></div>
-          <h3>{{t.title || t.slug || 'بدون عنوان'}}</h3>
+          <h3>{{t.releaseNote?.headline || t.title || t.slug || 'بدون عنوان'}}</h3>
           <span class="task-badge stuck" *ngIf="t.health?.stuck" [title]="stuckReasonsTitle(t)" (click)="openRecovery(t, $event)">🔒 گیرکرده — {{stuckReasonsLabel(t)}}</span>
           <span class="task-badge unknown-lock" *ngIf="!t.health?.stuck && t.health?.transitionLock?.alive === null" [title]="'قفل هست ولی زنده/مرده بودنش نامشخص است (pid یا host نامعتبر) — قرمز نیست چون اثبات نشده.'" (click)="openRecovery(t, $event)">؟ قفل نامشخص</span>
           <span class="task-badge gate-off" *ngIf="t.verify?.disabled?.length" [title]="'گیت‌های غیرفعال: ' + disabledGatesTitle(t)">⚠ گیت غیرفعال</span>
@@ -108,7 +108,7 @@
       <span class="eyebrow" *ngIf="panel() !== 'issues' && panel() !== 'create'">TASK {{selected()?.id || ''}}</span>
       <h2 *ngIf="panel() === 'issues'">صندوق issue</h2>
       <h2 *ngIf="panel() === 'create'">ساخت task</h2>
-      <h2 *ngIf="panel() !== 'issues' && panel() !== 'create'">{{selected()?.title || selected()?.slug || 'Task'}}</h2>
+      <h2 *ngIf="panel() !== 'issues' && panel() !== 'create'">{{selected()?.releaseNote?.headline || selected()?.title || selected()?.slug || 'Task'}}</h2>
     </div>
     <button (click)="closePanel()">×</button>
   </header>
@@ -156,6 +156,39 @@
   <ng-container *ngIf="panel() === 'action' && selected() as t">
     <div class="drawer-body">
       <div class="gate"><span>اقدام انسانی لازم است</span><h3>{{gateLabel(t)}}</h3><small>state تغییر نکرده؛ <code>awaitingHuman</code> یک gate مستقل است.</small></div>
+
+      <section class="release-note-card" *ngIf="gateKind(t) === 'spec-approval' || gateKind(t) === 'merge-approval'">
+        <header><b>متنی که کاربر بعد از merge می‌بیند</b><button class="secondary" *ngIf="t.releaseNote?.userVisible && !releaseNoteEditing()" (click)="copyReleaseNote(t)">کپی</button></header>
+
+        <ng-container *ngIf="!releaseNoteEditing()">
+          <ng-container *ngIf="t.releaseNote as rn; else noReleaseNoteYet">
+            <p class="release-note-headline" *ngIf="rn.userVisible"><b>{{rn.headline}}</b></p>
+            <div class="markdown" *ngIf="rn.userVisible" [innerHTML]="markdown(rn.body || '')"></div>
+            <p class="release-note-hidden" *ngIf="rn.userVisible === false">برای کاربر دیده نمی‌شود — دلیل: {{rn.body}}</p>
+            <p class="release-note-malformed" *ngIf="rn.malformed">⚠ release-note.md نامعتبر است: {{rn.problems?.join(' · ')}}</p>
+            <button class="secondary" (click)="startReleaseNoteEdit(t)">ویرایش متن</button>
+          </ng-container>
+          <ng-template #noReleaseNoteYet>
+            <p class="release-note-missing">این تسک قدیمی‌تر از قرارداد release-note است — release-note.md ندارد. قبل از تأیید، یکی از دو مسیر پایین را کامل کن.</p>
+          </ng-template>
+        </ng-container>
+
+        <ng-container *ngIf="releaseNoteEditing() || !t.releaseNote">
+          <label class="release-note-choice" *ngIf="!t.releaseNote">
+            <input type="checkbox" [(ngModel)]="releaseNoteNoNote">
+            <span>برای کاربر دیده نمی‌شود</span>
+          </label>
+          <label class="answer-box" *ngIf="!t.releaseNote && releaseNoteNoNote">
+            <span>چرا (اجباری)</span>
+            <textarea [(ngModel)]="releaseNoteReason" placeholder="مثلاً: ابزار داخلی؛ هیچ رفتار قابل‌مشاهده‌ای در محصول عوض نمی‌شود"></textarea>
+          </label>
+          <ng-container *ngIf="!releaseNoteNoNote || releaseNoteEditing()">
+            <label class="release-note-field"><span>عنوان (حداکثر ۷۲ کاراکتر)</span><input [(ngModel)]="releaseNoteHeadline" maxlength="72" placeholder="یک خط، زبان کاربر"></label>
+            <label class="release-note-field"><span>متن</span><textarea [(ngModel)]="releaseNoteBody" placeholder="حداکثر ۳ پاراگراف، زبان کاربر — نه نام فایل/متد/hash"></textarea></label>
+          </ng-container>
+          <button class="secondary" *ngIf="t.releaseNote" (click)="cancelReleaseNoteEdit()">انصراف از ویرایش</button>
+        </ng-container>
+      </section>
 
       <div class="comparison" [class.single]="actionArtifactEntries().length === 1">
         <section class="artifact-card" *ngFor="let entry of actionArtifactEntries()"><header><b>{{entry[0]}}</b></header><div class="markdown" [innerHTML]="markdown(entry[1])"></div></section>
@@ -233,11 +266,11 @@
     </div>
     <footer class="gate-footer">
       <button class="danger" [disabled]="busy() || !reason.trim()" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('reject')">رد</button>
-      <button class="primary" [disabled]="busy()" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('approve')">تأیید</button>
+      <button class="primary" [disabled]="busy() || releaseNoteBlocksApprove(t)" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('approve')">تأیید</button>
 
       <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim()" (click)="answer('reject','implementer')">رد → پیاده‌سازی</button><small>نقشه درست بود، اجرا نه؛ implementerRuns مصرف می‌شود.</small></div>
       <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim()" (click)="answer('reject','architect')">رد → معماری</button><small>نقشه غلط بود؛ budget پیاده‌سازی دست نمی‌خورد.</small></div>
-      <button class="primary" [disabled]="busy() || (!managerMerges() && !mergeAck())" *ngIf="gateKind(t) === 'merge-approval'" (click)="answer('approve')">{{managerMerges() ? 'تأیید و merge' : 'merge کردم، ببند'}}</button>
+      <button class="primary" [disabled]="busy() || (!managerMerges() && !mergeAck()) || releaseNoteBlocksApprove(t)" *ngIf="gateKind(t) === 'merge-approval'" (click)="answer('approve')">{{managerMerges() ? 'تأیید و merge' : 'merge کردم، ببند'}}</button>
       <button class="primary" [disabled]="busy() || !answerText.trim()" *ngIf="gateKind(t) === 'clarification'" (click)="answer('clarify')">ارسال پاسخ</button>
     </footer>
   </ng-container>
