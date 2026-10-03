@@ -319,11 +319,16 @@ export function createApp(config, deps = {}) {
         if (input.mode === 'reject' && !input.reason?.trim()) return send(res, 400, { error: 'دلیل رد الزامی است.' });
         if (input.mode === 'clarify' && !input.text?.trim()) return send(res, 400, { error: 'متن پاسخ الزامی است.' });
         if (input.route && !['implementer', 'architect'].includes(input.route)) return send(res, 400, { error: 'route نامعتبر است.' });
+        // release-note-at-merge.md، بند ه: همان دو مسیر answer سمت manager.js
+        // (--release-note-file / --no-release-note) — هیچ endpoint تازه.
+        if (input.releaseNoteText && input.noReleaseNote) return send(res, 400, { error: 'releaseNoteText و noReleaseNote با هم معنا ندارند.' });
+        if (input.noReleaseNote && !input.reason?.trim()) return send(res, 400, { error: 'برای "برای کاربر دیده نمی‌شود"، دلیل الزامی است.' });
 
         const repo = repoFor(p.repo);
         const args = ['answer', p.id, `--${input.mode}`];
         let tmp = null;
         let reasonTmp = null;
+        let releaseNoteTmp = null;
         try {
           if (input.mode === 'clarify') {
             tmp = path.join(os.tmpdir(), `barsa-clarification-${process.pid}-${randomUUID()}.txt`);
@@ -338,10 +343,17 @@ export function createApp(config, deps = {}) {
             args.push('--reason-file', reasonTmp);
           }
           if (input.route) args.push('--route', String(input.route));
+          if (input.releaseNoteText) {
+            releaseNoteTmp = path.join(os.tmpdir(), `barsa-release-note-${process.pid}-${randomUUID()}.md`);
+            fs.writeFileSync(releaseNoteTmp, String(input.releaseNoteText), { encoding: 'utf8', mode: 0o600 });
+            args.push('--release-note-file', releaseNoteTmp);
+          }
+          if (input.noReleaseNote) args.push('--no-release-note');
           await collectAction(repo, args);
         } finally {
           if (tmp) fs.rmSync(tmp, { force: true });
           if (reasonTmp) fs.rmSync(reasonTmp, { force: true });
+          if (releaseNoteTmp) fs.rmSync(releaseNoteTmp, { force: true });
         }
         const resumed = runConfig.autoResumeAfterAnswer ? queueTask(repo, p.id) : { queued: false, started: false };
         return send(res, 200, { ok: true, autoResumed: runConfig.autoResumeAfterAnswer, ...resumed });

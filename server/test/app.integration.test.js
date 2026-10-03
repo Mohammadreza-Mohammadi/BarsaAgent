@@ -279,6 +279,65 @@ else process.exit(0);
   assert.equal(captured.clarifyText, 'پاسخ');
 });
 
+// release-note-at-merge.md، بند ه: releaseNoteText از فایل موقت mode 0o600
+// می‌رود (نه argv خام)، و noReleaseNote بدون reason قبل از صدا زدن manager.js
+// با ۴۰۰ رد می‌شود — هیچ فرمان/endpoint تازه، همان answer موجود.
+test('answer با releaseNoteText از فایل موقت --release-note-file می‌رود، با mode 0o600، و بعد پاک می‌شود', async t => {
+  const repo = makeFakeRepo(t);
+  const capture = path.join(repo.path, 'capture.json');
+  let capturedPath = null;
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const fs=require('node:fs'); const path=require('node:path'); const args=process.argv.slice(2); const cmd=args[0];
+if(cmd==='answer'){
+  const ri=args.indexOf('--release-note-file'); const file = ri>=0?args[ri+1]:null;
+  fs.writeFileSync(path.join(process.cwd(),'capture.json'),JSON.stringify({ args, file, text: file?fs.readFileSync(file,'utf8'):null }));
+  process.stdout.write(JSON.stringify({ok:true}));
+} else if(cmd==='status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, run: { autoResumeAfterAnswer: false }, issueSource: {} });
+
+  const noteText = '---\nuserVisible: true\nheadline: "عنوان"\n---\n\nبدنه';
+  const response = await fetch(`${base}/api/repos/fake/tasks/0005/answer`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'approve', releaseNoteText: noteText })
+  });
+  assert.equal(response.status, 200);
+  const captured = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.ok(captured.args.includes('--release-note-file'));
+  assert.equal(captured.text, noteText);
+  capturedPath = captured.file;
+  assert.ok(capturedPath, 'مسیر فایل موقت باید ثبت شده باشد');
+  assert.equal(fs.existsSync(capturedPath), false, 'فایل موقت باید بعد از answer پاک شده باشد');
+});
+
+test('answer با noReleaseNote بدون reason، قبل از صدا زدن manager.js با 400 رد می‌شود', async t => {
+  const repo = makeFakeRepo(t);
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const args=process.argv.slice(2); const cmd=args[0];
+if(cmd==='answer'){ process.stderr.write('باید اصلاً صدا زده نشود'); process.exit(1); }
+else if(cmd==='status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, run: { autoResumeAfterAnswer: false }, issueSource: {} });
+
+  const response = await fetch(`${base}/api/repos/fake/tasks/0006/answer`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'approve', noReleaseNote: true })
+  });
+  assert.equal(response.status, 400);
+});
+
+test('answer با هم releaseNoteText هم noReleaseNote → 400 (دو فلگ متضاد)', async t => {
+  const repo = makeFakeRepo(t);
+  const base = await startServer(t, { repos: [repo], server: {}, run: { autoResumeAfterAnswer: false }, issueSource: {} });
+  const response = await fetch(`${base}/api/repos/fake/tasks/0007/answer`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'approve', releaseNoteText: 'x', noReleaseNote: true, reason: 'چرا' })
+  });
+  assert.equal(response.status, 400);
+});
+
 test('void/cancel/rebase مسیرهای جدید manager.js را با --reason-file صدا می‌زنند', async t => {
   const repo = makeFakeRepo(t);
   const capture = path.join(repo.path, 'capture.json');

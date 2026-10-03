@@ -65,6 +65,19 @@ export interface HealthStatus {
   recovery: { suggested: 'unlock' | 'run' | null; reason: string | null; commands: ('unlock' | 'run')[] } | null;
 }
 
+// release-note-at-merge.md، بند د/ه: متن کاربرپسندِ جدا از ai-context/changelog/<id>.md
+// (آن یکی برای توسعه‌دهنده است). null یعنی release-note.md نیست (تسک قدیمی‌تر
+// از این قرارداد) — نه {}، فرق «نیست» با «هست ولی خالی» باید از نوع معلوم باشد.
+export interface ReleaseNoteStatus {
+  userVisible: boolean | null;
+  headline?: string | null;
+  body?: string | null;
+  approvedByHuman: boolean;
+  artifactPath?: string | null;
+  malformed?: boolean;
+  problems?: string[];
+}
+
 export interface Task {
   id: string;
   slug?: string;
@@ -94,6 +107,7 @@ export interface Task {
   verify?: VerifyStatus | null;
   review?: ReviewStatus | null;
   health?: HealthStatus | null;
+  releaseNote?: ReleaseNoteStatus | null;
 }
 
 export interface Board {

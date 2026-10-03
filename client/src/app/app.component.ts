@@ -89,6 +89,15 @@ export class AppComponent implements OnInit, OnDestroy {
   reason = '';
   answerText = '';
   respec = false;
+  // release-note-at-merge.md، بند ه: پیش‌فرض پذیرشِ متن Intake بدون دست‌زدن
+  // است — این فیلدها فقط وقتی واقعاً استفاده می‌شوند که کاربر صریحاً «ویرایش
+  // متن» را باز کند، یا task.releaseNote===null باشد (تسک قدیمی‌تر از قرارداد،
+  // جایی که یکی از دو مسیر اجباری است).
+  readonly releaseNoteEditing = signal(false);
+  releaseNoteHeadline = '';
+  releaseNoteBody = '';
+  releaseNoteNoNote = false;
+  releaseNoteReason = '';
   createStart = true;
   dangerReason = '';
   dangerForce = false;
@@ -411,20 +420,72 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!t) return;
     if (mode === 'reject' && !this.reason.trim()) { this.error.set('برای رد کردن، دلیل الزامی است.'); return; }
     if (mode === 'clarify' && !this.answerText.trim()) { this.error.set('متن پاسخ را وارد کنید.'); return; }
+    if (mode === 'approve' && this.releaseNoteBlocksApprove(t)) { this.error.set('قبل از تأیید، متن کاربرپسند (یا دلیل نبودش) را کامل کن.'); return; }
     this.busy.set(true); this.error.set('');
+    // release-note-at-merge.md، بند ه: فقط وقتی override واقعاً خواسته شده
+    // (edit باز است، یا تسک قدیمی release-note ندارد) فیلدهای تازه می‌روند —
+    // در غیر این صورت پیش‌فرض Manager (پذیرش بدون دست‌زدن) دست نمی‌خورد.
+    let releaseNoteText: string | undefined;
+    let noReleaseNote: boolean | undefined;
+    let releaseNoteReasonToSend: string | undefined;
+    if (mode === 'approve' && (this.gateKind(t) === 'spec-approval' || this.gateKind(t) === 'merge-approval')) {
+      const mustOverride = t.releaseNote == null || this.releaseNoteEditing();
+      if (mustOverride) {
+        if (t.releaseNote == null && this.releaseNoteNoNote) {
+          noReleaseNote = true;
+          releaseNoteReasonToSend = this.releaseNoteReason.trim();
+        } else {
+          releaseNoteText = this.buildReleaseNoteOverrideText(this.releaseNoteHeadline.trim(), this.releaseNoteBody.trim());
+        }
+      }
+    }
     try {
       const result = await firstValueFrom(this.api.answer(this.repoId(), t.id, {
         mode,
-        reason: this.reason.trim() || undefined,
+        reason: mode === 'reject' ? (this.reason.trim() || undefined) : releaseNoteReasonToSend,
         text: this.answerText.trim() || undefined,
         route,
-        respec: mode === 'clarify' ? this.respec : undefined
+        respec: mode === 'clarify' ? this.respec : undefined,
+        releaseNoteText,
+        noReleaseNote
       }));
       this.info.set(result.autoResumed ? 'تصمیم ثبت شد؛ task به‌صورت خودکار برای ادامه در صف اجرا قرار گرفت.' : 'تصمیم ثبت شد.');
       this.panel.set(null);
       await this.refresh();
     } catch (e) { this.fail(e); }
     finally { this.busy.set(false); }
+  }
+
+  // --- release-note-at-merge.md، بند ه ---
+
+  releaseNoteBlocksApprove(t: Task): boolean {
+    const kind = this.gateKind(t);
+    if (kind !== 'spec-approval' && kind !== 'merge-approval') return false;
+    if (t.releaseNote == null) {
+      if (this.releaseNoteNoNote) return !this.releaseNoteReason.trim();
+      return !this.releaseNoteHeadline.trim() || !this.releaseNoteBody.trim();
+    }
+    if (this.releaseNoteEditing()) return !this.releaseNoteHeadline.trim() || !this.releaseNoteBody.trim();
+    return false;
+  }
+
+  startReleaseNoteEdit(t: Task): void {
+    this.releaseNoteHeadline = t.releaseNote?.userVisible ? (t.releaseNote.headline || '') : '';
+    this.releaseNoteBody = t.releaseNote?.userVisible ? (t.releaseNote.body || '') : '';
+    this.releaseNoteEditing.set(true);
+  }
+  cancelReleaseNoteEdit(): void { this.releaseNoteEditing.set(false); }
+
+  private buildReleaseNoteOverrideText(headline: string, body: string): string {
+    const escaped = headline.replace(/"/g, '\\"');
+    return `---\nuserVisible: true\nheadline: "${escaped}"\n---\n\n${body}\n`;
+  }
+
+  async copyReleaseNote(t: Task): Promise<void> {
+    const text = t.releaseNote?.userVisible ? (t.releaseNote.body || '') : '';
+    if (!text) return;
+    try { await navigator.clipboard.writeText(text); this.info.set('متن کپی شد.'); }
+    catch { this.error.set('کپی خودکار ممکن نشد؛ متن را دستی انتخاب کن.'); }
   }
 
   openDanger(kind: 'void' | 'cancel' | 'unlock'): void { this.dangerOpen.set(kind); this.dangerReason = ''; this.dangerForce = false; }
@@ -755,6 +816,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private closeStream(): void { this.source?.close(); this.source = undefined; }
   private resetPanelState(): void {
     this.closeStream(); this.error.set(''); this.reason = ''; this.answerText = ''; this.respec = false; this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; this.mergeAck.set(false); this.openedHeadCommit.set(undefined);
+    this.releaseNoteEditing.set(false); this.releaseNoteHeadline = ''; this.releaseNoteBody = ''; this.releaseNoteNoNote = false; this.releaseNoteReason = '';
     this.events.set([]); this.logs.set([]); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
     this.actionArtifacts.set({}); this.selectedAttempt.set(null); this.attemptArtifacts.set({});
     this.diffText.set(''); this.diffHeadCommit.set(null); this.diffSelectedFile.set(null); this.diffLoaded.set(false);
