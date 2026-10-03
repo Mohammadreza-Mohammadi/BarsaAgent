@@ -32,7 +32,7 @@ C:/ng-web-systemsaz-1/scripts/manager.js
 
 BarsaAgent مستقیم `.agent-work` را نمی‌خواند/نمی‌نویسد و git اجرا نمی‌کند.
 
-## امکانات v1.2
+## امکانات
 
 - Kanban با polling سه‌ثانیه‌ای
 - نوار «منتظر تو» برای gateهای انسانی
@@ -41,9 +41,15 @@ BarsaAgent مستقیم `.agent-work` را نمی‌خواند/نمی‌نویس
 - import ترتیبی؛ شکست یک مورد بقیه را متوقف نمی‌کند
 - Queue اجرای Manager با `maxConcurrent`
 - `autoStartOnCreate`
-- `autoResumeAfterAnswer`
-- clarification از فایل موقت (`--clarify --file`)، نه argv
+- `autoResumeAfterAnswer` — بعد از هر answer موفق، run خودکار دوباره صف می‌شود
+- **متن آزاد همیشه از فایل موقت UTF-8 می‌رود، هرگز argv** — clarify، دلیل رد (spec و merge)، دلیل void/cancel
+- clarification با چک‌باکس `--respec`: تیک‌خورده یعنی spec عوض شده، گیت spec-approval دوباره باز می‌شود؛ تیک‌نخورده یعنی فقط رفع ابهام
 - merge rejection با دو route مستقل: implementer / architect
+- گیت merge-approval دو-مرحله‌ای: دستور `git merge --no-ff` آماده‌ی کپی + هشدار commitlint، بعد «merge کردم، ببند»؛ Manager هرگز خودش merge نمی‌کند
+- evidence table داوری (`evidence.acceptance`/`testCoverage`/`additionalChecks`) و هشدار گیت‌های verification غیرفعال (مثل `lint: []`) در پنل merge
+- headCommit اگر بعد از باز شدن گیت merge عوض شود (rebase خودکار)، پنل خودش را تازه می‌کند
+- void/cancel/rebase دستی از UI، پشت تأیید دوم و دلیل اجباری
+- نشان «گیرکرده» روی کارت وقتی `.transition.lock` جامانده باشد
 - SSE + ring buffer لاگ
 - mask کردن tokenها
 - health bar از `npm run validate-agent-work`
@@ -74,7 +80,7 @@ issueSource:
   method: "POST"
   bodyFormat: "json"
   body:
-    UserId: "20b785b0-db71-4507-9757-b5280460b0cb"
+    UserId: "${BARSA_ISSUE_USER_ID}"
   itemsPath: "data.items"
   mapping:
     externalId: "externalId"
@@ -100,29 +106,42 @@ issueSource:
 
 ### spec-approval
 
-نمایش `request.md` کنار `proposed-task.md`:
+نمایش `request.md` کنار `proposed-task.md`. دلیل رد هم از فایل موقت می‌رود:
 
 ```text
 answer <id> --approve
-answer <id> --reject --reason "..."
+answer <id> --reject --reason-file <tmp.txt>
 ```
 
 ### clarification
 
-نمایش `questions.md` + `request.md` + `task.md`. پاسخ در فایل موقت UTF-8:
+نمایش `questions.md` + `request.md` + `task.md`. پاسخ در فایل موقت UTF-8؛ چک‌باکس `--respec` کنار textarea:
 
 ```text
 answer <id> --clarify --file <tmp.txt>
+answer <id> --clarify --file <tmp.txt> --respec
 ```
 
 ### merge-approval
 
-نمایش `review.md`، verification، diff در صورت وجود و scope:
+نمایش `review.md`، evidence table داوری (اگر Manager فیلد `review` را در status بدهد)، verification، diff در صورت وجود، scope، و هشدار هر گیت verification غیرفعال. تأیید دو-مرحله‌ای است: اول دستور `git merge --no-ff agent/<id>-<slug>` کپی می‌شود (merge کار انسان است، نه Manager)، بعد:
 
 ```text
 answer <id> --approve
-answer <id> --reject --reason "..." --route implementer
-answer <id> --reject --reason "..." --route architect
+answer <id> --reject --reason-file <tmp.txt> --route implementer
+answer <id> --reject --reason-file <tmp.txt> --route architect
+```
+
+اگر بعد از باز شدن گیت `headCommit` عوض شود (مثلاً rebase خودکار)، پنل خودش را تازه می‌کند و تأیید قبلی را باطل می‌داند.
+
+### void / cancel / rebase
+
+پشت یک تأیید دوم، دلیل اجباری برای دو تای اول:
+
+```text
+void <id> --reason-file <tmp.txt>
+cancel <id> --reason-file <tmp.txt>
+rebase <id>
 ```
 
 ## Queue
@@ -144,7 +163,13 @@ Task اضافه با نشان «در صف» دیده می‌شود. هر task ف
 POST https://portal.barsasoft.com/api2/Issue/0.1/GetIssues
 Content-Type: application/json
 
-{"UserId":"20b785b0-db71-4507-9757-b5280460b0cb"}
+{"UserId":"<BARSA_ISSUE_USER_ID env>"}
+```
+
+`UserId` دیگر در `barsa-agent.config.yml` خام نیست — از `${BARSA_ISSUE_USER_ID}` جایگزین می‌شود (همان قاعده‌ی توکن‌ها، بازبینی فاز ۲):
+
+```powershell
+$env:BARSA_ISSUE_USER_ID = "20b785b0-db71-4507-9757-b5280460b0cb"
 ```
 
 اگر BarsaWebService یک string حاوی JSON را دوباره serialize کند، adapter inner JSON را خودکار parse می‌کند.

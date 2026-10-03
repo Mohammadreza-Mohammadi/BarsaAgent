@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev:server": "node --watch server/src/index.js",
-    "dev:client": "ng serve --project barsa-agent --proxy-config client/proxy.conf.json",
+    "dev:client": "ng serve --project barsa-agent --port 4400 --proxy-config client/proxy.conf.json",
     "build": "ng build --project barsa-agent --configuration production",
     "start": "node server/src/index.js",
     "test": "node --test server/test/*.test.js",

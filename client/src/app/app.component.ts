@@ -71,6 +71,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly attemptArtifacts = signal<Record<string, string>>({});
   readonly diffText = signal('');
   readonly diffHeadCommit = signal<string | null>(null);
+  readonly diffSelectedFile = signal<string | null>(null);
+  readonly diffLoaded = signal(false);
   readonly taskTab = signal<'overview' | 'diff'>('overview');
 
   readonly issues = signal<Issue[]>([]);
@@ -108,7 +110,10 @@ export class AppComponent implements OnInit, OnDestroy {
     } finally {
       this.loading.set(false);
     }
-    this.poll = window.setInterval(() => void this.refresh(true), 3000);
+    this.poll = window.setInterval(() => {
+      if (this.panel() === 'task' || this.panel() === 'action') return;
+      void this.refresh(true);
+    }, 3000);
   }
 
   ngOnDestroy(): void {
@@ -144,7 +149,18 @@ export class AppComponent implements OnInit, OnDestroy {
       if (selected) {
         const fresh = board.tasks.find(x => x.id === selected.id);
         if (fresh) {
-          this.selected.set(fresh);
+          if (this.panel() === 'task') {
+            const detailBody = document.querySelector<HTMLElement>('.task-detail');
+            const scrollTop = detailBody?.scrollTop;
+            this.selected.set(fresh);
+            if (detailBody && scrollTop !== undefined) {
+              requestAnimationFrame(() => {
+                if (detailBody.isConnected) detailBody.scrollTop = scrollTop;
+              });
+            }
+          } else {
+            this.selected.set(fresh);
+          }
           const watched = this.openedHeadCommit();
           if (
             this.panel() === 'action' && watched !== undefined &&
@@ -351,7 +367,6 @@ export class AppComponent implements OnInit, OnDestroy {
         }
       } else {
         await this.loadInitialTaskArtifact(fresh);
-        await this.loadDiff(fresh);
       }
       this.connectStream(fresh.id);
     } catch (e) { this.fail(e); }
@@ -476,12 +491,84 @@ export class AppComponent implements OnInit, OnDestroy {
 
   actionArtifactEntries(): [string, string][] { return Object.entries(this.actionArtifacts()); }
   attemptArtifactEntries(): [string, string][] { return Object.entries(this.attemptArtifacts()); }
-  diffFiles(t: Task): Array<{ path?: string; added?: number; deleted?: number }> { return t.diff?.files ?? []; }
+  // فقط تغییرات زیر src/ برای بررسی مرتبط‌اند — چیزهایی مثل ai-context دفترداری‌اند، نه کد.
+  diffFiles(t: Task): Array<{ path?: string; added?: number; deleted?: number; status?: string; inScope?: boolean }> {
+    return (t.diff?.files ?? []).filter(f => this.isSourceFile(f.path));
+  }
+  private isSourceFile(path?: string | null): boolean {
+    if (!path) return false;
+    const p = path.replace(/\\/g, '/');
+    return p === 'src' || p.startsWith('src/') || p.includes('/src/');
+  }
   verifyText(t: Task): string { try { return JSON.stringify(t.verify ?? {}, null, 2); } catch { return String(t.verify ?? ''); } }
-  diffLineCount(): number { return this.diffText() ? this.diffText().split(/\r?\n/).length : 0; }
-  diffPreview(): string { return this.diffText().split(/\r?\n/).slice(0, DIFF_RENDER_LIMIT).join('\n'); }
+  // خروجی فیلترشده‌ی هم‌ارز diffText — فقط بخش‌های src/؛ اگر مرزبندی per-file
+  // قابل تشخیص نبود (مثلاً artifact خالی)، بدون فیلتر برمی‌گردد تا چیزی از دست نرود.
+  private sourceDiffText(): string {
+    const full = this.diffText();
+    if (!full) return '';
+    const segments = this.diffSegments(full);
+    if (!segments.size) return full;
+    return [...segments.entries()].filter(([path]) => this.isSourceFile(path)).map(([, seg]) => seg).join('\n');
+  }
+  diffLineCount(): number { const text = this.sourceDiffText(); return text ? text.split(/\r?\n/).length : 0; }
+  diffPreview(): string { return this.sourceDiffText().split(/\r?\n/).slice(0, DIFF_RENDER_LIMIT).join('\n'); }
   diffTruncated(): boolean { return this.diffLineCount() > DIFF_RENDER_LIMIT; }
   diffLimit(): number { return DIFF_RENDER_LIMIT; }
+  // headCommit این diff دقیقاً همان بلوک artifact است که تولید شده؛ اگر با
+  // git.headCommit تازهٔ task نمی‌خواند یعنی rebase/تغییری بعد از تولید diff
+  // رخ داده — تأیید باید به همان commit تعلق داشته باشد که دیده شده.
+  diffStale(t: Task): boolean {
+    const diffHead = t.diff?.headCommit;
+    const gitHead = t.git?.headCommit;
+    return !!diffHead && !!gitHead && diffHead !== gitHead;
+  }
+  selectDiffFile(path: string | null): void { this.diffSelectedFile.set(path); }
+  diffDisplayText(): string {
+    const sel = this.diffSelectedFile();
+    if (!sel) return this.diffPreview();
+    const segment = this.diffSegments(this.diffText()).get(sel);
+    return segment ? segment.split(/\r?\n/).slice(0, DIFF_RENDER_LIMIT).join('\n') : 'hunk این فایل در artifact پیدا نشد.';
+  }
+  diffDisplayTruncated(): boolean {
+    const sel = this.diffSelectedFile();
+    if (!sel) return this.diffTruncated();
+    const segment = this.diffSegments(this.diffText()).get(sel) ?? '';
+    return segment.split(/\r?\n/).length > DIFF_RENDER_LIMIT;
+  }
+  diffColorize(text: string): string {
+    return text.split(/\r?\n/).map(line => {
+      const esc = this.escapeHtml(line);
+      if (/^(\+\+\+|---) /.test(line)) return `<span class="diff-file-line">${esc}</span>`;
+      if (line.startsWith('+')) return `<span class="diff-add">${esc}</span>`;
+      if (line.startsWith('-')) return `<span class="diff-del">${esc}</span>`;
+      if (line.startsWith('@@')) return `<span class="diff-hunk">${esc}</span>`;
+      return `<span>${esc || ' '}</span>`;
+    }).join('\n');
+  }
+  // پچ خام یک رشته‌ی تخت است؛ تقسیم به فایل روی مرز «diff --git» و مسیر از
+  // اولین خط --- a/ یا +++ b/ همان بخش گرفته می‌شود تا با path در diff.files بخواند.
+  private diffSegments(text: string): Map<string, string> {
+    const map = new Map<string, string>();
+    if (!text) return map;
+    let current: string[] = [];
+    let currentPath: string | null = null;
+    const flush = () => { if (currentPath && current.length) map.set(currentPath, current.join('\n')); };
+    for (const line of text.split(/\r?\n/)) {
+      if (line.startsWith('diff --git ')) { flush(); current = [line]; currentPath = null; continue; }
+      current.push(line);
+      if (currentPath === null) {
+        const m = /^\+\+\+ b\/(.+)$/.exec(line) || /^--- a\/(.+)$/.exec(line);
+        if (m) currentPath = m[1];
+      }
+    }
+    flush();
+    return map;
+  }
+  openDiffTab(): void {
+    this.taskTab.set('diff');
+    const t = this.selected();
+    if (t && !this.diffLoaded()) void this.loadDiff(t);
+  }
 
   eventLabel(e: AgentEvent): string {
     if (e.error) return 'رویداد خراب';
@@ -631,12 +718,21 @@ export class AppComponent implements OnInit, OnDestroy {
     this.actionArtifacts.set(Object.fromEntries(values.filter((entry): entry is readonly [string, string] => entry[1] !== null)));
   }
   async loadDiff(t: Task): Promise<void> {
-    const headCommit = t.git?.headCommit ?? null;
-    const value = await this.tryArtifact(t.id, 'changes.diff');
-    // changes.diff یک snapshot متعلق به گیت است؛ head کنار آن نگه داشته می‌شود تا
-    // کاربر بداند دقیقاً کدام commit را داوری می‌کند.
+    this.diffSelectedFile.set(null);
+    // مسیر artifact خام diff همیشه از خود task می‌آید (t.diff.artifactPath) —
+    // UI هرگز نباید حدس بزند کدام attempt آن را دارد (همان اشتباهی که با
+    // نام ثابت changes.diff در ریشه‌ی task ساخته شده بود).
+    const artifactPath = t.diff?.artifactPath;
+    if (!artifactPath) {
+      this.diffText.set('');
+      this.diffHeadCommit.set(null);
+      this.diffLoaded.set(true);
+      return;
+    }
+    const value = await this.tryArtifact(t.id, artifactPath);
     this.diffText.set(value ?? '');
-    this.diffHeadCommit.set(value === null ? null : headCommit);
+    this.diffHeadCommit.set(value === null ? null : (t.diff?.headCommit ?? null));
+    this.diffLoaded.set(true);
   }
   private async tryArtifact(taskId: string, path: string): Promise<string | null> {
     try { return await firstValueFrom(this.api.artifact(this.repoId(), taskId, path)); } catch { return null; }
@@ -661,7 +757,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.closeStream(); this.error.set(''); this.reason = ''; this.answerText = ''; this.respec = false; this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; this.mergeAck.set(false); this.openedHeadCommit.set(undefined);
     this.events.set([]); this.logs.set([]); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
     this.actionArtifacts.set({}); this.selectedAttempt.set(null); this.attemptArtifacts.set({});
-    this.diffText.set(''); this.diffHeadCommit.set(null);
+    this.diffText.set(''); this.diffHeadCommit.set(null); this.diffSelectedFile.set(null); this.diffLoaded.set(false);
     this.taskTab.set('overview');
   }
   private slugify(value: string, fallback: string): string {

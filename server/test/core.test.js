@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fetchIssues, normalizeIssues } from '../src/issues.js';
 import { redact } from '../src/security.js';
-import { parseConfigYaml } from '../src/config.js';
+import { parseConfigYaml, loadConfig } from '../src/config.js';
+import { collect } from '../src/cli.js';
 
 test('mapping مسیر نقطه‌ای و itemsPath را اعمال می‌کند', () => {
   const source = { itemsPath: 'data.items', mapping: { externalId: 'key', title: 'fields.subject', body: 'fields.description', labels: 'tags' } };
@@ -11,6 +15,34 @@ test('mapping مسیر نقطه‌ای و itemsPath را اعمال می‌کن�
   assert.equal(result.title, 'نمونه');
   assert.equal(result.body, 'متن');
   assert.deepEqual(result.labels, ['bug']);
+});
+
+test('collect: کاراکتر چندبایتی فارسی روی مرز chunk نمی‌شکند', async t => {
+  // "س" دو بایت UTF-8 است (0xD8 0xB3). بافر را دقیقاً وسط یکی از این
+  // کاراکترها به دو نوشتن جدا با یک تیک فاصله می‌شکنیم تا مطمئن شویم دو
+  // 'data' event جدا به parent می‌رسد، نه یک chunk یکجا.
+  const payload = JSON.stringify({ title: 'تست '.repeat(2000) + 'س'.repeat(50000) });
+  const buf = Buffer.from(payload, 'utf8');
+  const splitAt = buf.length - 50000 * 2 + 1; // یک بایت داخل یکی از جفت‌بایت‌های تکرارشونده‌ی "س"
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-utf8-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const manager = path.join(root, 'manager.cjs');
+  fs.writeFileSync(
+    manager,
+    String.raw`
+const payload = ${JSON.stringify(payload)};
+const buf = Buffer.from(payload, 'utf8');
+const splitAt = ${splitAt};
+process.stdout.write(buf.subarray(0, splitAt));
+setTimeout(() => { process.stdout.write(buf.subarray(splitAt)); }, 20);
+`,
+    'utf8'
+  );
+
+  const result = await collect({ id: 'fake', path: root, managerScript: 'manager.cjs' }, []);
+  assert.equal(result.stdout, payload);
+  assert.doesNotMatch(result.stdout, /�/, 'باید بدون replacement character (mojibake) باشد');
 });
 
 test('توکن‌ها در لاگ ماسک می‌شوند', () => {
@@ -26,6 +58,23 @@ test('کانفیگ چند مخزنی و mapping تو در تو parse می‌شو
   assert.equal(x.issueSource.mapping.title, 'subject');
   const inline = parseConfigYaml('issueSource:\n  query: { status: \"open\", take: 50 }\n');
   assert.deepEqual(inline.issueSource.query, { status: 'open', take: 50 });
+});
+
+test('loadConfig: "${VAR}" در کانفیگ از process.env جایگزین می‌شود، مقدار خام در فایل نمی‌ماند', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-agent-config-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'cfg.yml');
+  fs.writeFileSync(file, 'repos:\n  - id: fake\n    path: "."\nissueSource:\n  body:\n    UserId: "${TEST_USER_ID}"\n', 'utf8');
+  const config = loadConfig(file, { TEST_USER_ID: 'abc-123' });
+  assert.equal(config.issueSource.body.UserId, 'abc-123');
+});
+
+test('loadConfig: "${VAR}" بدون env متناظر → خطای صریح، نه مقدار خالی بی‌صدا', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-agent-config-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'cfg.yml');
+  fs.writeFileSync(file, 'repos:\n  - id: fake\n    path: "."\nissueSource:\n  body:\n    UserId: "${TEST_USER_ID_MISSING}"\n', 'utf8');
+  assert.throws(() => loadConfig(file, {}), /TEST_USER_ID_MISSING/);
 });
 
 

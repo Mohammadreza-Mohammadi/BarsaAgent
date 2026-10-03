@@ -17,6 +17,12 @@ function collectChild(child) {
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
+    // setEncoding به‌جای Buffer+=string: یک StringDecoder پایدار روی هر استریم
+    // نگه می‌دارد که مرز chunk را رعایت می‌کند. بدون آن، یک کاراکتر چندبایتی
+    // فارسی که وسط دو chunk بیفتد هرکدام جدا toString می‌شوند و می‌شکند —
+    // امروز با خروجی کوچک status --json دیده نمی‌شود، ولی با بزرگ‌شدن board رخ می‌دهد.
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', d => { stdout += d; });
     child.stderr?.on('data', d => { stderr += d; });
     child.on('error', reject);

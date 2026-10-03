@@ -79,7 +79,12 @@ export interface Task {
   budget?: Record<string, BudgetItem>;
   scope?: { allow?: string[]; deny?: string[]; exception?: unknown };
   scopeException?: unknown;
-  diff?: { files?: Array<{ path?: string; added?: number; deleted?: number }> } | null;
+  diff?: {
+    headCommit?: string | null;
+    baseCommit?: string | null;
+    files?: Array<{ path?: string; added?: number; deleted?: number; status?: 'added' | 'modified' | 'deleted' | 'renamed' | string; inScope?: boolean }>;
+    artifactPath?: string | null;
+  } | null;
   worktree?: { status?: string | null; path?: string | null } | null;
   git?: { base?: string | null; baseCommit?: string | null; headCommit?: string | null; mergeCommit?: string | null; branch?: string | null } | null;
   lastAttempt?: { n?: number; role?: string | null; outcome?: string | null; at?: string | null } | null;

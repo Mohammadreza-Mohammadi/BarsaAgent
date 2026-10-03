@@ -174,13 +174,25 @@
 
         <section class="diff-view">
           <header><div><h4>تغییرات همین گیت</h4><small *ngIf="diffHeadCommit()">headCommit: <code>{{diffHeadCommit()}}</code></small></div><span *ngIf="diffLineCount()">{{diffLineCount()}} خط</span></header>
-          <p class="diff-limit" *ngIf="diffTruncated()">{{diffLineCount() | number}} خط — فقط {{diffLimit() | number}} خط اول نمایش داده شد. فهرست فایل‌ها پایین کامل است.</p>
-          <pre *ngIf="diffText(); else noGateDiff">{{diffPreview()}}</pre>
-          <ng-template #noGateDiff><div class="disabled-gate-warning">artifact ثابت <code>changes.diff</code> برای این گیت در دسترس نیست.</div></ng-template>
+          <div class="diff-stale" *ngIf="diffStale(t)">⚠ این diff برای commit دیگری است — تازه کن</div>
+          <div class="diff-files" *ngIf="diffFiles(t).length">
+            <button type="button" class="diff-file-row all" [class.active]="!diffSelectedFile()" (click)="selectDiffFile(null)">همه فایل‌ها</button>
+            <button type="button" class="diff-file-row" *ngFor="let f of diffFiles(t)" [class.active]="diffSelectedFile() === f.path" [class.out-of-scope]="f.inScope === false" (click)="selectDiffFile(f.path || null)">
+              <code>{{f.path || 'file'}}</code>
+              <span class="diff-stat"><em class="add">+{{f.added || 0}}</em><em class="del">−{{f.deleted || 0}}</em></span>
+              <small>{{f.status || ''}}<span class="oos-badge" *ngIf="f.inScope === false"> · خارج از scope</span></small>
+            </button>
+          </div>
+          <p class="diff-limit" *ngIf="diffDisplayTruncated()">{{diffLineCount() | number}} خط — فقط {{diffLimit() | number}} خط اول نمایش داده شد. فهرست فایل‌ها بالا کامل است.</p>
+          <pre class="diff-code" *ngIf="diffText() && diffFiles(t).length; else noGateDiff" [innerHTML]="diffColorize(diffDisplayText())"></pre>
+          <ng-template #noGateDiff>
+            <div class="disabled-gate-warning" *ngIf="diffText() && !diffFiles(t).length">هیچ تغییری زیر <code>src/</code> نیست — تغییرات فقط خارج از سورس بوده‌اند (مثل ai-context).</div>
+            <div class="disabled-gate-warning" *ngIf="!diffText() && t.diff?.files?.length">artifact خام diff برای این گیت در دسترس نیست؛ فهرست فایل‌ها بالا از Manager آمده.</div>
+            <div class="empty-artifact" *ngIf="!diffText() && !t.diff?.files?.length">هنوز تغییری ثبت نشده.</div>
+          </ng-template>
         </section>
 
         <div class="merge-evidence">
-          <section><h4>خلاصه diff</h4><div *ngIf="diffFiles(t).length; else noDiff"><p *ngFor="let f of diffFiles(t)"><code>{{f.path || 'file'}}</code><span>+{{f.added || 0}} −{{f.deleted || 0}}</span></p></div><ng-template #noDiff><small>اگر Manager فیلد diff را در status بدهد اینجا نمایش داده می‌شود؛ changes.diff بالا همچنان قابل مشاهده است.</small></ng-template></section>
           <div class="disabled-gate-warning" *ngIf="!hasStatusCapability('review')">این Manager هنوز evidence داوری را در status نمی‌دهد (نسخه‌ی قدیم‌تر) — پایین فقط verification خام دیده می‌شود، نه چون evidence خالی است.</div>
           <section class="evidence-section" *ngIf="t.review as r; else rawVerify">
             <h4>Evidence داوری (attempt {{r.attempt}})</h4>
@@ -241,13 +253,27 @@
       <div class="source-box" *ngIf="t.source?.externalId"><span>منبع</span><b>{{t.source?.system || 'internal'}} #{{t.source?.externalId}}</b><a *ngIf="t.source?.url" [href]="t.source?.url || ''" target="_blank" rel="noopener">باز کردن issue ↗</a></div>
       <div class="task-tools"><span class="editor-wrap" [title]="editorTitle(t)"><button class="secondary" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ باز کردن در VSCode</button></span></div>
 
-      <nav class="task-tabs"><button [class.active]="taskTab() === 'overview'" (click)="taskTab.set('overview')">جزئیات</button><button [class.active]="taskTab() === 'diff'" (click)="taskTab.set('diff')">Diff</button></nav>
+      <nav class="task-tabs"><button [class.active]="taskTab() === 'overview'" (click)="taskTab.set('overview')">جزئیات</button><button [class.active]="taskTab() === 'diff'" (click)="openDiffTab()">Diff{{diffFiles(t).length ? ' (' + diffFiles(t).length + ')' : ''}}</button></nav>
 
       <section class="detail-section diff-view" *ngIf="taskTab() === 'diff'">
         <header><div><h3>Diff</h3><small *ngIf="diffHeadCommit()">headCommit: <code>{{diffHeadCommit()}}</code></small></div><span *ngIf="diffLineCount()">{{diffLineCount()}} خط</span></header>
-        <p class="diff-limit" *ngIf="diffTruncated()">{{diffLineCount() | number}} خط — فقط {{diffLimit() | number}} خط اول نمایش داده شد. فهرست فایل‌ها کامل می‌ماند.</p>
-        <pre *ngIf="diffText(); else noTaskDiff">{{diffPreview()}}</pre>
-        <ng-template #noTaskDiff><small>artifact <code>changes.diff</code> برای این task در دسترس نیست.</small></ng-template>
+        <div class="diff-stale" *ngIf="diffStale(t)">⚠ این diff برای commit دیگری است — تازه کن</div>
+        <div class="diff-files" *ngIf="diffFiles(t).length">
+          <button type="button" class="diff-file-row all" [class.active]="!diffSelectedFile()" (click)="selectDiffFile(null)">همه فایل‌ها</button>
+          <button type="button" class="diff-file-row" *ngFor="let f of diffFiles(t)" [class.active]="diffSelectedFile() === f.path" [class.out-of-scope]="f.inScope === false" (click)="selectDiffFile(f.path || null)">
+            <code>{{f.path || 'file'}}</code>
+            <span class="diff-stat"><em class="add">+{{f.added || 0}}</em><em class="del">−{{f.deleted || 0}}</em></span>
+            <small>{{f.status || ''}}<span class="oos-badge" *ngIf="f.inScope === false"> · خارج از scope</span></small>
+          </button>
+        </div>
+        <p class="diff-limit" *ngIf="diffDisplayTruncated()">{{diffLineCount() | number}} خط — فقط {{diffLimit() | number}} خط اول نمایش داده شد. فهرست فایل‌ها بالا کامل است.</p>
+        <pre class="diff-code" *ngIf="!diffLoaded()">در حال بارگذاری…</pre>
+        <pre class="diff-code" *ngIf="diffLoaded() && diffText() && diffFiles(t).length; else noTaskDiff" [innerHTML]="diffColorize(diffDisplayText())"></pre>
+        <ng-template #noTaskDiff>
+          <div class="disabled-gate-warning" *ngIf="diffLoaded() && diffText() && !diffFiles(t).length">هیچ تغییری زیر <code>src/</code> نیست — تغییرات فقط خارج از سورس بوده‌اند (مثل ai-context).</div>
+          <div class="disabled-gate-warning" *ngIf="diffLoaded() && !diffText() && t.diff?.files?.length">artifact خام diff برای این task در دسترس نیست؛ فهرست فایل‌ها بالا از Manager آمده.</div>
+          <small *ngIf="diffLoaded() && !diffText() && !t.diff?.files?.length">هنوز تغییری ثبت نشده.</small>
+        </ng-template>
       </section>
 
       <ng-container *ngIf="taskTab() === 'overview'">

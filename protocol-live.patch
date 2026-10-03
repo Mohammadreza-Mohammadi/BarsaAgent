@@ -1,0 +1,35 @@
+diff --git a/scripts/manager.js b/scripts/manager.js
+--- a/scripts/manager.js
++++ b/scripts/manager.js
+@@ -725,6 +725,10 @@ function readTaskContractStatus(taskDir, repoDirtyFiles = readRepoDirtyFiles(), w
+     );
+     const lastAttempt = attempts.length ? attempts[attempts.length - 1] : null;
+ 
++    // manifest نام داخلی/تاریخی `active` را نگه می‌دارد؛ قرارداد UI واژهٔ
++    // صریح `live` را برمی‌گرداند تا مصرف‌کننده وضعیت زنده را از cleanup states
++    // تشخیص دهد، بدون اینکه UI مجبور به دانستن جزئیات ذخیره‌سازی Manager باشد.
++    const worktreeStatus = getNestedScalar(text, 'worktree', 'status');
+     return {
+         id,
+         slug: getTopLevelScalar(text, 'slug'),
+@@ -767,7 +771,7 @@ function readTaskContractStatus(taskDir, repoDirtyFiles = readRepoDirtyFiles(), w
+         budget,
+         scope,
+         worktree: {
+-            status: getNestedScalar(text, 'worktree', 'status'),
++            status: worktreeStatus === 'active' ? 'live' : worktreeStatus,
+             path: getNestedScalar(text, 'worktree', 'path')
+         },
+         git: {
+diff --git a/docs/agents/shared/status-json.fixture.json b/docs/agents/shared/status-json.fixture.json
+--- a/docs/agents/shared/status-json.fixture.json
++++ b/docs/agents/shared/status-json.fixture.json
+@@ -93,7 +93,7 @@
+-      "worktree": { "status": "active", "path": "../agent-worktrees/9101-fixture-complete-evidence" },
++      "worktree": { "status": "live", "path": "../agent-worktrees/9101-fixture-complete-evidence" },
+@@ -162,7 +162,7 @@
+-      "worktree": { "status": "active", "path": "../agent-worktrees/9102-fixture-malformed-evidence" },
++      "worktree": { "status": "live", "path": "../agent-worktrees/9102-fixture-malformed-evidence" },
+@@ -214,7 +214,7 @@
+-      "worktree": { "status": "active", "path": "../agent-worktrees/9103-fixture-unknown-lock" },
++      "worktree": { "status": "live", "path": "../agent-worktrees/9103-fixture-unknown-lock" },

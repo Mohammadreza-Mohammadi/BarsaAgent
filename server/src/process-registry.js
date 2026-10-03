@@ -89,11 +89,15 @@ export class ProcessRegistry {
 
     const child = managerCommand(run.repoConfig, ['run', run.taskId]);
     run.child = child;
+    // همان دلیل cli.js#collectChild: بدون setEncoding، یک کاراکتر فارسی روی
+    // مرز chunk لاگ زنده را می‌شکند.
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
 
     const capture = stream => {
       let pending = '';
       const onData = chunk => {
-        pending += chunk.toString();
+        pending += chunk;
         const parts = pending.split(/\r?\n/);
         pending = parts.pop() ?? '';
         for (const line of parts) this.#push(run, stream, line);

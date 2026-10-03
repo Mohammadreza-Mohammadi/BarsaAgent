@@ -1,12 +1,7 @@
 {
   "Version": 1,
   "WorkspaceRootPath": "F:\\Barsa_Issue_Automation_Resolver\\BarsaAgent\\",
-  "Documents": [
-    {
-      "AbsoluteMoniker": "D:0:0:{6CA71EDE-F7AD-4452-B342-242729930363}|BarsaAgent\\BarsaAgent.csproj|f:\\barsa_issue_automation_resolver\\barsaagent\\barsaagent\\barsaagent.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|",
-      "RelativeMoniker": "D:0:0:{6CA71EDE-F7AD-4452-B342-242729930363}|BarsaAgent\\BarsaAgent.csproj|solutionrelative:barsaagent\\barsaagent.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|"
-    }
-  ],
+  "Documents": [],
   "DocumentGroupContainers": [
     {
       "Orientation": 0,
@@ -14,7 +9,7 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 10,
+          "SelectedChildIndex": -1,
           "Children": [
             {
               "$type": "Bookmark",
@@ -55,19 +50,6 @@
             {
               "$type": "Bookmark",
               "Name": "ST:13:0:{2456bd12-ecf7-4988-a4a6-67d49173f565}"
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 0,
-              "Title": "BarsaAgent.csproj",
-              "DocumentMoniker": "F:\\Barsa_Issue_Automation_Resolver\\BarsaAgent\\BarsaAgent\\BarsaAgent.csproj",
-              "RelativeDocumentMoniker": "BarsaAgent\\BarsaAgent.csproj",
-              "ToolTip": "F:\\Barsa_Issue_Automation_Resolver\\BarsaAgent\\BarsaAgent\\BarsaAgent.csproj",
-              "RelativeToolTip": "BarsaAgent\\BarsaAgent.csproj",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAA8AAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000758|",
-              "WhenOpened": "2026-08-25T15:05:22.892Z",
-              "EditorCaption": ""
             }
           ]
         }

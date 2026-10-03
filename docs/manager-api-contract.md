@@ -87,7 +87,23 @@ node scripts/manager.js artifact <id> --path <relative-path>
 ```
 
 stdout متن خام artifact. Manager و Server هر دو traversal را محدود می‌کنند.
-در گیت `merge-approval`، مسیر `changes.diff` یک snapshot commit‌شده و متعلق به `git.headCommit` همان گیت است؛ UI نباید diff زنده بسازد. رندر UI به ۲۰۰۰ خط محدود می‌شود، اما خلاصهٔ فایل‌ها کامل می‌ماند.
+
+### `task.diff` (additive، اختیاری)
+
+`changes.diff` در ریشه‌ی task نیست — هر verification دوباره در `attempts/<n>/changes.diff` تولیدش می‌کند. UI هرگز نباید مسیر را حدس بزند؛ به همین دلیل `status --json` مسیر واقعی را در خود task می‌دهد:
+
+```json
+"diff": {
+  "headCommit": "26ccd70e…",
+  "baseCommit": "4c5c3c72…",
+  "files": [
+    { "path": "projects/…/x.ts", "added": 12, "deleted": 1, "status": "modified", "inScope": true }
+  ],
+  "artifactPath": "attempts/003/changes.diff"
+}
+```
+
+`files[].status` یکی از `added|modified|deleted|renamed` است؛ `inScope` می‌گوید مسیر با `scope.allow` می‌خواند یا نه. `diff: null` یعنی هنوز diffی وجود ندارد (قبل از اولین پیاده‌سازی). `diff.headCommit` باید با `git.headCommit` بخواند؛ BarsaAgent وقتی نمی‌خوانند یک نوار کهنگی نشان می‌دهد («این diff برای commit دیگری است — تازه کن»). BarsaAgent متن خام diff را از `artifact <id> --path <diff.artifactPath>` می‌گیرد و کلاینت‌ساید به فایل‌ها تقسیم می‌کند؛ UI هرگز diff زنده از git نمی‌سازد. رندر UI به ۲۰۰۰ خط محدود می‌شود، اما فهرست فایل‌ها همیشه کامل می‌ماند.
 
 ## Import / Create task
 

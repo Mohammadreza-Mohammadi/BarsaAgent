@@ -1,5 +1,8 @@
 server:
   port: 4310
+# مسیر باید executable واقعی باشد، نه shim ویندوزی code.cmd.
+editor:
+  command: "C:/Users/a/AppData/Local/Programs/Microsoft VS Code/Code.exe"
 repos:
   - id: barsa-novin-ray
     path: "C:/ng-web-systemsaz-1"
@@ -14,7 +17,7 @@ issueSource:
   method: "POST"
   bodyFormat: "json"
   body:
-    UserId: "20b785b0-db71-4507-9757-b5280460b0cb"
+    UserId: "${BARSA_ISSUE_USER_ID}"
   itemsPath: "data.items"
   mapping:
     externalId: "externalId"

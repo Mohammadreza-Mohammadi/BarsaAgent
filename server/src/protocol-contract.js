@@ -6,7 +6,6 @@ export const MANAGER_CONTRACT_NAME = 'barsa-agent-manager';
 export const MANAGER_CONTRACT_VERSION = 1;
 
 const REQUIRED = [
-  'status',
   'taskStatus',
   'events',
   'artifact',
@@ -17,10 +16,32 @@ const REQUIRED = [
   'importIssue'
 ];
 
+// افزوده‌های additive فاز ۲ (verify/review/health) که فقط با capability هم بیایند
+// معنا دارند — غایب بودن آنها خطای startup نیست، فقط یعنی UI باید صریح بگوید
+// «این Manager هنوز نمی‌دهد» به‌جای سکوت (بازبینی فاز ۲، بند ب-۱).
+const OPTIONAL_STATUS_FIELDS = ['verify', 'review', 'health'];
+
 function capability(payload, dotted) {
   let value = payload?.capabilities;
   for (const part of dotted.split('.')) value = value?.[part];
   return value === true;
+}
+
+/**
+ * `status` قبلاً یک بولین تخت بود؛ از فاز ۲ می‌تواند `{ base, verify, review, health }`
+ * هم باشد. هر دو شکل باید «base پشتیبانی می‌شود» را true بدهند — این یعنی
+ * تغییر شکل additive واقعاً additive ماند، نه شکستن هر Manager قدیمی‌تر.
+ */
+function hasStatusBase(payload) {
+  const status = payload?.capabilities?.status;
+  return status === true || status?.base === true;
+}
+
+/** کدام‌یک از فیلدهای additive فاز ۲ را این Manager در status --json می‌دهد. */
+export function statusFieldCapabilities(payload) {
+  const status = payload?.capabilities?.status;
+  const flat = status && typeof status === 'object' ? status : {};
+  return Object.fromEntries(OPTIONAL_STATUS_FIELDS.map(name => [name, flat[name] === true]));
 }
 
 export function validateCapabilities(payload) {
@@ -29,6 +50,7 @@ export function validateCapabilities(payload) {
   if (payload?.contract !== MANAGER_CONTRACT_NAME) errors.push(`contract باید ${MANAGER_CONTRACT_NAME} باشد.`);
   if (Number(payload?.contractVersion) !== MANAGER_CONTRACT_VERSION) errors.push(`contractVersion باید ${MANAGER_CONTRACT_VERSION} باشد.`);
   const missing = REQUIRED.filter(name => !capability(payload, name));
+  if (!hasStatusBase(payload)) missing.push('status');
   if (missing.length) errors.push(`قابلیت‌های اجباری موجود نیستند: ${missing.join(', ')}`);
   return { ok: errors.length === 0, errors, missing };
 }
@@ -52,6 +74,7 @@ export async function inspectManager(repo) {
       managerVersion: payload.managerVersion ?? payload.version ?? null,
       protocolVersion: payload.protocolVersion ?? null,
       capabilities: payload.capabilities ?? {},
+      statusFields: statusFieldCapabilities(payload),
       errors: validation.errors
     };
   } catch (error) {

@@ -60,8 +60,29 @@ export function parseConfigYaml(text) {
   return out;
 }
 
-export function loadConfig(file = process.env.BARSA_AGENT_CONFIG || path.resolve('barsa-agent.config.yml')) {
-  const config = parseConfigYaml(fs.readFileSync(file, 'utf8'));
+// مقادیر حساس/شناسه‌ی حساب (مثل UserId) نباید عدد خام در فایل کانفیگِ داخل
+// مخزن باشند — همان قاعده‌ای که توکن‌ها از قبل رعایتش می‌کنند (بازبینی فاز ۲).
+// مقدار `"${NAME}"` در YAML از `process.env.NAME` جایگزین می‌شود؛ اگر تنظیم
+// نشده باشد صریح fail می‌کند — سکوت (مقدار خالی رفتن به یک وب‌سرویس) بدتر از
+// خطای startup است.
+const ENV_REF = /^\$\{([A-Z][A-Z0-9_]*)\}$/;
+function resolveEnvRefs(value, env, pathLabel) {
+  if (typeof value === 'string') {
+    const m = ENV_REF.exec(value);
+    if (!m) return value;
+    const resolved = env[m[1]];
+    if (resolved == null || resolved === '') throw new Error(`کانفیگ "${pathLabel}" به "\${${m[1]}}" اشاره می‌کند ولی متغیر محیطی ${m[1]} تنظیم نشده.`);
+    return resolved;
+  }
+  if (Array.isArray(value)) return value.map((item, i) => resolveEnvRefs(item, env, `${pathLabel}[${i}]`));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, resolveEnvRefs(v, env, `${pathLabel}.${k}`)]));
+  }
+  return value;
+}
+
+export function loadConfig(file = process.env.BARSA_AGENT_CONFIG || path.resolve('barsa-agent.config.yml'), env = process.env) {
+  const config = resolveEnvRefs(parseConfigYaml(fs.readFileSync(file, 'utf8')), env, 'config');
   if (!Array.isArray(config.repos) || !config.repos.length) throw new Error('حداقل یک repo در کانفیگ لازم است.');
   for (const repo of config.repos) {
     repo.path = path.resolve(repo.path); repo.managerScript = repo.managerScript || 'scripts/manager.js';
