@@ -78,6 +78,7 @@
           <div class="scope-conflict" *ngIf="conflictTasks(t).length">⚠ تداخل scope با {{conflictTasks(t).length}} task</div>
           <span class="editor-wrap" [title]="editorTitle(t)"><button class="editor-action" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ VSCode</button></span>
           <button class="human-action" *ngIf="t.awaitingHuman" (click)="$event.stopPropagation(); openTask(t, true)">⚡ {{gateLabel(t)}}</button>
+          <button class="human-action" *ngIf="t.state === 'awaiting-external-checkin'" [disabled]="busy() || taskLocked(t)" (click)="$event.stopPropagation(); openCheckin(t)">📋 ثبت شد در تی‌اف‌اس</button>
           <div class="meta">
             <span *ngIf="budget(t) as b" [class.warn]="b.max > 0 && b.used >= b.max - 1">{{budgetLabel(t)}} {{b.used}}/{{b.max}}</span>
             <span>◷ {{elapsed(t.stateSince)}}</span>
@@ -96,6 +97,11 @@
   <section class="terminal error-lane" *ngIf="errorTasks().length">
     <h2>Taskهای دارای خطای manifest <span>{{errorTasks().length}}</span></h2>
     <div><button *ngFor="let t of errorTasks()" (click)="openTask(t)"><code>#{{t.id}}</code> {{t.title || t.slug}} <small>{{t.error}}</small></button></div>
+  </section>
+  <!-- کانبان-اکشن‌های-وب‌تری، بند الف: هر state ای که این UI نمی‌شناسد باید دیده شود، نه پنهان بماند. -->
+  <section class="terminal unknown-lane" *ngIf="unknownStateTasks().length">
+    <h2>Stateهای ناشناخته <span>{{unknownStateTasks().length}}</span></h2>
+    <div><button *ngFor="let t of unknownStateTasks()" (click)="openTask(t)"><code>#{{t.id}}</code> {{t.title || t.slug}} <em>{{t.state}}</em></button></div>
   </section>
 </main>
 
@@ -156,6 +162,13 @@
   <ng-container *ngIf="panel() === 'action' && selected() as t">
     <div class="drawer-body">
       <div class="gate"><span>اقدام انسانی لازم است</span><h3>{{gateLabel(t)}}</h3><small>state تغییر نکرده؛ <code>awaitingHuman</code> یک gate مستقل است.</small></div>
+
+      <!-- کانبان-اکشن‌های-وب‌تری، بند هـ: وضعیت دقیقاً مثل ۱۰۰۰۹ — manifest ِ
+           commit‌نشده state را عوض نشان می‌دهد ولی transition شکست خورده. تأیید/رد
+           اینجا تا حل این وضعیت غیرفعال‌اند. -->
+      <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
+        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>. تأیید/رد تا حل این وضعیت از پنل بازیابی غیرفعال است.
+      </div>
 
       <section class="release-note-card" *ngIf="gateKind(t) === 'spec-approval' || gateKind(t) === 'merge-approval'">
         <header><b>متنی که کاربر بعد از merge می‌بیند</b><button class="secondary" *ngIf="t.releaseNote?.userVisible && !releaseNoteEditing()" (click)="copyReleaseNote(t)">کپی</button></header>
@@ -265,13 +278,47 @@
       <label class="answer-box" *ngIf="gateKind(t) !== 'clarification'"><span>دلیل رد (هنگام رد اجباری)</span><textarea [(ngModel)]="reason" placeholder="اگر تصمیم رد است، دلیل را بنویسید…"></textarea></label>
     </div>
     <footer class="gate-footer">
-      <button class="danger" [disabled]="busy() || !reason.trim()" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('reject')">رد</button>
-      <button class="primary" [disabled]="busy() || releaseNoteBlocksApprove(t)" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('approve')">تأیید</button>
+      <button class="danger" [disabled]="busy() || !reason.trim() || taskLocked(t)" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('reject')">رد</button>
+      <button class="primary" [disabled]="busy() || releaseNoteBlocksApprove(t) || taskLocked(t)" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('approve')">تأیید</button>
 
-      <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim()" (click)="answer('reject','implementer')">رد → پیاده‌سازی</button><small>نقشه درست بود، اجرا نه؛ implementerRuns مصرف می‌شود.</small></div>
-      <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim()" (click)="answer('reject','architect')">رد → معماری</button><small>نقشه غلط بود؛ budget پیاده‌سازی دست نمی‌خورد.</small></div>
-      <button class="primary" [disabled]="busy() || (!managerMerges() && !mergeAck()) || releaseNoteBlocksApprove(t)" *ngIf="gateKind(t) === 'merge-approval'" (click)="answer('approve')">{{managerMerges() ? 'تأیید و merge' : 'merge کردم، ببند'}}</button>
-      <button class="primary" [disabled]="busy() || !answerText.trim()" *ngIf="gateKind(t) === 'clarification'" (click)="answer('clarify')">ارسال پاسخ</button>
+      <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim() || taskLocked(t)" (click)="answer('reject','implementer')">رد → پیاده‌سازی</button><small>نقشه درست بود، اجرا نه؛ implementerRuns مصرف می‌شود.</small></div>
+      <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim() || taskLocked(t)" (click)="answer('reject','architect')">رد → معماری</button><small>نقشه غلط بود؛ budget پیاده‌سازی دست نمی‌خورد.</small></div>
+      <button class="primary" [disabled]="busy() || (!managerMerges() && !mergeAck()) || releaseNoteBlocksApprove(t) || taskLocked(t)" *ngIf="gateKind(t) === 'merge-approval'" (click)="answer('approve')">{{managerMerges() ? 'تأیید و merge' : 'merge کردم، ببند'}}</button>
+      <button class="primary" [disabled]="busy() || !answerText.trim() || taskLocked(t)" *ngIf="gateKind(t) === 'clarification'" (click)="answer('clarify')">ارسال پاسخ</button>
+    </footer>
+  </ng-container>
+
+  <!-- کانبان-اکشن‌های-وب‌تری، بند ج — «ثبت شد در تی‌اف‌اس» -->
+  <ng-container *ngIf="panel() === 'checkin' && selected() as t">
+    <div class="drawer-body">
+      <div class="gate"><span>ثبت در تی‌اف‌اس</span><h3>تسک #{{t.id}}</h3><small>این فقط اعلام انسانی است؛ Manager خودش چیزی را در TFVC چک‌این نمی‌کند.</small></div>
+      <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
+        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>. اول آن را از پنل بازیابی حل کن.
+      </div>
+      <label class="answer-box"><span>شناسه‌ی منبع بیرونی (مثلاً webiii)</span><input [(ngModel)]="checkinSourceId" placeholder="webiii"></label>
+      <label class="answer-box"><span>شماره‌های ثبت (اختیاری — هرکدام در یک خط یا با کاما، مثل C12345)</span><textarea [(ngModel)]="checkinChangesets" placeholder="C12345"></textarea>
+        <small class="budget-note" *ngIf="checkinChangesets.trim() && !checkinChangesetsValid()">⚠ هر مقدار باید حرف C و بعد عدد باشد (عدد تنها هم پذیرفته می‌شود).</small>
+      </label>
+    </div>
+    <footer class="gate-footer">
+      <button class="secondary" (click)="closePanel()">انصراف</button>
+      <button class="primary" [disabled]="busy() || taskLocked(t) || !checkinValid(t)" (click)="confirmCheckin()">ثبت شد — ببند</button>
+    </footer>
+  </ng-container>
+
+  <!-- کانبان-اکشن‌های-وب‌تری، بند د — یادداشت برای اجرای بعدی -->
+  <ng-container *ngIf="panel() === 'note' && selected() as t">
+    <div class="drawer-body">
+      <div class="gate"><span>یادداشت برای اجرای بعدی</span><h3>تسک #{{t.id}}</h3><small>این یک gate نیست؛ همین که یک agent بعدی اجرا شود، خوانده و مصرف می‌شود.</small></div>
+      <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
+        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>.
+      </div>
+      <div class="disabled-gate-warning" *ngIf="t.artifacts?.includes('human-note.md')">ℹ یک یادداشت مصرف‌نشده از قبل روی دیسک است — اگر الان ثبت کنی، Manager رد می‌کند تا آن یکی مصرف شود.</div>
+      <label class="answer-box"><span>متن یادداشت</span><textarea [(ngModel)]="noteText" placeholder="یادداشت برای اجرای بعدی…"></textarea></label>
+    </div>
+    <footer class="gate-footer">
+      <button class="secondary" (click)="closePanel()">انصراف</button>
+      <button class="primary" [disabled]="busy() || taskLocked(t) || !noteText.trim()" (click)="submitNote()">ثبت یادداشت</button>
     </footer>
   </ng-container>
 
@@ -284,7 +331,10 @@
         <div><small>آخرین اجرا</small><b>{{isQueued(t) ? 'در صف · ' + (queuePosition(t) || '—') : isRunning(t) ? 'در حال اجرا' : exitLabel(exitCodeFor(t))}}</b></div>
       </div>
       <div class="source-box" *ngIf="t.source?.externalId"><span>منبع</span><b>{{t.source?.system || 'internal'}} #{{t.source?.externalId}}</b><a *ngIf="t.source?.url" [href]="t.source?.url || ''" target="_blank" rel="noopener">باز کردن issue ↗</a></div>
-      <div class="task-tools"><span class="editor-wrap" [title]="editorTitle(t)"><button class="secondary" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ باز کردن در VSCode</button></span></div>
+      <div class="task-tools">
+        <span class="editor-wrap" [title]="editorTitle(t)"><button class="secondary" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ باز کردن در VSCode</button></span>
+        <span class="editor-wrap" [title]="noteAllowed(t) ? '' : 'state این task پایانی است — یادداشت هرگز خوانده نخواهد شد'"><button class="secondary" [disabled]="busy() || !noteAllowed(t) || taskLocked(t)" (click)="openNote(t, $event)">📝 یادداشت برای اجرای بعدی</button></span>
+      </div>
 
       <nav class="task-tabs"><button [class.active]="taskTab() === 'overview'" (click)="taskTab.set('overview')">جزئیات</button><button [class.active]="taskTab() === 'diff'" (click)="openDiffTab()">Diff{{diffFiles(t).length ? ' (' + diffFiles(t).length + ')' : ''}}</button></nav>
 

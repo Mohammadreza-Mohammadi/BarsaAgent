@@ -358,6 +358,45 @@ export function createApp(config, deps = {}) {
         const resumed = runConfig.autoResumeAfterAnswer ? queueTask(repo, p.id) : { queued: false, started: false };
         return send(res, 200, { ok: true, autoResumed: runConfig.autoResumeAfterAnswer, ...resumed });
       }
+      // TOOLING-023 (manager.js، بند «ز-۴»): --external-checked-in گیت‌محور
+      // نیست، فقط state="awaiting-external-checkin" را می‌خواهد؛ شماره‌ی ثبت
+      // اختیاری است. فرمت "C<عدد>" قرارداد خودِ BarsaAgent است (manager.js
+      // خودش فرمتش را نمی‌سنجد)، برای همین اینجا سمت سرور هم دوباره اعتبارسنجی
+      // می‌شود، نه فقط سمت کلاینت.
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/external-checked-in', pathname))) {
+        const input = await readBody(req);
+        const sourceId = String(input.sourceId || '').trim();
+        if (!/^[a-z0-9][a-z0-9-]*$/i.test(sourceId)) return send(res, 400, { error: 'شناسه‌ی منبع بیرونی نامعتبر است.' });
+        const rawChangesets = Array.isArray(input.changesets) ? input.changesets : [];
+        const changesets = [];
+        for (const raw of rawChangesets) {
+          const value = String(raw || '').trim();
+          if (!value) continue;
+          const normalized = /^\d+$/.test(value) ? `C${value}` : value;
+          if (!/^C\d+$/i.test(normalized)) return send(res, 400, { error: `شماره‌ی ثبت نامعتبر است: "${raw}" — باید به شکل حرف C و بعد عدد باشد.` });
+          changesets.push(normalized);
+        }
+        const args = ['answer', p.id, '--external-checked-in', sourceId];
+        if (changesets.length) args.push('--changeset', changesets.join(','));
+        await collectAction(repoFor(p.repo), args);
+        return send(res, 200, { ok: true });
+      }
+      // state-محور است، نه awaitingHuman (manager.js، parseAnswerArgs/--note) —
+      // در هر state غیرپایانی (برای یادداشت) قابل ارسال است. متن همیشه از فایل
+      // موقت UTF-8 می‌رود، هرگز argv خام (همان دلیل --reason-file بالا).
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/note', pathname))) {
+        const input = await readBody(req);
+        if (!input.text?.trim()) return send(res, 400, { error: 'متن یادداشت الزامی است.' });
+        const repo = repoFor(p.repo);
+        const tmp = path.join(os.tmpdir(), `barsa-note-${process.pid}-${randomUUID()}.txt`);
+        try {
+          fs.writeFileSync(tmp, String(input.text), { encoding: 'utf8', mode: 0o600 });
+          await collectAction(repo, ['answer', p.id, '--note', '--file', tmp]);
+        } finally {
+          fs.rmSync(tmp, { force: true });
+        }
+        return send(res, 200, { ok: true });
+      }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/void', pathname))) {
         const input = await readBody(req);
         if (!input.reason?.trim()) return send(res, 400, { error: 'دلیل الزامی است.' });

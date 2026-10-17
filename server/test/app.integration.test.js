@@ -498,3 +498,115 @@ process.exit(0);
   assert.match(health.output, /Phase 0 reminder/);
   assert.match(health.output, /مشکلی پیدا نشد/);
 });
+
+// کانبان-اکشن‌های-وب‌تری، بند ج: --external-checked-in <sourceId> [--changeset Cxxxx]
+test('external-checked-in آرگومان‌های دقیق می‌سازد؛ شماره‌ی ثبت بدون C خودکار C می‌گیرد؛ بدون changeset، فلگ اصلاً نمی‌رود', async t => {
+  const repo = makeFakeRepo(t);
+  const capture = path.join(repo.path, 'capture.json');
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const fs=require('node:fs'); const path=require('node:path'); const args=process.argv.slice(2); const cmd=args[0];
+if(cmd==='answer'){ fs.writeFileSync(path.join(process.cwd(),'capture.json'),JSON.stringify({args})); process.stdout.write(JSON.stringify({ok:true})); }
+else if(cmd==='status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+
+  const withChangesets = await fetch(`${base}/api/repos/fake/tasks/0005/external-checked-in`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceId: 'webiii', changesets: ['12345', 'C999'] })
+  });
+  assert.equal(withChangesets.status, 200);
+  let captured = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.deepEqual(captured.args, ['answer', '0005', '--external-checked-in', 'webiii', '--changeset', 'C12345,C999']);
+
+  const noChangesets = await fetch(`${base}/api/repos/fake/tasks/0005/external-checked-in`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceId: 'webiii', changesets: [] })
+  });
+  assert.equal(noChangesets.status, 200);
+  captured = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.deepEqual(captured.args, ['answer', '0005', '--external-checked-in', 'webiii']);
+});
+
+test('external-checked-in با sourceId یا شماره‌ی ثبت نامعتبر 400 می‌دهد، بدون صدا زدن manager.js', async t => {
+  const repo = makeFakeRepo(t);
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const args=process.argv.slice(2); const cmd=args[0];
+if(cmd==='answer'){ process.stderr.write('نباید صدا زده شود'); process.exit(1); }
+else if(cmd==='status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+
+  const badSource = await fetch(`${base}/api/repos/fake/tasks/0005/external-checked-in`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceId: 'web iii', changesets: [] })
+  });
+  assert.equal(badSource.status, 400);
+
+  const badChangeset = await fetch(`${base}/api/repos/fake/tasks/0005/external-checked-in`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceId: 'webiii', changesets: ['not-a-number'] })
+  });
+  assert.equal(badChangeset.status, 400);
+});
+
+test('رد مشروع Manager روی external-checked-in (state اشتباه) → 422 با پیام خام', async t => {
+  const repo = makeFakeRepo(t);
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const args = process.argv.slice(2);
+if (args[0] === 'answer') { process.stderr.write('state="review" است، نه "awaiting-external-checkin"'); process.exit(1); }
+else if (args[0] === 'status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+  const response = await fetch(`${base}/api/repos/fake/tasks/0005/external-checked-in`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sourceId: 'webiii', changesets: [] })
+  });
+  assert.equal(response.status, 422);
+  const body = await response.json();
+  assert.match(body.error, /awaiting-external-checkin/);
+});
+
+// کانبان-اکشن‌های-وب‌تری، بند د: answer --note --file <tmp-utf8>، هرگز --text خام
+test('note متن را از فایل موقت UTF-8 با --file می‌فرستد و بعد پاک می‌کند؛ بدون متن 400', async t => {
+  const repo = makeFakeRepo(t);
+  const capture = path.join(repo.path, 'capture.json');
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const fs=require('node:fs'); const path=require('node:path'); const args=process.argv.slice(2); const cmd=args[0];
+if(cmd==='answer'){
+  const fi=args.indexOf('--file'); const file = fi>=0?args[fi+1]:null;
+  fs.writeFileSync(path.join(process.cwd(),'capture.json'),JSON.stringify({args,file,text:file?fs.readFileSync(file,'utf8'):null}));
+  process.stdout.write(JSON.stringify({ok:true}));
+} else if(cmd==='status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+
+  const empty = await fetch(`${base}/api/repos/fake/tasks/0005/note`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '   ' }) });
+  assert.equal(empty.status, 400);
+
+  const noteText = 'یادداشت فارسی چندخطی\nبرای اجرای بعدی';
+  const response = await fetch(`${base}/api/repos/fake/tasks/0005/note`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: noteText }) });
+  assert.equal(response.status, 200);
+  const captured = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.deepEqual(captured.args, ['answer', '0005', '--note', '--file', captured.file]);
+  assert.equal(captured.text, noteText);
+  assert.equal(fs.existsSync(captured.file), false, 'فایل موقت باید بعد از صدا زدن manager.js پاک شده باشد');
+});
+
+test('رد مشروع Manager روی note (یادداشت مصرف‌نشده‌ی قبلی) → 422 با پیام خام', async t => {
+  const repo = makeFakeRepo(t);
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const args = process.argv.slice(2);
+if (args[0] === 'answer') { process.stderr.write('یک یادداشت مصرف‌نشده از قبل روی دیسک است'); process.exit(1); }
+else if (args[0] === 'status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+  const response = await fetch(`${base}/api/repos/fake/tasks/0005/note`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'یادداشت تازه' }) });
+  assert.equal(response.status, 422);
+  const body = await response.json();
+  assert.match(body.error, /مصرف‌نشده/);
+});
