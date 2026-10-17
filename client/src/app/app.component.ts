@@ -12,8 +12,25 @@ const LANES = [
   { title: 'پیاده‌سازی', states: ['implementing', 'rejected'] },
   { title: 'بازبینی', states: ['review'] },
   { title: 'تأییدشده', states: ['approved', 'integrating', 'conflict'] },
+  { title: 'منتظر ثبت در تی‌اف‌اس', states: ['awaiting-external-checkin'] },
   { title: 'تمام', states: ['integrated'] }
 ] as const;
+
+const TERMINAL_STATES = ['blocked', 'cancelled', 'abandoned'] as const;
+
+// منبع واقعی: TASK_TRANSITIONS در manager.js (AGENT-WORKFLOW.md بخش ۳ خودش
+// می‌گوید «منبع: TASK_TRANSITIONS»، ولی فهرست دستی همان سند awaiting-external-
+// checkin را که خودِ TASK_TRANSITIONS به‌عنوان مقصد integrating دارد، جا انداخته
+// — هر وقت این دو نخوانند، کد برنده است، نه نثر سند). هر state ای که اینجا
+// نباشد باید در ستون «ناشناخته» دیده شود، نه پنهان.
+const KNOWN_STATES = new Set<string>([
+  ...LANES.flatMap(lane => [...lane.states]),
+  ...TERMINAL_STATES
+]);
+
+// manager.js#handleNoteDecision: --note فقط همین چهار state را رد می‌کند
+// (بعد از آن‌ها دیگر هیچ agent ای اجرا نمی‌شود که یادداشت را بخواند).
+const NOTE_BLOCKED_STATES = new Set(['integrated', 'awaiting-external-checkin', 'cancelled', 'abandoned']);
 
 const EXIT_LABELS: Record<number, string> = {
   0: 'تمام شد — integrated',
@@ -34,7 +51,7 @@ const BLOCKER_LABELS: Record<string, { label: string; hint: string }> = {
   'attempts-exhausted': { label: 'سقف تلاش‌ها', hint: 'شمارنده‌ی سراسری attempts پر شده — task را ببند یا بودجه را دستی زیاد کن.' }
 };
 
-type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | null;
+type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 'note' | null;
 
 @Component({
   selector: 'ba-root',
@@ -104,6 +121,10 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly dangerOpen = signal<'void' | 'cancel' | 'unlock' | null>(null);
   readonly mergeAck = signal(false);
   private readonly openedHeadCommit = signal<string | null | undefined>(undefined);
+
+  checkinSourceId = '';
+  checkinChangesets = '';
+  noteText = '';
 
   async ngOnInit(): Promise<void> {
     try {
@@ -207,8 +228,12 @@ export class AppComponent implements OnInit, OnDestroy {
   tasksFor(states: readonly string[]): Task[] {
     return (this.board()?.tasks ?? []).filter(t => states.includes(t.state) && !t.error);
   }
-  terminalTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => ['blocked', 'cancelled', 'abandoned'].includes(t.state) && !t.error); }
+  terminalTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => (TERMINAL_STATES as readonly string[]).includes(t.state) && !t.error); }
   errorTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => !!t.error || t.state === '__error__'); }
+  // بند الف کانبان-اکشن‌های-وب‌تری: هر state ای که نه در lanes، نه در
+  // TERMINAL_STATES باشد — یعنی چیزی که این UI هنوز نمی‌شناسد — باید دیده
+  // شود، نه پنهان شود.
+  unknownStateTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => !t.error && !KNOWN_STATES.has(t.state)); }
   humanTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => !!t.awaitingHuman && !t.error); }
   queuedTasks(): RunningTask[] { return Object.values(this.running()).filter(x => x.queued); }
   gateKind(t: Task | null): string { return t?.awaitingHuman?.kind ?? ''; }
@@ -261,6 +286,17 @@ export class AppComponent implements OnInit, OnDestroy {
     const dirtyPart = (t.health?.dirtyPaths?.length ?? 0) > 0 ? `${t.health?.dirtyPaths?.length} مسیر commit‌نشده` : '';
     return [lockPart, dirtyPart].filter(Boolean).join(' · ');
   }
+  // کانبان-اکشن‌های-وب‌تری، بند هـ — دقیقاً همان رویدادی که تسک ۱۰۰۰۹ را جا
+  // گذاشت: manifest ِ commit‌نشده state را عوض نشان می‌دهد ولی transition
+  // شکست خورده. health.transitionLock هر مقدار غیر-null باشد (حتی اگر alive
+  // باشد، یعنی یک transition دیگر همین الان در جریان است) هم باید قفل‌کننده
+  // باشد — نه فقط stuck=true — چون Manager خودش assertNoTransitionLock را
+  // بدون قید «آیا stale است» رد می‌کند.
+  taskLocked(t: Task | null): boolean {
+    if (!t) return true;
+    return t.health?.stuck === true || t.health?.transitionLock != null;
+  }
+  noteAllowed(t: Task | null): boolean { return !!t && !NOTE_BLOCKED_STATES.has(t.state); }
 
   elapsed(iso?: string | null): string {
     if (!iso) return '—';
@@ -498,6 +534,68 @@ export class AppComponent implements OnInit, OnDestroy {
     event?.stopPropagation();
     this.selected.set(t);
     this.panel.set('recovery');
+  }
+
+  // کانبان-اکشن‌های-وب‌تری، بند ج — «ثبت شد در تی‌اف‌اس». فقط در
+  // awaiting-external-checkin معنا دارد (manager.js#handleExternalCheckedInDecision).
+  openCheckin(t: Task, event?: Event): void {
+    event?.stopPropagation();
+    this.resetPanelState();
+    this.selected.set(t);
+    this.checkinSourceId = '';
+    this.checkinChangesets = '';
+    this.panel.set('checkin');
+  }
+  // چند مقدار را با کاما یا خط تازه جدا می‌کند — فیلد باید چند شماره‌ی ثبت
+  // بپذیرد (بند ج).
+  checkinChangesetList(): string[] {
+    return this.checkinChangesets.split(/[\n,]+/).map(x => x.trim()).filter(Boolean);
+  }
+  // «عدد خالی را هم با افزودن C بپذیر» (بند ج) — هر مقدار یا از اول C دارد،
+  // یا فقط عدد است (که در ارسال نهایی C می‌گیرد).
+  checkinChangesetsValid(): boolean {
+    return this.checkinChangesetList().every(v => /^c?\d+$/i.test(v));
+  }
+  checkinValid(t: Task | null): boolean {
+    if (!t || t.state !== 'awaiting-external-checkin') return false;
+    if (!this.checkinSourceId.trim()) return false;
+    return this.checkinChangesetsValid();
+  }
+  async confirmCheckin(): Promise<void> {
+    const t = this.selected();
+    if (!t || !this.checkinValid(t) || this.taskLocked(t)) return;
+    this.busy.set(true); this.error.set('');
+    try {
+      const changesets = this.checkinChangesetList().map(v => /^\d+$/.test(v) ? `C${v}` : v);
+      await firstValueFrom(this.api.externalCheckedIn(this.repoId(), t.id, { sourceId: this.checkinSourceId.trim(), changesets }));
+      this.info.set('ثبت در تی‌اف‌اس اعلام شد؛ task به integrated رفت.');
+      this.panel.set(null);
+      await this.refresh();
+    } catch (e) { this.fail(e); }
+    finally { this.busy.set(false); }
+  }
+
+  // کانبان-اکشن‌های-وب‌تری، بند د — یادداشت برای اجرای بعدی. state-محور است
+  // (manager.js#handleNoteDecision)، نه awaitingHuman — در هر state غیرپایانی
+  // (noteAllowed) قابل ارسال است.
+  openNote(t: Task, event?: Event): void {
+    event?.stopPropagation();
+    this.resetPanelState();
+    this.selected.set(t);
+    this.noteText = '';
+    this.panel.set('note');
+  }
+  async submitNote(): Promise<void> {
+    const t = this.selected();
+    if (!t || !this.noteText.trim() || this.taskLocked(t)) return;
+    this.busy.set(true); this.error.set('');
+    try {
+      await firstValueFrom(this.api.note(this.repoId(), t.id, this.noteText));
+      this.info.set('یادداشت ثبت شد؛ اجرای بعدی آن را می‌خواند.');
+      this.panel.set(null);
+      await this.refresh();
+    } catch (e) { this.fail(e); }
+    finally { this.busy.set(false); }
   }
 
   async confirmDanger(): Promise<void> {
@@ -816,6 +914,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private closeStream(): void { this.source?.close(); this.source = undefined; }
   private resetPanelState(): void {
     this.closeStream(); this.error.set(''); this.reason = ''; this.answerText = ''; this.respec = false; this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; this.mergeAck.set(false); this.openedHeadCommit.set(undefined);
+    this.checkinSourceId = ''; this.checkinChangesets = ''; this.noteText = '';
     this.releaseNoteEditing.set(false); this.releaseNoteHeadline = ''; this.releaseNoteBody = ''; this.releaseNoteNoNote = false; this.releaseNoteReason = '';
     this.events.set([]); this.logs.set([]); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
     this.actionArtifacts.set({}); this.selectedAttempt.set(null); this.attemptArtifacts.set({});
