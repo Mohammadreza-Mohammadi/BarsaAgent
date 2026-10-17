@@ -358,6 +358,17 @@ export function createApp(config, deps = {}) {
         const resumed = runConfig.autoResumeAfterAnswer ? queueTask(repo, p.id) : { queued: false, started: false };
         return send(res, 200, { ok: true, autoResumed: runConfig.autoResumeAfterAnswer, ...resumed });
       }
+      // الحاقیه‌ی ۱، بند ب: --stage-external واقعاً فایل‌های WebIII را عوض
+      // می‌کند (merge روی مخزن سایه). کانبان هیچ شرطی برای نمایش/رد این دکمه
+      // نمی‌سازد — فقط actions.canStageExternal از status --json (TOOLING-032)
+      // را نشان می‌دهد؛ تصمیم همیشه مال همان چیزی است که answer خودش می‌سنجد.
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/stage-external', pathname))) {
+        const input = await readBody(req);
+        const sourceId = String(input.sourceId || '').trim();
+        if (!/^[a-z0-9][a-z0-9-]*$/i.test(sourceId)) return send(res, 400, { error: 'شناسه‌ی منبع بیرونی نامعتبر است.' });
+        await collectAction(repoFor(p.repo), ['answer', p.id, '--stage-external', sourceId]);
+        return send(res, 200, { ok: true });
+      }
       // TOOLING-023 (manager.js، بند «ز-۴»): --external-checked-in گیت‌محور
       // نیست، فقط state="awaiting-external-checkin" را می‌خواهد؛ شماره‌ی ثبت
       // اختیاری است. فرمت "C<عدد>" قرارداد خودِ BarsaAgent است (manager.js

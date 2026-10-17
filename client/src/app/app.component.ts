@@ -3,7 +3,7 @@ import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
-import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, HealthResult, Issue, Repo, RunningTask, Task } from './models';
+import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, ExternalSource, HealthResult, Issue, Repo, RunningTask, Task } from './models';
 
 const LANES = [
   { title: 'ورودی', states: ['new'] },
@@ -51,7 +51,7 @@ const BLOCKER_LABELS: Record<string, { label: string; hint: string }> = {
   'attempts-exhausted': { label: 'سقف تلاش‌ها', hint: 'شمارنده‌ی سراسری attempts پر شده — task را ببند یا بودجه را دستی زیاد کن.' }
 };
 
-type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 'note' | null;
+type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 'note' | 'stage' | null;
 
 @Component({
   selector: 'ba-root',
@@ -125,6 +125,7 @@ export class AppComponent implements OnInit, OnDestroy {
   checkinSourceId = '';
   checkinChangesets = '';
   noteText = '';
+  stageSourceId = '';
 
   async ngOnInit(): Promise<void> {
     try {
@@ -297,6 +298,14 @@ export class AppComponent implements OnInit, OnDestroy {
     return t.health?.stuck === true || t.health?.transitionLock != null;
   }
   noteAllowed(t: Task | null): boolean { return !!t && !NOTE_BLOCKED_STATES.has(t.state); }
+
+  // الحاقیه‌ی ۱، بند ب: externalSources از status --json (TOOLING-032) —
+  // actions همان شرط‌هایی است که answer خودش می‌سنجد؛ کانبان شرط دیگری
+  // رویش نمی‌سازد، نه از access/state/غیره.
+  externalSourcesOf(t: Task | null): ExternalSource[] { return (t?.externalSources ?? []).filter(s => !s.error); }
+  stageableSources(t: Task | null): ExternalSource[] { return this.externalSourcesOf(t).filter(s => s.actions?.canStageExternal === true); }
+  checkinableSources(t: Task | null): ExternalSource[] { return this.externalSourcesOf(t).filter(s => s.actions?.canMarkCheckedIn === true); }
+  shortSha(sha?: string | null): string { return sha ? sha.slice(0, 8) : '—'; }
 
   elapsed(iso?: string | null): string {
     if (!iso) return '—';
@@ -536,13 +545,15 @@ export class AppComponent implements OnInit, OnDestroy {
     this.panel.set('recovery');
   }
 
-  // کانبان-اکشن‌های-وب‌تری، بند ج — «ثبت شد در تی‌اف‌اس». فقط در
-  // awaiting-external-checkin معنا دارد (manager.js#handleExternalCheckedInDecision).
+  // الحاقیه‌ی ۱، بند ب — «ثبت شد در تی‌اف‌اس» حالا از actions.canMarkCheckedIn
+  // پیروی می‌کند، نه از مقایسه‌ی state. انتخاب منبع هم از externalSources
+  // می‌آید؛ اگر یکی باشد خودکار پر می‌شود، اگر چند تا باشد انسان انتخاب می‌کند.
   openCheckin(t: Task, event?: Event): void {
     event?.stopPropagation();
     this.resetPanelState();
     this.selected.set(t);
-    this.checkinSourceId = '';
+    const sources = this.checkinableSources(t);
+    this.checkinSourceId = sources.length === 1 ? sources[0].id : '';
     this.checkinChangesets = '';
     this.panel.set('checkin');
   }
@@ -557,8 +568,8 @@ export class AppComponent implements OnInit, OnDestroy {
     return this.checkinChangesetList().every(v => /^c?\d+$/i.test(v));
   }
   checkinValid(t: Task | null): boolean {
-    if (!t || t.state !== 'awaiting-external-checkin') return false;
-    if (!this.checkinSourceId.trim()) return false;
+    if (!t) return false;
+    if (!this.checkinableSources(t).some(s => s.id === this.checkinSourceId)) return false;
     return this.checkinChangesetsValid();
   }
   async confirmCheckin(): Promise<void> {
@@ -567,8 +578,36 @@ export class AppComponent implements OnInit, OnDestroy {
     this.busy.set(true); this.error.set('');
     try {
       const changesets = this.checkinChangesetList().map(v => /^\d+$/.test(v) ? `C${v}` : v);
-      await firstValueFrom(this.api.externalCheckedIn(this.repoId(), t.id, { sourceId: this.checkinSourceId.trim(), changesets }));
-      this.info.set('ثبت در تی‌اف‌اس اعلام شد؛ task به integrated رفت.');
+      await firstValueFrom(this.api.externalCheckedIn(this.repoId(), t.id, { sourceId: this.checkinSourceId, changesets }));
+      this.info.set('ثبت در تی‌اف‌اس اعلام شد.');
+      this.panel.set(null);
+      await this.refresh();
+    } catch (e) { this.fail(e); }
+    finally { this.busy.set(false); }
+  }
+
+  // الحاقیه‌ی ۱، بند ب — «انتقال به وب‌تری واقعی». فقط وقتی دیده/فعال است که
+  // actions.canStageExternal === true باشد (status --json واقعی، نه حدس
+  // کانبان). خودِ --stage-external فایل‌های WebIII واقعی را عوض می‌کند —
+  // پنل یک تأیید صریح است، نه کلیک مستقیم از روی کارت.
+  openStage(t: Task, event?: Event): void {
+    event?.stopPropagation();
+    this.resetPanelState();
+    this.selected.set(t);
+    const sources = this.stageableSources(t);
+    this.stageSourceId = sources.length === 1 ? sources[0].id : '';
+    this.panel.set('stage');
+  }
+  stageValid(t: Task | null): boolean {
+    return !!t && this.stageableSources(t).some(s => s.id === this.stageSourceId);
+  }
+  async confirmStage(): Promise<void> {
+    const t = this.selected();
+    if (!t || !this.stageValid(t) || this.taskLocked(t)) return;
+    this.busy.set(true); this.error.set('');
+    try {
+      await firstValueFrom(this.api.stageExternal(this.repoId(), t.id, { sourceId: this.stageSourceId }));
+      this.info.set('منبع بیرونی stage شد — فایل‌های واقعی وب‌تری عوض شدند.');
       this.panel.set(null);
       await this.refresh();
     } catch (e) { this.fail(e); }
@@ -914,7 +953,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private closeStream(): void { this.source?.close(); this.source = undefined; }
   private resetPanelState(): void {
     this.closeStream(); this.error.set(''); this.reason = ''; this.answerText = ''; this.respec = false; this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; this.mergeAck.set(false); this.openedHeadCommit.set(undefined);
-    this.checkinSourceId = ''; this.checkinChangesets = ''; this.noteText = '';
+    this.checkinSourceId = ''; this.checkinChangesets = ''; this.noteText = ''; this.stageSourceId = '';
     this.releaseNoteEditing.set(false); this.releaseNoteHeadline = ''; this.releaseNoteBody = ''; this.releaseNoteNoNote = false; this.releaseNoteReason = '';
     this.events.set([]); this.logs.set([]); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
     this.actionArtifacts.set({}); this.selectedAttempt.set(null); this.attemptArtifacts.set({});

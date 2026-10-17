@@ -76,9 +76,15 @@
           <div class="run-badge" *ngIf="isRunning(t)"><span></span> در حال اجرا</div>
           <div class="queue-badge" *ngIf="isQueued(t)">⌛ در صف · {{queuePosition(t) || '—'}}</div>
           <div class="scope-conflict" *ngIf="conflictTasks(t).length">⚠ تداخل scope با {{conflictTasks(t).length}} task</div>
+          <!-- الحاقیه‌ی ۱، بند ب: staged/checkedIn فقط نمایش (sha کوتاه و شماره‌های ثبت) — تصمیم نشان‌دادن دکمه فقط با actions است -->
+          <ng-container *ngFor="let s of externalSourcesOf(t)">
+            <span class="task-badge external-info" *ngIf="s.staged as st" [title]="s.id">📦 {{s.id}}: stage شده ({{shortSha(st.sha)}})</span>
+            <span class="task-badge external-info" *ngIf="s.checkedIn as ci" [title]="s.id">📋 {{s.id}}: ثبت شده ({{ci.changesets.join('، ') || '—'}})</span>
+          </ng-container>
           <span class="editor-wrap" [title]="editorTitle(t)"><button class="editor-action" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ VSCode</button></span>
           <button class="human-action" *ngIf="t.awaitingHuman" (click)="$event.stopPropagation(); openTask(t, true)">⚡ {{gateLabel(t)}}</button>
-          <button class="human-action" *ngIf="t.state === 'awaiting-external-checkin'" [disabled]="busy() || taskLocked(t)" (click)="$event.stopPropagation(); openCheckin(t)">📋 ثبت شد در تی‌اف‌اس</button>
+          <button class="human-action" *ngIf="stageableSources(t).length" [disabled]="busy() || taskLocked(t)" (click)="$event.stopPropagation(); openStage(t)">🚚 انتقال به وب‌تری واقعی</button>
+          <button class="human-action" *ngIf="checkinableSources(t).length" [disabled]="busy() || taskLocked(t)" (click)="$event.stopPropagation(); openCheckin(t)">📋 ثبت شد در تی‌اف‌اس</button>
           <div class="meta">
             <span *ngIf="budget(t) as b" [class.warn]="b.max > 0 && b.used >= b.max - 1">{{budgetLabel(t)}} {{b.used}}/{{b.max}}</span>
             <span>◷ {{elapsed(t.stateSince)}}</span>
@@ -295,7 +301,13 @@
       <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
         🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>. اول آن را از پنل بازیابی حل کن.
       </div>
-      <label class="answer-box"><span>شناسه‌ی منبع بیرونی (مثلاً webiii)</span><input [(ngModel)]="checkinSourceId" placeholder="webiii"></label>
+      <!-- الحاقیه‌ی ۱، بند ب: منبع از checkinableSources می‌آید، نه متن آزاد — یکی خودکار، چندتا با انتخاب -->
+      <label class="answer-box" *ngIf="checkinableSources(t).length === 1"><span>منبع بیرونی</span><input [value]="checkinableSources(t)[0].id" readonly></label>
+      <label class="answer-box" *ngIf="checkinableSources(t).length > 1"><span>منبع بیرونی</span>
+        <select [(ngModel)]="checkinSourceId">
+          <option *ngFor="let s of checkinableSources(t)" [value]="s.id">{{s.id}}</option>
+        </select>
+      </label>
       <label class="answer-box"><span>شماره‌های ثبت (اختیاری — هرکدام در یک خط یا با کاما، مثل C12345)</span><textarea [(ngModel)]="checkinChangesets" placeholder="C12345"></textarea>
         <small class="budget-note" *ngIf="checkinChangesets.trim() && !checkinChangesetsValid()">⚠ هر مقدار باید حرف C و بعد عدد باشد (عدد تنها هم پذیرفته می‌شود).</small>
       </label>
@@ -303,6 +315,27 @@
     <footer class="gate-footer">
       <button class="secondary" (click)="closePanel()">انصراف</button>
       <button class="primary" [disabled]="busy() || taskLocked(t) || !checkinValid(t)" (click)="confirmCheckin()">ثبت شد — ببند</button>
+    </footer>
+  </ng-container>
+
+  <!-- الحاقیه‌ی ۱، بند ب — «انتقال به وب‌تری واقعی». فقط با actions.canStageExternal === true دیده می‌شود. -->
+  <ng-container *ngIf="panel() === 'stage' && selected() as t">
+    <div class="drawer-body">
+      <div class="gate"><span>انتقال به وب‌تری واقعی</span><h3>تسک #{{t.id}}</h3><small>این فایل‌های واقعی وب‌تری را تغییر می‌دهد.</small></div>
+      <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
+        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>. اول آن را از پنل بازیابی حل کن.
+      </div>
+      <div class="disabled-gate-warning">⚠ این کار فایل‌های واقعی وب‌تری را تغییر می‌دهد — برگشت‌پذیر است (رد یا تأیید نهایی گیت merge-approval)، ولی تا آن لحظه، UI واقعی روی دیسک تغییر کرده است.</div>
+      <label class="answer-box" *ngIf="stageableSources(t).length === 1"><span>منبع بیرونی</span><input [value]="stageableSources(t)[0].id" readonly></label>
+      <label class="answer-box" *ngIf="stageableSources(t).length > 1"><span>منبع بیرونی</span>
+        <select [(ngModel)]="stageSourceId">
+          <option *ngFor="let s of stageableSources(t)" [value]="s.id">{{s.id}}</option>
+        </select>
+      </label>
+    </div>
+    <footer class="gate-footer">
+      <button class="secondary" (click)="closePanel()">انصراف</button>
+      <button class="primary" [disabled]="busy() || taskLocked(t) || !stageValid(t)" (click)="confirmStage()">تأیید — منتقل کن</button>
     </footer>
   </ng-container>
 

@@ -78,6 +78,20 @@ export interface ReleaseNoteStatus {
   problems?: string[];
 }
 
+// TOOLING-032 — status-json.schema.json#/definitions/externalSource. دو شکل:
+// منبع پیدا نشد/repository.yaml خراب (فقط id+error، مثل errorTask)، یا شکل
+// کامل access/staged/checkedIn/actions. actions همان شرط‌هایی است که answer
+// خودش قبل از --stage-external/--external-checked-in می‌سنجد — کانبان هیچ
+// شرط دیگری رویش نمی‌سازد.
+export interface ExternalSource {
+  id: string;
+  error?: string;
+  access?: string | null;
+  staged?: { sha: string; at: string | null } | null;
+  checkedIn?: { changesets: string[]; at: string | null } | null;
+  actions?: { canStageExternal: boolean; canMarkCheckedIn: boolean };
+}
+
 export interface Task {
   id: string;
   slug?: string;
@@ -108,6 +122,10 @@ export interface Task {
   review?: ReviewStatus | null;
   health?: HealthStatus | null;
   releaseNote?: ReleaseNoteStatus | null;
+  // additive (Manager قدیمی‌تر از TOOLING-032 اصلاً این کلید را ندارد — غایب
+  // یعنی «این Manager چیزی نمی‌داند»، نه «صفر منبع بیرونی»؛ هر دو حالت در UI
+  // به‌صورت «هیچ دکمه‌ای نیست» دیده می‌شوند، فرقشان فقط برای دیباگ است).
+  externalSources?: ExternalSource[];
 }
 
 export interface Board {
