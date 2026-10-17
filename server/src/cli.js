@@ -2,13 +2,17 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { environmentSecrets, redact } from './security.js';
 
+// options.env، اگر داده شود، env کامل فرزند است، نه چیزی که روی process.env
+// merge شود — کلیدی که caller عمداً از env خودش حذف کرده (مثلاً
+// CLAUDE_CODE_OAUTH_TOKEN در agent-env.js#buildAgentEnv) نباید با یک merge
+// بعدی از process.env دوباره زنده شود.
 export function managerCommand(repo, args, options = {}) {
   const script = path.resolve(repo.path, repo.managerScript);
   return spawn(process.execPath, [script, ...args.map(String)], {
     cwd: repo.path,
     shell: false,
     windowsHide: true,
-    env: { ...process.env, ...(options.env || {}) },
+    env: options.env || process.env,
     stdio: ['ignore', 'pipe', 'pipe']
   });
 }

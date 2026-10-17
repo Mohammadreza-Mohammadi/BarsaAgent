@@ -146,7 +146,7 @@ export function createApp(config, deps = {}) {
     autoStartOnCreate: config.run?.autoStartOnCreate !== false,
     autoResumeAfterAnswer: config.run?.autoResumeAfterAnswer !== false
   };
-  const registry = deps.registry ?? new ProcessRegistry({ maxConcurrent: runConfig.maxConcurrent, maxLines: 2000 });
+  const registry = deps.registry ?? new ProcessRegistry({ maxConcurrent: runConfig.maxConcurrent, maxLines: 2000, config });
   const issueFetcher = deps.issueFetcher ?? fetchIssues;
   const spawnEditor = deps.spawnEditor ?? spawn;
   const repos = new Map(config.repos.map(x => [x.id, x]));

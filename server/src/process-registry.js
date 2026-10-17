@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { managerCommand } from './cli.js';
+import { buildAgentEnv } from './agent-env.js';
 import { environmentSecrets, redact } from './security.js';
 
 export class ProcessRegistry {
@@ -10,6 +11,11 @@ export class ProcessRegistry {
     if (typeof options === 'number') options = { maxLines: options };
     this.maxLines = Number(options.maxLines ?? 2000);
     this.maxConcurrent = Math.max(1, Number(options.maxConcurrent ?? 2));
+    // کانبان-الحاقیه-۱، بند الف: config کامل سرور (برای config.run.proxy) —
+    // اگر داده نشود (مثلاً تست‌های قدیمی‌تر)، buildAgentEnv با {} هم پیش‌فرض
+    // DEFAULT_PROXY را می‌دهد و CLAUDE_CODE_OAUTH_TOKEN را همیشه حذف می‌کند؛
+    // محافظت هرگز opt-in نیست.
+    this.config = options.config || {};
   }
 
   key(repo, task) { return `${repo.id}:${task}`; }
@@ -87,7 +93,10 @@ export class ProcessRegistry {
     run.startedAt = new Date().toISOString();
     this.#push(run, 'system', 'اجرا از صف شروع شد.');
 
-    const child = managerCommand(run.repoConfig, ['run', run.taskId]);
+    // بند الف: env ِ همین فرآیند — manager.js «run» خودش بعداً run-agent.js را
+    // با `{...process.env}` صدا می‌زند (TOOLING-023/manager.js:9064)، پس هر
+    // چیزی که اینجا حذف/ست شود تا پایین زنجیره‌ی spawn هم می‌رسد.
+    const child = managerCommand(run.repoConfig, ['run', run.taskId], { env: buildAgentEnv(this.config) });
     run.child = child;
     // همان دلیل cli.js#collectChild: بدون setEncoding، یک کاراکتر فارسی روی
     // مرز chunk لاگ زنده را می‌شکند.
