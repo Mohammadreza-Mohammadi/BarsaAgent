@@ -610,3 +610,71 @@ else process.exit(0);
   const body = await response.json();
   assert.match(body.error, /مصرف‌نشده/);
 });
+
+// کانبان-الحاقیه-۱، بند الف: env ِ فرآیند «run» (end-to-end، نه فقط unit
+// buildAgentEnv) — سرور ساختگی با token و بدون پروکسی بالا می‌آید، فرزند
+// manager.js همان envهای واقعی را که دید چاپ می‌کند.
+function makeEnvPrintingRepo(t) {
+  const repo = makeFakeRepo(t);
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const args = process.argv.slice(2);
+if (args[0] === 'run') {
+  console.log('CLAUDE_CODE_OAUTH_TOKEN=' + (process.env.CLAUDE_CODE_OAUTH_TOKEN || ''));
+  console.log('HTTP_PROXY=' + (process.env.HTTP_PROXY || ''));
+  console.log('HTTPS_PROXY=' + (process.env.HTTPS_PROXY || ''));
+  setTimeout(() => process.exit(10), 60);
+} else if (args[0] === 'status') {
+  process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+} else process.exit(0);
+`, 'utf8');
+  return repo;
+}
+
+test('run: env ِ ساختگی سرور با token و بدون پروکسی → env ِ فرزند بدون token و با پروکسی پیش‌فرض', async t => {
+  const repo = makeEnvPrintingRepo(t);
+  const old = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const oldHttp = process.env.HTTP_PROXY;
+  const oldHttps = process.env.HTTPS_PROXY;
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = 'secret-oauth-must-not-reach-child';
+  delete process.env.HTTP_PROXY;
+  delete process.env.HTTPS_PROXY;
+  t.after(() => {
+    if (old === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN; else process.env.CLAUDE_CODE_OAUTH_TOKEN = old;
+    if (oldHttp === undefined) delete process.env.HTTP_PROXY; else process.env.HTTP_PROXY = oldHttp;
+    if (oldHttps === undefined) delete process.env.HTTPS_PROXY; else process.env.HTTPS_PROXY = oldHttps;
+  });
+
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+  await fetch(`${base}/api/repos/fake/tasks/0010/run`, { method: 'POST' });
+  const run = await waitForRun(base, '0010', value => value.running === false);
+  assert.equal(run.exitCode, 10);
+  const stream = await (await fetch(`${base}/api/repos/fake/tasks/0010/stream`)).text();
+  assert.ok(stream.includes('"text":"CLAUDE_CODE_OAUTH_TOKEN="'), 'باید خالی/بدون token چاپ شده باشد');
+  assert.doesNotMatch(stream, /secret-oauth-must-not-reach-child/);
+  assert.ok(stream.includes('"text":"HTTP_PROXY=http://127.0.0.1:10808"'));
+  assert.ok(stream.includes('"text":"HTTPS_PROXY=http://127.0.0.1:10808"'));
+});
+
+test('run: config.run.proxy صریح جای پیش‌فرض را می‌گیرد', async t => {
+  const repo = makeEnvPrintingRepo(t);
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {}, run: { proxy: 'http://10.20.30.40:8080' } });
+  await fetch(`${base}/api/repos/fake/tasks/0011/run`, { method: 'POST' });
+  await waitForRun(base, '0011', value => value.running === false);
+  const stream = await (await fetch(`${base}/api/repos/fake/tasks/0011/stream`)).text();
+  assert.ok(stream.includes('"text":"HTTP_PROXY=http://10.20.30.40:8080"'));
+  assert.ok(stream.includes('"text":"HTTPS_PROXY=http://10.20.30.40:8080"'));
+});
+
+test('run: config.run.proxy خالی → بدون پروکسی، حتی اگر در env خودِ سرور باشد', async t => {
+  const repo = makeEnvPrintingRepo(t);
+  const oldHttp = process.env.HTTP_PROXY;
+  process.env.HTTP_PROXY = 'http://leftover-from-server-shell:1';
+  t.after(() => { if (oldHttp === undefined) delete process.env.HTTP_PROXY; else process.env.HTTP_PROXY = oldHttp; });
+
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {}, run: { proxy: '' } });
+  await fetch(`${base}/api/repos/fake/tasks/0012/run`, { method: 'POST' });
+  await waitForRun(base, '0012', value => value.running === false);
+  const stream = await (await fetch(`${base}/api/repos/fake/tasks/0012/stream`)).text();
+  assert.ok(stream.includes('"text":"HTTP_PROXY="'), 'باید خالی چاپ شده باشد، نه مقدار leftover سرور');
+  assert.doesNotMatch(stream, /leftover-from-server-shell/);
+});
