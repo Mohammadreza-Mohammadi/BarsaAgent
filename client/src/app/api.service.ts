@@ -26,6 +26,11 @@ export class ApiService {
   answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect'; respec?: boolean; releaseNoteText?: string; noReleaseNote?: boolean }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/answer`, body
   );
+  // الحاقیه‌ی ۱، بند ب: فقط وقتی actions.canStageExternal === true (از
+  // status --json، TOOLING-032) — کانبان خودش هیچ شرطی نمی‌سازد.
+  stageExternal = (repo: string, id: string, body: { sourceId: string }) => this.http.post<{ ok: boolean }>(
+    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/stage-external`, body
+  );
   // TOOLING-023 (manager.js، بند «ز-۴»): --external-checked-in فقط برای
   // state="awaiting-external-checkin" معنا دارد؛ changesets اختیاری است.
   externalCheckedIn = (repo: string, id: string, body: { sourceId: string; changesets: string[] }) => this.http.post<{ ok: boolean }>(

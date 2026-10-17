@@ -678,3 +678,84 @@ test('run: config.run.proxy خالی → بدون پروکسی، حتی اگر �
   assert.ok(stream.includes('"text":"HTTP_PROXY="'), 'باید خالی چاپ شده باشد، نه مقدار leftover سرور');
   assert.doesNotMatch(stream, /leftover-from-server-shell/);
 });
+
+// الحاقیه‌ی ۱، بند ب: --stage-external (TOOLING-032). خودِ answer تصمیم
+// می‌گیرد که آیا access=write/state=integrating/awaitingHuman=merge-approval
+// برقرار است یا نه (computeExternalSourceActions) — سرور فقط args را دقیق
+// می‌سازد و پیام رد Manager را خام پاس می‌دهد، هیچ شرطی خودش نمی‌سنجد.
+test('stage-external آرگومان دقیق می‌سازد؛ sourceId نامعتبر 400 بدون صدا زدن manager.js', async t => {
+  const repo = makeFakeRepo(t);
+  const capture = path.join(repo.path, 'capture.json');
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const fs=require('node:fs'); const path=require('node:path'); const args=process.argv.slice(2); const cmd=args[0];
+if(cmd==='answer'){ fs.writeFileSync(path.join(process.cwd(),'capture.json'),JSON.stringify({args})); process.stdout.write(JSON.stringify({ok:true})); }
+else if(cmd==='status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+
+  const bad = await fetch(`${base}/api/repos/fake/tasks/0013/stage-external`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceId: 'web iii' })
+  });
+  assert.equal(bad.status, 400);
+  assert.equal(fs.existsSync(capture), false, 'manager.js با sourceId نامعتبر اصلاً صدا زده نشود');
+
+  const ok = await fetch(`${base}/api/repos/fake/tasks/0013/stage-external`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceId: 'webiii' })
+  });
+  assert.equal(ok.status, 200);
+  const captured = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.deepEqual(captured.args, ['answer', '0013', '--stage-external', 'webiii']);
+});
+
+test('رد مشروع Manager روی stage-external (مثلاً access=read یا گیت merge-approval باز نیست) → 422 با پیام خام', async t => {
+  const repo = makeFakeRepo(t);
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+const args = process.argv.slice(2);
+if (args[0] === 'answer') { process.stderr.write('منبع بیرونی "webiii" برای این تسک access="read" دارد — "--stage-external" فقط برای access=write معنا دارد.'); process.exit(1); }
+else if (args[0] === 'status') process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:[]}));
+else process.exit(0);
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+  const response = await fetch(`${base}/api/repos/fake/tasks/0013/stage-external`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceId: 'webiii' })
+  });
+  assert.equal(response.status, 422);
+  const body = await response.json();
+  assert.match(body.error, /access="read"/);
+});
+
+// الحاقیه‌ی ۱، بند ب: «برای هر ترکیب actions» — سرور هیچ تبدیل/فیلتری روی
+// externalSources نمی‌کند، هر ۴ ترکیب canStageExternal×canMarkCheckedIn باید
+// عیناً از status --json واقعی تا board API برسد؛ تصمیم نمایش دکمه‌ها کار UI
+// است، نه سرور.
+test('board externalSources را با هر ترکیب actions بدون تغییر پاس می‌دهد', async t => {
+  const repo = makeFakeRepo(t);
+  const combos = [
+    { id: 't-both', canStageExternal: true, canMarkCheckedIn: true },
+    { id: 't-stage-only', canStageExternal: true, canMarkCheckedIn: false },
+    { id: 't-checkin-only', canStageExternal: false, canMarkCheckedIn: true },
+    { id: 't-neither', canStageExternal: false, canMarkCheckedIn: false }
+  ];
+  const tasks = combos.map(c => ({
+    id: c.id,
+    state: 'integrating',
+    externalSources: [{
+      id: 'webiii',
+      access: 'write',
+      staged: c.canMarkCheckedIn ? { sha: 'abc1234567890', at: new Date().toISOString() } : null,
+      checkedIn: null,
+      actions: { canStageExternal: c.canStageExternal, canMarkCheckedIn: c.canMarkCheckedIn }
+    }]
+  }));
+  fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
+process.stdout.write(JSON.stringify({schemaVersion:1,generatedAt:new Date().toISOString(),repo:{},tasks:${JSON.stringify(tasks)}}));
+`, 'utf8');
+  const base = await startServer(t, { repos: [repo], server: {}, issueSource: {} });
+  const board = await (await fetch(`${base}/api/repos/fake/board`)).json();
+  for (const c of combos) {
+    const task = board.tasks.find(x => x.id === c.id);
+    assert.ok(task, `task ${c.id} باید در board باشد`);
+    assert.deepEqual(task.externalSources[0].actions, { canStageExternal: c.canStageExternal, canMarkCheckedIn: c.canMarkCheckedIn });
+  }
+});
