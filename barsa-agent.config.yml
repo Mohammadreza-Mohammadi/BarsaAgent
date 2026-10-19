@@ -20,7 +20,7 @@ issueSource:
     UserId: "${BARSA_ISSUE_USER_ID}"
   itemsPath: "data.items"
   mapping:
-    externalId: "externalId"
+    externalId: "code"
     title: "title"
     body: "body"
     url: "url"

@@ -83,6 +83,10 @@ function resolveEnvRefs(value, env, pathLabel) {
 }
 
 export function loadConfig(file = process.env.BARSA_AGENT_CONFIG || path.resolve('barsa-agent.config.yml'), env = process.env) {
+  if (env === process.env) {
+    const localEnvFile = path.join(path.dirname(path.resolve(file)), '.env.local');
+    if (fs.existsSync(localEnvFile)) process.loadEnvFile(localEnvFile);
+  }
   const config = resolveEnvRefs(parseConfigYaml(fs.readFileSync(file, 'utf8')), env, 'config');
   if (!Array.isArray(config.repos) || !config.repos.length) throw new Error('حداقل یک repo در کانفیگ لازم است.');
   for (const repo of config.repos) {

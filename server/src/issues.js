@@ -23,7 +23,7 @@ export function normalizeIssues(payload, source) {
   const m = source.mapping || {};
   const normalized = items.map(raw => {
     const labels = getMappedValue(raw, m.labels, 'labels');
-    const externalId = getMappedValue(raw, m.externalId, 'externalId');
+    const externalId = m.externalId ? getPath(raw, m.externalId) : raw?.externalId;
     const title = getMappedValue(raw, m.title, 'title');
     const body = getMappedValue(raw, m.body, 'body');
     const url = getMappedValue(raw, m.url, 'url');

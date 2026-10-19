@@ -8,6 +8,34 @@ import { redact } from '../src/security.js';
 import { parseConfigYaml, loadConfig } from '../src/config.js';
 import { collect } from '../src/cli.js';
 
+test('Portal code is used as externalId when both fields are present', () => {
+  const source = parseConfigYaml(fs.readFileSync(new URL('../../barsa-agent.config.yml', import.meta.url), 'utf8')).issueSource;
+  const result = normalizeIssues({ data: { items: [
+    { externalId: '1100402940000004672', code: '3952', title: 'Issue A' },
+    { externalId: '1100402940000004733', title: 'Issue without code' }
+  ] } }, source);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].externalId, '3952');
+});
+
+test('loadConfig reads .env.local next to the config file', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-agent-local-env-'));
+  const key = 'BARSA_TEST_LOCAL_ENV_USER_ID';
+  const previous = process.env[key];
+  t.after(() => {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  delete process.env[key];
+  const file = path.join(root, 'cfg.yml');
+  fs.writeFileSync(file, `repos:\n  - id: fake\n    path: "."\nissueSource:\n  body:\n    UserId: "\${${key}}"\n`, 'utf8');
+  fs.writeFileSync(path.join(root, '.env.local'), `${key}=local-user-id\n`, 'utf8');
+
+  assert.equal(loadConfig(file).issueSource.body.UserId, 'local-user-id');
+});
+
 test('mapping مسیر نقطه‌ای و itemsPath را اعمال می‌کند', () => {
   const source = { itemsPath: 'data.items', mapping: { externalId: 'key', title: 'fields.subject', body: 'fields.description', labels: 'tags' } };
   const result = normalizeIssues({ data: { items: [{ key: 42, fields: { subject: 'نمونه', description: 'متن' }, tags: ['bug'] }] } }, source)[0];
