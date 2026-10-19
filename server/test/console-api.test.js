@@ -204,6 +204,23 @@ test('کنسول: run از همان صف/ثبت کانبان می‌گذرد، e
   assert.equal(record.exitCode, 0);
 });
 
+test('.env.local: کلیدهای آن از env ِ run، اکشن تایپ‌شده و کنسول (فرزندان manager) حذف می‌شوند', async t => {
+  process.env.BARSA_TEST_LOCAL_SECRET = 'local-secret-value';
+  t.after(() => { delete process.env.BARSA_TEST_LOCAL_SECRET; });
+  const fake = makeFakeManagerRepo(t);
+  const { base } = await boot(t, fake, { localEnvKeys: ['BARSA_TEST_LOCAL_SECRET'] });
+
+  await post(base, '/api/repos/fake/tasks/8/run');
+  await waitRun(base, '8');
+  assert.equal((await post(base, '/api/repos/fake/tasks/8/abandon', { reason: 'x' })).status, 200);
+  const { execId } = await (await post(base, '/api/console/exec', { repo: 'fake', line: 'answer 8 --unblock --reason x', confirmedCommand: 'node scripts/manager.js answer 8 --unblock --reason x' })).json();
+  await finishExec(base, execId);
+
+  const calls = fake.calls().filter(c => ['run', 'abandon', 'answer'].includes(c.args[0]));
+  assert.equal(calls.length, 3);
+  for (const call of calls) assert.equal(call.local, null, call.args.join(' '));
+});
+
 test('تاریخچه‌ی کنسول: خط‌های قبلی (بدون تکرار، تازه‌ترین اول) برای ورود مجدد می‌ماند', async t => {
   const fake = makeFakeManagerRepo(t);
   const { base } = await boot(t, fake);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAgentEnv } from '../src/agent-env.js';
+import { buildAgentEnv, stripLocalEnv } from '../src/agent-env.js';
 
 // کانبان-الحاقیه-۱، بند الف: env ِ فرزندی که manager.js «run» (و از آن طریق
 // run-agent.js) را اجرا می‌کند — همیشه بدون CLAUDE_CODE_OAUTH_TOKEN، و با
@@ -43,4 +43,29 @@ test('buildAgentEnv: baseEnv اصلی تغییر نمی‌کند (کپی، نه 
   const baseEnv = { CLAUDE_CODE_OAUTH_TOKEN: 'secret' };
   buildAgentEnv({}, baseEnv);
   assert.equal(baseEnv.CLAUDE_CODE_OAUTH_TOKEN, 'secret', 'شیء ورودی دست‌نخورده بماند');
+});
+
+// --- .env.local: کلیدهای فایل محلی از env ِ فرزندان حذف می‌شوند ------------------------
+
+test('buildAgentEnv: کلیدهای config.localEnvKeys حذف می‌شوند، بقیه‌ی env و پروکسی دست‌نخورده', () => {
+  const baseEnv = { BARSA_ISSUE_USER_ID: 'uid-123', OTHER_LOCAL: 'x', PATH: '/usr/bin', KEEP_ME: '1' };
+  const env = buildAgentEnv({ localEnvKeys: ['BARSA_ISSUE_USER_ID', 'OTHER_LOCAL', 'NOT_PRESENT'] }, baseEnv);
+  assert.equal(env.BARSA_ISSUE_USER_ID, undefined);
+  assert.equal(env.OTHER_LOCAL, undefined);
+  assert.equal(env.PATH, '/usr/bin');
+  assert.equal(env.KEEP_ME, '1');
+  assert.equal(env.HTTPS_PROXY, 'http://127.0.0.1:10808');
+  assert.equal(baseEnv.BARSA_ISSUE_USER_ID, 'uid-123', 'env ورودی دست‌نخورده می‌ماند');
+});
+
+test('buildAgentEnv: بدون localEnvKeys (یا config خالی) چیزی حذف نمی‌شود', () => {
+  assert.equal(buildAgentEnv({}, { BARSA_ISSUE_USER_ID: 'a' }).BARSA_ISSUE_USER_ID, 'a');
+  assert.equal(buildAgentEnv({ localEnvKeys: [] }, { BARSA_ISSUE_USER_ID: 'a' }).BARSA_ISSUE_USER_ID, 'a');
+  assert.equal(buildAgentEnv(undefined, { BARSA_ISSUE_USER_ID: 'a' }).BARSA_ISSUE_USER_ID, 'a');
+});
+
+test('stripLocalEnv: درجا حذف می‌کند و همان شیء را برمی‌گرداند', () => {
+  const env = { A: '1', B: '2' };
+  assert.equal(stripLocalEnv({ localEnvKeys: ['A'] }, env), env);
+  assert.deepEqual(env, { B: '2' });
 });

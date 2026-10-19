@@ -134,7 +134,7 @@ issueSource:
     UserId: "${BARSA_ISSUE_USER_ID}"
   itemsPath: "data.items"
   mapping:
-    externalId: "externalId"
+    externalId: "code"
     title: "title"
     body: "body"
     url: "url"
@@ -219,9 +219,13 @@ Content-Type: application/json
 
 `UserId` دیگر در `barsa-agent.config.yml` خام نیست — از `${BARSA_ISSUE_USER_ID}` جایگزین می‌شود (همان قاعده‌ی توکن‌ها، بازبینی فاز ۲):
 
-```powershell
-$env:BARSA_ISSUE_USER_ID = "20b785b0-db71-4507-9757-b5280460b0cb"
+مقدار در فایل محلی `.env.local` کنار `barsa-agent.config.yml` قرار دارد و هنگام خواندن تنظیمات خودکار بارگذاری می‌شود. این فایل در Git ثبت نمی‌شود. قالب آن:
+
+```dotenv
+BARSA_ISSUE_USER_ID=<your-user-id>
 ```
+
+کلیدهای این فایل (فهرست از خود فایل خوانده می‌شود، در `config.localEnvKeys`) از env ِ فرزندان حذف می‌شوند: `buildAgentEnv` (run و به‌روزرسانی) و اجرای Manager از اکشن‌های کارت و کنسول. agent و Manager به آن‌ها نیازی ندارند.
 
 اگر BarsaWebService یک string حاوی JSON را دوباره serialize کند، adapter inner JSON را خودکار parse می‌کند.
 
