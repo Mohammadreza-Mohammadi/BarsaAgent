@@ -7,7 +7,7 @@ import path from 'node:path';
 
 export const HELP_FIXTURE = fs.readFileSync(new URL('./fixtures/manager-help.txt', import.meta.url), 'utf8');
 
-export function makeFakeManagerRepo(t, { status, run, extra = '' } = {}) {
+export function makeFakeManagerRepo(t, { status, run, extra = '', statusDelayMs = 0 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-fake-mgr-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, 'help.txt'), HELP_FIXTURE, 'utf8');
@@ -25,7 +25,7 @@ else if (cmd === 'status') {
   const board = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8'));
   const only = fileArg('--task');
   if (only !== null) board.tasks = (board.tasks || []).filter(t => String(t.id) === String(only));
-  process.stdout.write(JSON.stringify(board));
+  setTimeout(() => process.stdout.write(JSON.stringify(board)), ${statusDelayMs});
 }
 else if (cmd === 'events') { process.stdout.write('[]'); }
 else if (cmd === 'artifact') { process.stdout.write('# artifact'); }

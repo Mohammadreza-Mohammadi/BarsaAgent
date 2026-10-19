@@ -87,13 +87,25 @@ export interface ExternalSource {
   id: string;
   error?: string;
   access?: string | null;
+  delivery?: string | null;
   staged?: { sha: string; at: string | null } | null;
   checkedIn?: { changesets: string[]; at: string | null } | null;
   actions?: { canStageExternal: boolean; canMarkCheckedIn: boolean };
 }
 
+/** TOOLING-037: «این اکشن الان مجاز است؟» از خود Manager (status.schema.json، taskActions). */
+export interface TaskActions {
+  approve: boolean; reject: boolean; clarify: boolean; note: boolean; unblock: boolean; raiseLimit: boolean;
+  closeOrphan: string[]; allowPath: boolean; allowSharedKnowledgeFile: boolean; externalAccess: string[]; resetExternal: string[];
+  cancel: boolean; abandon: boolean; void: boolean; unlock: boolean;
+}
+
 export interface Task {
   id: string;
+  /** مسیر پوشه‌ی task نسبت به ریشه‌ی مخزن (TOOLING-037)؛ zip فقط از همین ساخته می‌شود. */
+  dir?: string;
+  /** غایب = Manager قدیمی‌تر از TOOLING-037 → هیچ دکمه‌ای. */
+  actions?: TaskActions;
   slug?: string;
   title?: string;
   type?: string;
@@ -103,7 +115,7 @@ export interface Task {
   awaitingHuman?: HumanGate | null;
   // فیلدهای اضافه از blocker ِ واقعی Manager (کلید به کلید، بدون تفسیر): base/source برای
   // rebase-conflict، field/role برای budget-exhausted، maxAttempts/maxSpecRevisions برای attempts-exhausted/spec-churn.
-  blocker?: { kind?: string | null; reason?: string | null; base?: string | null; source?: string | null; field?: string | null; role?: string | null; maxAttempts?: number | null; maxSpecRevisions?: number | null; [key: string]: unknown } | null;
+  blocker?: { kind?: string | null; reason?: string | null; base?: string | null; source?: string | null; field?: string | null; role?: string | null; maxAttempts?: number | null; maxSpecRevisions?: number | null; conflictFiles?: string[] | null; [key: string]: unknown } | null;
   source?: SourceRef | null;
   budget?: Record<string, BudgetItem>;
   scope?: { allow?: string[]; deny?: string[]; exception?: unknown };

@@ -51,6 +51,17 @@ repos:
 
 اجرا به‌صورت سرویس ویندوز: `docs/server-service.md`.
 
+## دکمه‌های کارت: فقط از `actions` (TOOLING-037)
+
+«این اکشن الان مجاز است؟» را خود Manager می‌گوید (`status --json` ← `task.actions`، همان تابعی که handlerها پیش از اجرا می‌پرسند).
+کانبان هیچ نسخه‌ی دومی از این منطق ندارد: نه از روی state، نه `blocker`، نه `awaitingHuman`. منطق خالص در
+`client/src/app/task-actions.ts` است (`can`، `allowed`). دکمه‌ها: approve/reject/clarify، note، unblock، raise-limit (هفت فیلد)،
+close-orphan (از آرایه)، allow-path، allow-shared-knowledge-file، external-access و reset-external (منبع از آرایه؛ `--to` اختیاری)،
+void، unlock، cancel، abandon. کنار `--clarify` اگر `actions.externalAccess` غیرخالی باشد یک انتخاب اختیاری `--external-access` هست.
+`actions` غایب (Manager قدیمی) = هیچ دکمه‌ای. کارت `rebase-conflict` فایل‌ها را از `blocker.conflictFiles` نشان می‌دهد و zip ِ پوشه‌ی task
+فقط از `task.dir` ساخته می‌شود (حدس از id/slug نیست). `status --json` در اولین اجرا تا ~۱۵ ثانیه طول می‌کشد: poll ِ بعدی تا تمام
+شدن قبلی شروع نمی‌شود و سرور درخواست‌های هم‌زمان را به یک اجرای Manager تبدیل می‌کند.
+
 ## برد و آرشیو
 
 taskهای `integrated`، `cancelled` و `abandoned` از ستون‌های برد بیرون‌اند. ستون «تمام» فقط taskهای `integrated` را که در

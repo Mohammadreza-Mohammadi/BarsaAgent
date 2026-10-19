@@ -248,20 +248,24 @@ test('اکشن‌های تایپ‌شده: abandon/unblock/raise-limit/close-orp
   assert.equal((await post(base, '/api/repos/fake/tasks/7/abandon', { reason })).status, 200);
   assert.equal((await post(base, '/api/repos/fake/tasks/7/unblock', { reason })).status, 200);
   assert.equal((await post(base, '/api/repos/fake/tasks/7/raise-limit', { field: 'maxAttempts', value: 30, reason })).status, 200);
+  assert.equal((await post(base, '/api/repos/fake/tasks/7/raise-limit', { field: 'implementerRuns', value: 4, reason })).status, 200);
   assert.equal((await post(base, '/api/repos/fake/tasks/7/close-orphan', { attempt: '013', reason })).status, 200);
   const calls = fake.mutations().map(c => c.args);
-  assert.equal(calls[0][0], 'abandon');
-  assert.equal(calls[0][2], '--reason-file');
-  assert.deepEqual(fake.files(), [{ flag: '--reason-file', text: reason }], 'متن آزاد abandon از فایل UTF-8 می‌رود');
-  assert.deepEqual(calls[1], ['answer', '7', '--unblock', '--reason', reason], 'فارسی در argv node→node سالم می‌ماند');
-  assert.deepEqual(calls[2], ['answer', '7', '--raise-limit', 'maxAttempts=30', '--reason', reason]);
-  assert.deepEqual(calls[3], ['answer', '7', '--close-orphan', '013', '--reason', reason]);
-  assert.deepEqual(audit().summaries().filter(r => r.phases.includes('end')).map(r => r.action).sort(), ['abandon', 'close-orphan', 'raise-limit', 'unblock']);
+  const tmpOf = args => args[args.indexOf('--reason-file') + 1];
+  const shape = args => args.map(a => (a === tmpOf(args) ? '<file>' : a));
+  assert.deepEqual(shape(calls[0]), ['abandon', '7', '--reason-file', '<file>']);
+  assert.deepEqual(shape(calls[1]), ['answer', '7', '--unblock', '--reason-file', '<file>']);
+  assert.deepEqual(shape(calls[2]), ['answer', '7', '--raise-limit', 'maxAttempts=30', '--reason-file', '<file>']);
+  assert.deepEqual(shape(calls[3]), ['answer', '7', '--raise-limit', 'implementerRuns=4', '--reason-file', '<file>']);
+  assert.deepEqual(shape(calls[4]), ['answer', '7', '--close-orphan', '013', '--reason-file', '<file>']);
+  assert.deepEqual(fake.files().map(f => f.text), Array(5).fill(reason), 'متن آزاد همیشه از فایل UTF-8 می‌رود، نه argv');
+  assert.ok(calls.every(args => !fs.existsSync(tmpOf(args))), 'فایل‌های موقت پاک شده‌اند');
+  assert.deepEqual(audit().summaries().filter(r => r.phases.includes('end')).map(r => r.action).sort(), ['abandon', 'close-orphan', 'raise-limit', 'raise-limit', 'unblock']);
 
   // اعتبارسنجی: رد و ممیزی، بدون صدا زدن manager
   const before = fake.mutations().length;
   assert.equal((await post(base, '/api/repos/fake/tasks/7/abandon', { reason: '  ' })).status, 400);
-  assert.equal((await post(base, '/api/repos/fake/tasks/7/raise-limit', { field: 'implementerRuns', value: 3, reason })).status, 400);
+  assert.equal((await post(base, '/api/repos/fake/tasks/7/raise-limit', { field: 'noSuchLimit', value: 3, reason })).status, 400);
   assert.equal((await post(base, '/api/repos/fake/tasks/7/raise-limit', { field: 'maxAttempts', value: 0, reason })).status, 400);
   assert.equal((await post(base, '/api/repos/fake/tasks/7/close-orphan', { attempt: '../x', reason })).status, 400);
   assert.equal(fake.mutations().length, before);
@@ -283,18 +287,77 @@ test('import-issue: دسترسی بیرونی فقط با قالب sourceId=read
   assert.equal(fake.mutations().length, 1);
 });
 
-test('ط: retry-rebase فقط برای blocker از نوع rebase-conflict است و unblock بعد run می‌کند', async t => {
-  const blocked = (kind) => ({ schemaVersion: 1, repo: {}, tasks: [{ id: '5', state: 'blocked', previousState: 'implementing', blocker: { kind, base: 'main' } }] });
-  const fake = makeFakeManagerRepo(t, { status: blocked('budget-exhausted') });
+test('ط: retry-rebase کانبان خودش «مجاز است؟» نمی‌سنجد: unblock (با reason-file) و بعد run؛ رد Manager = 422 و run هرگز نمی‌رسد', async t => {
+  const fake = makeFakeManagerRepo(t, { status: { schemaVersion: 1, repo: {}, tasks: [{ id: '5', state: 'blocked', blocker: { kind: 'rebase-conflict', base: 'main', conflictFiles: ['a.ts'] } }] } });
   const { base } = await boot(t, fake);
-  assert.equal((await post(base, '/api/repos/fake/tasks/5/retry-rebase', {})).status, 409);
-  assert.deepEqual(fake.mutations(), []);
-
-  fake.setStatus(blocked('rebase-conflict'));
   const response = await post(base, '/api/repos/fake/tasks/5/retry-rebase', {});
   assert.equal(response.status, 200);
   await waitRun(base, '5');
-  const names = fake.mutations().map(c => c.args.slice(0, 3).join(' '));
-  assert.equal(names[0], 'answer 5 --unblock');
-  assert.equal(names[1], 'run 5');
+  const calls = fake.mutations().map(c => c.args);
+  assert.deepEqual(calls[0].slice(0, 3), ['answer', '5', '--unblock']);
+  assert.equal(calls[0][3], '--reason-file');
+  assert.deepEqual(calls[1], ['run', '5']);
+  assert.match(fake.files()[0].text, /تلاش دوباره/);
+});
+
+test('answer --clarify می‌تواند --external-access را هم بفرستد؛ کنار approve/reject یا با شکل بد رد می‌شود', async t => {
+  const fake = makeFakeManagerRepo(t);
+  const { base } = await boot(t, fake, { run: { autoResumeAfterAnswer: false } });
+  const ok = await post(base, '/api/repos/fake/tasks/9/answer', { mode: 'clarify', text: 'پاسخ', respec: true, externalAccess: { sourceId: 'webiii', access: 'write' } });
+  assert.equal(ok.status, 200);
+  const args = fake.mutations()[0].args;
+  assert.deepEqual([args[0], args[1], args[2]], ['answer', '9', '--clarify']);
+  assert.ok(args.includes('--respec'));
+  assert.deepEqual(args.slice(args.indexOf('--external-access'), args.indexOf('--external-access') + 2), ['--external-access', 'webiii=write']);
+
+  const before = fake.mutations().length;
+  assert.equal((await post(base, '/api/repos/fake/tasks/9/answer', { mode: 'approve', externalAccess: { sourceId: 'webiii', access: 'write' } })).status, 400);
+  assert.equal((await post(base, '/api/repos/fake/tasks/9/answer', { mode: 'clarify', text: 'x', externalAccess: { sourceId: 'web iii', access: 'write' } })).status, 400);
+  assert.equal((await post(base, '/api/repos/fake/tasks/9/answer', { mode: 'clarify', text: 'x', externalAccess: { sourceId: 'webiii', access: 'admin' } })).status, 400);
+  assert.equal(fake.mutations().length, before);
+  // بدون externalAccess هیچ --external-access ای نمی‌رود
+  await post(base, '/api/repos/fake/tasks/9/answer', { mode: 'clarify', text: 'ساده' });
+  assert.ok(!fake.mutations().at(-1).args.includes('--external-access'));
+});
+
+test('اکشن‌های تازه: allow-path / allow-shared-knowledge-file / external-access / reset-external با --reason-file و اعتبارسنجی شکل', async t => {
+  const fake = makeFakeManagerRepo(t);
+  const { base, audit } = await boot(t, fake);
+  const reason = 'دلیل «فارسی»';
+  assert.equal((await post(base, '/api/repos/fake/tasks/7/allow-path', { path: 'projects/x/src/a.ts', reason })).status, 200);
+  assert.equal((await post(base, '/api/repos/fake/tasks/7/allow-shared-knowledge-file', { path: 'ai-context/shared/y.md', reason })).status, 200);
+  assert.equal((await post(base, '/api/repos/fake/tasks/7/external-access', { sourceId: 'webiii', access: 'read', reason })).status, 200);
+  assert.equal((await post(base, '/api/repos/fake/tasks/7/reset-external', { sourceId: 'webiii', reason })).status, 200);
+  assert.equal((await post(base, '/api/repos/fake/tasks/7/reset-external', { sourceId: 'webiii', to: 'a1b2c3d', reason })).status, 200);
+  const calls = fake.mutations().map(c => c.args);
+  const shape = args => args.map(a => (a === args[args.indexOf('--reason-file') + 1] ? '<file>' : a));
+  assert.deepEqual(shape(calls[0]), ['answer', '7', '--allow-path', 'projects/x/src/a.ts', '--reason-file', '<file>']);
+  assert.deepEqual(shape(calls[1]), ['answer', '7', '--allow-shared-knowledge-file', 'ai-context/shared/y.md', '--reason-file', '<file>']);
+  assert.deepEqual(shape(calls[2]), ['answer', '7', '--external-access', 'webiii=read', '--reason-file', '<file>']);
+  assert.deepEqual(shape(calls[3]), ['answer', '7', '--reset-external', 'webiii', '--reason-file', '<file>']);
+  assert.deepEqual(shape(calls[4]), ['answer', '7', '--reset-external', 'webiii', '--to', 'a1b2c3d', '--reason-file', '<file>']);
+  assert.deepEqual(fake.files().map(f => f.text), Array(5).fill(reason));
+
+  const before = fake.mutations().length;
+  for (const [kind, body] of [
+    ['allow-path', { path: '', reason }], ['allow-path', { path: '--force', reason }], ['allow-path', { path: 'a\nb', reason }], ['allow-path', { path: 'a.ts' }],
+    ['allow-shared-knowledge-file', { path: '-x', reason }],
+    ['external-access', { sourceId: 'bad id', access: 'read', reason }], ['external-access', { sourceId: 'webiii', access: 'root', reason }],
+    ['reset-external', { sourceId: 'webiii', to: 'not-a-sha', reason }], ['reset-external', { sourceId: ';rm', reason }]
+  ]) {
+    assert.equal((await post(base, `/api/repos/fake/tasks/7/${kind}`, body)).status, 400, `${kind} ${JSON.stringify(body)}`);
+  }
+  assert.equal(fake.mutations().length, before, 'ورودی بد هرگز به Manager نمی‌رسد');
+  assert.ok(audit().readAll().filter(r => r.phase === 'rejected').length >= 9);
+});
+
+test('status --json با cache سرد کند است: درخواست‌های هم‌زمان board یک فرآیند Manager می‌گیرند (single-flight)', async t => {
+  const fake = makeFakeManagerRepo(t, { statusDelayMs: 700 });
+  const { base } = await boot(t, fake);
+  const statusCalls = () => fake.calls().filter(c => c.args[0] === 'status').length;
+  const responses = await Promise.all([get(base, '/api/repos/fake/board'), get(base, '/api/repos/fake/board'), get(base, '/api/repos/fake/board')]);
+  assert.deepEqual(responses.map(r => r.status), [200, 200, 200]);
+  assert.equal(statusCalls(), 1, 'سه درخواست هم‌زمان = یک اجرای Manager');
+  await get(base, '/api/repos/fake/board');
+  assert.equal(statusCalls(), 2, 'بعد از تمام شدن، درخواست بعدی دوباره می‌خواند');
 });

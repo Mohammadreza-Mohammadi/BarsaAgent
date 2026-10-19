@@ -186,10 +186,19 @@ export function createApp(config, deps = {}) {
     if (!repo) throw Object.assign(new Error('مخزن پیدا نشد.'), { status: 404 });
     return repo;
   };
-  const boardFor = async repo => {
-    const board = await collectJson(repo, ['status', '--json']);
-    board.repo = { ...(board.repo || {}), id: repo.id, path: repo.path };
-    return board;
+  // status --json در اولین اجرا (cache سرد Manager) حدود ۱۵ ثانیه طول می‌کشد. تا تمام نشده هر درخواست
+  // دیگر (poll ِ تب دیگر، /api/issues) همان اجرا را می‌گیرد، نه یک فرآیند Manager تازه.
+  const boardInflight = new Map();
+  const boardFor = repo => {
+    const running = boardInflight.get(repo.id);
+    if (running) return running;
+    const promise = (async () => {
+      const board = await collectJson(repo, ['status', '--json']);
+      board.repo = { ...(board.repo || {}), id: repo.id, path: repo.path };
+      return board;
+    })().finally(() => boardInflight.delete(repo.id));
+    boardInflight.set(repo.id, promise);
+    return promise;
   };
   const refreshIssues = async force => {
     if (force || Date.now() - issueCache.at > 15_000) {
@@ -443,6 +452,15 @@ export function createApp(config, deps = {}) {
         if (input.mode === 'reject' && !input.reason?.trim()) return send(res, 400, { error: 'دلیل رد الزامی است.' });
         if (input.mode === 'clarify' && !input.text?.trim()) return send(res, 400, { error: 'متن پاسخ الزامی است.' });
         if (input.route && !['implementer', 'architect'].includes(input.route)) return send(res, 400, { error: 'route نامعتبر است.' });
+        // answer --clarify --external-access <sourceId>=read|write (اختیاری؛ فقط کنار clarify). «مجاز است؟» با Manager
+        // (actions.externalAccess غیرخالی) و رد/قبول با خود فرمان؛ این‌جا فقط شکل.
+        let externalAccessArg = null;
+        if (input.externalAccess) {
+          const { sourceId, access } = input.externalAccess;
+          if (input.mode !== 'clarify') return send(res, 400, { error: 'external-access فقط کنار clarify معنا دارد.' });
+          if (!/^[a-z0-9][a-z0-9-]*$/i.test(String(sourceId || '')) || !['read', 'write'].includes(access)) return send(res, 400, { error: 'external-access باید <sourceId> و read|write باشد.' });
+          externalAccessArg = `${sourceId}=${access}`;
+        }
         // release-note-at-merge.md، بند ه: همان دو مسیر answer سمت manager.js
         // (--release-note-file / --no-release-note) — هیچ endpoint تازه.
         if (input.releaseNoteText && input.noReleaseNote) return send(res, 400, { error: 'releaseNoteText و noReleaseNote با هم معنا ندارند.' });
@@ -459,6 +477,7 @@ export function createApp(config, deps = {}) {
             fs.writeFileSync(tmp, String(input.text), { encoding: 'utf8', mode: 0o600 });
             args.push('--file', tmp);
             if (input.respec) args.push('--respec');
+            if (externalAccessArg) args.push('--external-access', externalAccessArg);
           }
           if (input.reason) {
             // متن آزاد هرگز argv نمی‌شود — کنسول ویندوز فارسی را به ??? می‌شکند.

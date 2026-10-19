@@ -105,9 +105,9 @@
             <span class="task-badge external-info" *ngIf="s.checkedIn as ci" [title]="s.id">📋 {{s.id}}: ثبت شده ({{ci.changesets.join('، ') || '—'}})</span>
           </ng-container>
           <span class="editor-wrap" [title]="editorTitle(t)"><button class="editor-action" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ VSCode</button></span>
-          <button class="human-action" *ngIf="t.awaitingHuman" (click)="$event.stopPropagation(); openTask(t, true)">⚡ {{gateLabel(t)}}</button>
-          <button class="human-action" *ngIf="stageableSources(t).length" [disabled]="busy() || taskLocked(t)" (click)="$event.stopPropagation(); openStage(t)">🚚 انتقال به وب‌تری واقعی</button>
-          <button class="human-action" *ngIf="checkinableSources(t).length" [disabled]="busy() || taskLocked(t)" (click)="$event.stopPropagation(); openCheckin(t)">📋 ثبت شد در تی‌اف‌اس</button>
+          <button class="human-action" *ngIf="canAnswerGate(t)" (click)="$event.stopPropagation(); openTask(t, true)">⚡ {{gateLabel(t)}}</button>
+          <button class="human-action" *ngIf="stageableSources(t).length" [disabled]="busy()" (click)="$event.stopPropagation(); openStage(t)">🚚 انتقال به وب‌تری واقعی</button>
+          <button class="human-action" *ngIf="checkinableSources(t).length" [disabled]="busy()" (click)="$event.stopPropagation(); openCheckin(t)">📋 ثبت شد در تی‌اف‌اس</button>
           <div class="meta">
             <span *ngIf="budget(t) as b" [class.warn]="b.max > 0 && b.used >= b.max - 1">{{budgetLabel(t)}} {{b.used}}/{{b.max}}</span>
             <span>◷ {{elapsed(t.stateSince)}}</span>
@@ -303,20 +303,25 @@
         <label class="merge-ack" *ngIf="!managerMerges()"><input type="checkbox" [ngModel]="mergeAck()" (ngModelChange)="mergeAck.set($event)"><span>دستور merge را اجرا کردم</span></label>
       </ng-container>
 
-      <label class="answer-box" *ngIf="gateKind(t) === 'clarification'"><span>پاسخ به سؤال</span><textarea [(ngModel)]="answerText" placeholder="پاسخ شما…"></textarea><small class="budget-note">این چرخه budget مصرف نمی‌کند؛ پاسخ از فایل موقت به <code>answer --clarify --file</code> می‌رود.</small>
+      <label class="answer-box" *ngIf="can(t, 'clarify')"><span>پاسخ به سؤال</span><textarea [(ngModel)]="answerText" placeholder="پاسخ شما…"></textarea><small class="budget-note">این چرخه budget مصرف نمی‌کند؛ پاسخ از فایل موقت به <code>answer --clarify --file</code> می‌رود.</small>
         <label class="respec-check"><input type="checkbox" [(ngModel)]="respec"><span>این پاسخ مشخصات را عوض می‌کند (<code>--respec</code>)</span></label>
         <small class="budget-note" *ngIf="respec">تیک‌خورده یعنی spec عوض شده؛ Intake از نو اجرا می‌شود و گیت تأیید spec دوباره باز می‌شود.</small>
       </label>
-      <label class="answer-box" *ngIf="gateKind(t) !== 'clarification'"><span>دلیل رد (هنگام رد اجباری)</span><textarea [(ngModel)]="reason" placeholder="اگر تصمیم رد است، دلیل را بنویسید…"></textarea></label>
+      <label class="answer-box" *ngIf="can(t, 'clarify') && externalAccessChoices(t).length">
+        <span>تغییر دسترسی منبع بیرونی همراه پاسخ (اختیاری — <code>--external-access</code> کنار <code>--clarify</code>)</span>
+        <select [(ngModel)]="clarifyAccessSource"><option value="">بدون تغییر</option><option *ngFor="let s of externalAccessChoices(t)" [value]="s">{{s}}</option></select>
+        <select *ngIf="clarifyAccessSource" [(ngModel)]="clarifyAccessLevel"><option value="read">read</option><option value="write">write</option></select>
+      </label>
+      <label class="answer-box" *ngIf="can(t, 'reject')"><span>دلیل رد (هنگام رد اجباری)</span><textarea [(ngModel)]="reason" placeholder="اگر تصمیم رد است، دلیل را بنویسید…"></textarea></label>
     </div>
     <footer class="gate-footer">
-      <button class="danger" [disabled]="busy() || !reason.trim() || taskLocked(t)" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('reject')">رد</button>
-      <button class="primary" [disabled]="busy() || releaseNoteBlocksApprove(t) || taskLocked(t)" *ngIf="gateKind(t) === 'spec-approval'" (click)="answer('approve')">تأیید</button>
+      <button class="danger" [disabled]="busy() || !reason.trim()" *ngIf="can(t, 'reject') && gateKind(t) !== 'merge-approval'" (click)="answer('reject')">رد</button>
+      <button class="primary" [disabled]="busy() || releaseNoteBlocksApprove(t)" *ngIf="can(t, 'approve') && gateKind(t) !== 'merge-approval'" (click)="answer('approve')">تأیید</button>
 
-      <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim() || taskLocked(t)" (click)="answer('reject','implementer')">رد → پیاده‌سازی</button><small>نقشه درست بود، اجرا نه؛ implementerRuns مصرف می‌شود.</small></div>
-      <div class="route-action" *ngIf="gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim() || taskLocked(t)" (click)="answer('reject','architect')">رد → معماری</button><small>نقشه غلط بود؛ budget پیاده‌سازی دست نمی‌خورد.</small></div>
-      <button class="primary" [disabled]="busy() || (!managerMerges() && !mergeAck()) || releaseNoteBlocksApprove(t) || taskLocked(t)" *ngIf="gateKind(t) === 'merge-approval'" (click)="answer('approve')">{{managerMerges() ? 'تأیید و merge' : 'merge کردم، ببند'}}</button>
-      <button class="primary" [disabled]="busy() || !answerText.trim() || taskLocked(t)" *ngIf="gateKind(t) === 'clarification'" (click)="answer('clarify')">ارسال پاسخ</button>
+      <div class="route-action" *ngIf="can(t, 'reject') && gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim()" (click)="answer('reject','implementer')">رد → پیاده‌سازی</button><small>نقشه درست بود، اجرا نه؛ implementerRuns مصرف می‌شود.</small></div>
+      <div class="route-action" *ngIf="can(t, 'reject') && gateKind(t) === 'merge-approval'"><button class="danger" [disabled]="busy() || !reason.trim()" (click)="answer('reject','architect')">رد → معماری</button><small>نقشه غلط بود؛ budget پیاده‌سازی دست نمی‌خورد.</small></div>
+      <button class="primary" [disabled]="busy() || (!managerMerges() && !mergeAck()) || releaseNoteBlocksApprove(t)" *ngIf="can(t, 'approve') && gateKind(t) === 'merge-approval'" (click)="answer('approve')">{{managerMerges() ? 'تأیید و merge' : 'merge کردم، ببند'}}</button>
+      <button class="primary" [disabled]="busy() || !answerText.trim()" *ngIf="can(t, 'clarify')" (click)="answer('clarify')">ارسال پاسخ</button>
     </footer>
   </ng-container>
 
@@ -340,7 +345,7 @@
     </div>
     <footer class="gate-footer">
       <button class="secondary" (click)="closePanel()">انصراف</button>
-      <button class="primary" [disabled]="busy() || taskLocked(t) || !checkinValid(t)" (click)="confirmCheckin()">ثبت شد — ببند</button>
+      <button class="primary" [disabled]="busy() || !checkinValid(t)" (click)="confirmCheckin()">ثبت شد — ببند</button>
     </footer>
   </ng-container>
 
@@ -361,7 +366,7 @@
     </div>
     <footer class="gate-footer">
       <button class="secondary" (click)="closePanel()">انصراف</button>
-      <button class="primary" [disabled]="busy() || taskLocked(t) || !stageValid(t)" (click)="confirmStage()">تأیید — منتقل کن</button>
+      <button class="primary" [disabled]="busy() || !stageValid(t)" (click)="confirmStage()">تأیید — منتقل کن</button>
     </footer>
   </ng-container>
 
@@ -377,7 +382,7 @@
     </div>
     <footer class="gate-footer">
       <button class="secondary" (click)="closePanel()">انصراف</button>
-      <button class="primary" [disabled]="busy() || taskLocked(t) || !noteText.trim()" (click)="submitNote()">ثبت یادداشت</button>
+      <button class="primary" [disabled]="busy() || !noteText.trim()" (click)="submitNote()">ثبت یادداشت</button>
     </footer>
   </ng-container>
 
@@ -392,7 +397,7 @@
       <div class="source-box" *ngIf="t.source?.externalId"><span>منبع</span><b>{{t.source?.system || 'internal'}} #{{t.source?.externalId}}</b><a *ngIf="t.source?.url" [href]="t.source?.url || ''" target="_blank" rel="noopener">باز کردن issue ↗</a></div>
       <div class="task-tools">
         <span class="editor-wrap" [title]="editorTitle(t)"><button class="secondary" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ باز کردن در VSCode</button></span>
-        <span class="editor-wrap" [title]="noteAllowed(t) ? '' : 'state این task پایانی است — یادداشت هرگز خوانده نخواهد شد'"><button class="secondary" [disabled]="busy() || !noteAllowed(t) || taskLocked(t)" (click)="openNote(t, $event)">📝 یادداشت برای اجرای بعدی</button></span>
+        <span class="editor-wrap" *ngIf="can(t, 'note')"><button class="secondary" [disabled]="busy()" (click)="openNote(t, $event)">📝 یادداشت برای اجرای بعدی</button></span>
       </div>
 
       <nav class="task-tabs"><button [class.active]="taskTab() === 'overview'" (click)="taskTab.set('overview')">جزئیات</button><button [class.active]="taskTab() === 'diff'" (click)="openDiffTab()">Diff{{diffFiles(t).length ? ' (' + diffFiles(t).length + ')' : ''}}</button></nav>
@@ -432,30 +437,13 @@
 
       <section class="detail-section" *ngIf="logs().length || isRunning(t) || isQueued(t)"><div class="section-head"><div><h3>لاگ اجرا</h3><p>SSE · بافر حلقوی سمت سرور</p></div><span class="run-badge inline" *ngIf="isRunning(t)"><span></span> زنده</span></div><pre class="logs">{{logs().join('\n') || 'در انتظار خروجی…'}}</pre></section>
 
-      <section class="detail-section danger-zone" *ngIf="!finished(t)">
-        <div class="section-head"><div><h3>منطقه خطر</h3><p>هر دو عمل غیرقابل‌بازگشت‌اند و دلیل اجباری دارند</p></div></div>
-        <div class="danger-actions" *ngIf="!dangerOpen()">
-          <button class="danger-outline" [disabled]="busy()" (click)="openDanger('void')">باطل کردن آخرین transition</button>
-          <button class="danger-outline" [disabled]="busy()" (click)="openDanger('cancel')">بستن task</button>
-        </div>
-        <div class="danger-confirm" *ngIf="dangerOpen() === 'void'">
-          <small>آخرین transition این task را برمی‌گرداند (<code>void --reason-file</code>).</small>
-          <textarea [(ngModel)]="dangerReason" placeholder="دلیل باطل‌کردن…"></textarea>
-          <div class="danger-confirm-actions"><button class="secondary" (click)="closeDanger()">انصراف</button><button class="danger" [disabled]="busy() || !dangerReason.trim()" (click)="confirmDanger()">تأیید نهایی — باطل کن</button></div>
-        </div>
-        <div class="danger-confirm" *ngIf="dangerOpen() === 'cancel'">
-          <small>task را می‌بندد (<code>cancel --reason-file</code>) — برنمی‌گردد.</small>
-          <textarea [(ngModel)]="dangerReason" placeholder="دلیل بستن…"></textarea>
-          <div class="danger-confirm-actions"><button class="secondary" (click)="closeDanger()">انصراف</button><button class="danger" [disabled]="busy() || !dangerReason.trim()" (click)="confirmDanger()">تأیید نهایی — ببند</button></div>
-        </div>
-      </section>
       </ng-container>
     </div>
     <footer class="task-footer">
       <span class="footer-note">{{isQueued(t) ? 'در صف اجرا' : isRunning(t) ? 'فرآیند فعال است' : exitLabel(exitCodeFor(t))}}</span>
       <!-- task پایان‌یافته هیچ دکمه‌ی اکشنی ندارد: نمایش اکشن‌ها از actions ِ status --json است و Manager برای state پایانی هیچ‌کدام را نمی‌دهد -->
       <button class="secondary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t)" (click)="rebaseTask()" title="معمولاً لازم نیست — حلقه خودش این کار را می‌کند">rebase دستی</button>
-      <button class="primary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.awaitingHuman || !!t.error" (click)="runTask()">▶ اجرا / ادامه</button>
+      <button class="primary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.error" (click)="runTask()">▶ اجرا / ادامه</button>
     </footer>
   </ng-container>
 
@@ -488,8 +476,9 @@
         <div class="section-head"><div><h3>قدم بعدی</h3><p>Manager حساب می‌کند، نه UI</p></div></div>
         <small *ngIf="!t.health?.recovery?.commands?.length">Manager هیچ پیشنهاد خودکاری برای این وضعیت ندارد — بررسی دستی لازم است.</small>
         <div class="danger-actions" *ngIf="t.health?.recovery?.commands?.length">
+          <ng-container *ngFor="let cmd of t.health?.recovery?.commands">
           <button
-            *ngFor="let cmd of t.health?.recovery?.commands"
+            *ngIf="cmd === 'run' || can(t, 'unlock')"
             class="danger-outline"
             [class.recovery-suggested]="cmd === t.health?.recovery?.suggested"
             [disabled]="busy() || isRunning(t) || isQueued(t)"
@@ -497,6 +486,7 @@
             {{ cmd === 'run' ? '▶ دوباره اجرا کن' : '🔓 آزاد کردن قفل' }}
             <em *ngIf="cmd === t.health?.recovery?.suggested"> — پیشنهاد Manager</em>
           </button>
+          </ng-container>
         </div>
       </section>
 

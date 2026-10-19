@@ -20,16 +20,16 @@ function isInside(parent, child) {
 }
 
 /**
- * مسیر پوشه‌ی task در .agent-work — فقط برای خواندن (zip).
- * اگر `status --json` خودش مسیر را بدهد (task.dir / task.taskDir / task.paths.dir)
- * همان استفاده می‌شود؛ وگرنه قرارداد `.agent-work/tasks/<id>` (فیلد کم در Manager،
- * در گزارش آمده). در هر دو حالت realpath باید زیر `.agent-work/tasks` بماند.
+ * مسیر پوشه‌ی task در .agent-work — فقط برای خواندن (zip). فقط از `task.dir` ِ `status --json`
+ * (TOOLING-037، نسبت به ریشه‌ی مخزن): کانبان هیچ‌وقت از id+slug حدس نمی‌زند. realpath باید
+ * زیر `.agent-work/tasks` بماند.
  */
 export function resolveTaskDir(repo, task) {
   if (!TASK_ID.test(String(task?.id || ''))) throw Object.assign(new Error('شناسه‌ی task نامعتبر است.'), { status: 400 });
   const base = path.join(repo.path, '.agent-work', 'tasks');
-  const declared = task.dir ?? task.taskDir ?? task.paths?.dir ?? null;
-  const dir = declared ? path.resolve(repo.path, String(declared)) : path.join(base, String(task.id));
+  const declared = typeof task.dir === 'string' && task.dir.trim() ? task.dir : null;
+  if (!declared) throw Object.assign(new Error('Manager فیلد dir را در status --json نداد (نسخه‌ی Manager قدیمی‌تر از TOOLING-037)؛ مسیر پوشه حدس زده نمی‌شود.'), { status: 409 });
+  const dir = path.resolve(repo.path, declared);
   // اول نحوی (قبل از دست‌زدن به دیسک): مسیر اعلام‌شده‌ی بیرون از tasks همیشه 400 است.
   if (!isInside(path.resolve(base), path.resolve(dir))) {
     throw Object.assign(new Error('مسیر پوشه‌ی task خارج از .agent-work/tasks است.'), { status: 400 });
@@ -45,7 +45,7 @@ export function resolveTaskDir(repo, task) {
   if (!isInside(realBase, realDir) || !fs.statSync(realDir).isDirectory()) {
     throw Object.assign(new Error('مسیر پوشه‌ی task خارج از .agent-work/tasks است.'), { status: 400 });
   }
-  return { dir: realDir, source: declared ? 'status' : 'convention' };
+  return { dir: realDir, source: 'status' };
 }
 
 export function createOpsRoutes(ctx) {
@@ -215,6 +215,26 @@ export function createOpsRoutes(ctx) {
     }
   }
 
+  // «مجاز است؟» را خود Manager می‌گوید (status --json ← actions، همان تابعی که handler پیش از اجرا می‌پرسد)
+  // و UI فقط از همان دکمه می‌سازد. این‌جا فقط شکل ورودی سنجیده می‌شود (نه اجازه)؛ اگر Manager
+  // رد کند، پیام خام او با 422 برمی‌گردد. متن آزاد همیشه از فایل UTF-8 می‌رود، نه argv.
+  const RAISE_LIMIT_FIELDS = ['maxAttempts', 'maxSpecRevisions', 'architectRuns', 'implementerRuns', 'intakeRuns', 'reviewerRuns', 'rebaseRuns'];
+  const SOURCE_ID = /^[a-z0-9][a-z0-9-]*$/i;
+  const bad = message => Object.assign(new Error(message), { status: 400 });
+
+  const relativePathArg = (value, label) => {
+    const text = String(value ?? '').trim();
+    if (!text || text.length > 500 || /[\0\r\n]/.test(text)) throw bad(`${label} نامعتبر است.`);
+    if (text.startsWith('-')) throw bad(`${label} نباید با "-" شروع شود.`);
+    return text;
+  };
+
+  async function reasoned(session, repo, id, kind, argv, input) {
+    const reason = needReason(input);
+    await withReasonFile(reason, file => managerAudited(session, repo, ['answer', id, ...argv, '--reason-file', file], { action: kind, taskId: id }));
+    return { ok: true };
+  }
+
   async function taskAction(session, repo, id, input, kind) {
     switch (kind) {
       case 'abandon': {
@@ -222,26 +242,33 @@ export function createOpsRoutes(ctx) {
         await withReasonFile(reason, file => managerAudited(session, repo, ['abandon', id, '--reason-file', file], { action: 'abandon', taskId: id }));
         return { ok: true };
       }
-      case 'unblock': {
-        const reason = needReason(input);
-        await managerAudited(session, repo, ['answer', id, '--unblock', '--reason', reason], { action: 'unblock', taskId: id });
-        return { ok: true };
-      }
+      case 'unblock': return reasoned(session, repo, id, kind, ['--unblock'], input);
       case 'close-orphan': {
         const attempt = String(input?.attempt ?? '');
-        if (!/^\d{1,6}$/.test(attempt)) throw Object.assign(new Error('شماره‌ی attempt نامعتبر است (مثلاً 013).'), { status: 400 });
-        const reason = needReason(input);
-        await managerAudited(session, repo, ['answer', id, '--close-orphan', attempt, '--reason', reason], { action: 'close-orphan', taskId: id });
-        return { ok: true };
+        if (!/^\d{1,6}$/.test(attempt)) throw bad('شماره‌ی attempt نامعتبر است (مثلاً 013).');
+        return reasoned(session, repo, id, kind, ['--close-orphan', attempt], input);
       }
       case 'raise-limit': {
         const field = String(input?.field ?? '');
-        if (!['maxAttempts', 'maxSpecRevisions'].includes(field)) throw Object.assign(new Error('field باید maxAttempts یا maxSpecRevisions باشد.'), { status: 400 });
+        if (!RAISE_LIMIT_FIELDS.includes(field)) throw bad(`field باید یکی از ${RAISE_LIMIT_FIELDS.join('، ')} باشد.`);
         const value = Number(input?.value);
-        if (!Number.isInteger(value) || value < 1 || value > 1000) throw Object.assign(new Error('مقدار باید عدد صحیح بین ۱ و ۱۰۰۰ باشد.'), { status: 400 });
-        const reason = needReason(input);
-        await managerAudited(session, repo, ['answer', id, '--raise-limit', `${field}=${value}`, '--reason', reason], { action: 'raise-limit', taskId: id });
-        return { ok: true };
+        if (!Number.isInteger(value) || value < 1 || value > 1000) throw bad('مقدار باید عدد صحیح بین ۱ و ۱۰۰۰ باشد.');
+        return reasoned(session, repo, id, kind, ['--raise-limit', `${field}=${value}`], input);
+      }
+      case 'allow-path': return reasoned(session, repo, id, kind, ['--allow-path', relativePathArg(input?.path, 'مسیر')], input);
+      case 'allow-shared-knowledge-file': return reasoned(session, repo, id, kind, ['--allow-shared-knowledge-file', relativePathArg(input?.path, 'مسیر')], input);
+      case 'external-access': {
+        const sourceId = String(input?.sourceId ?? '');
+        if (!SOURCE_ID.test(sourceId)) throw bad('شناسه‌ی منبع بیرونی نامعتبر است.');
+        if (!['read', 'write'].includes(input?.access)) throw bad('سطح دسترسی باید read یا write باشد.');
+        return reasoned(session, repo, id, kind, ['--external-access', `${sourceId}=${input.access}`], input);
+      }
+      case 'reset-external': {
+        const sourceId = String(input?.sourceId ?? '');
+        if (!SOURCE_ID.test(sourceId)) throw bad('شناسه‌ی منبع بیرونی نامعتبر است.');
+        const to = input?.to == null || input.to === '' ? null : String(input.to);
+        if (to !== null && !/^[0-9a-f]{7,40}$/i.test(to)) throw bad('--to باید یک sha (۷ تا ۴۰ نویسه‌ی hex) باشد.');
+        return reasoned(session, repo, id, kind, ['--reset-external', sourceId, ...(to ? ['--to', to] : [])], input);
       }
       default:
         throw Object.assign(new Error('اکشن ناشناخته.'), { status: 404 });
@@ -252,14 +279,9 @@ export function createOpsRoutes(ctx) {
   // (RUN_STOPPED_STATES در manager.js)، پس اول unblock (برمی‌گرداند به
   // previousState) و بعد run که خودش دوباره rebase را امتحان می‌کند.
   async function retryRebase(session, repo, id, input) {
-    const board = await collectJson(repo, ['status', '--json', '--task', id]);
-    const task = board.tasks?.[0];
-    if (!task) throw Object.assign(new Error('task پیدا نشد.'), { status: 404 });
-    if (task.state !== 'blocked' || task.blocker?.kind !== 'rebase-conflict') {
-      throw Object.assign(new Error('این task با blocker از نوع rebase-conflict متوقف نیست.'), { status: 409 });
-    }
+    // «مجاز است؟» با خود Manager است (actions.unblock)؛ اگر مجاز نباشد unblock همان‌جا رد می‌شود و run هرگز نمی‌رسد.
     const reason = String(input?.reason ?? '').trim() || 'تلاش دوباره بعد از تغییر main (از کانبان)';
-    await managerAudited(session, repo, ['answer', id, '--unblock', '--reason', reason], { action: 'unblock', taskId: id });
+    await withReasonFile(reason, file => managerAudited(session, repo, ['answer', id, '--unblock', '--reason-file', file], { action: 'unblock', taskId: id }));
     const run = registry.enqueue(repo, id, { user: session.user });
     return { ok: true, queued: !!run && run.queued, started: !!run && !run.queued, duplicate: !run };
   }
@@ -327,7 +349,7 @@ export function createOpsRoutes(ctx) {
     if ((p = route('/api/repos/:repo/tasks/:id/zip', pathname)) && method === 'GET') {
       return await sendTaskZip(res, session, repoFor(p.repo), p.id), true;
     }
-    for (const kind of ['abandon', 'unblock', 'close-orphan', 'raise-limit']) {
+    for (const kind of ['abandon', 'unblock', 'close-orphan', 'raise-limit', 'allow-path', 'allow-shared-knowledge-file', 'external-access', 'reset-external']) {
       if ((p = route(`/api/repos/:repo/tasks/:id/${kind}`, pathname)) && method === 'POST') {
         return send(res, 200, await taskAction(session, repoFor(p.repo), p.id, await readBody(req), kind)), true;
       }
