@@ -8,6 +8,7 @@ import { collectJson } from './cli.js';
 import { ConsoleSyntaxError } from './tokenizer.js';
 import { parseConsoleLine, displayCommand, resolveArgs } from './console-parser.js';
 import { buildZip } from './zip.js';
+import { stripLocalEnv } from './agent-env.js';
 import { runHealthChecks } from './env-health.js';
 
 const MAX_ATTACHMENT = 1_000_000;
@@ -124,7 +125,8 @@ export function createOpsRoutes(ctx) {
       user: session.user, action: 'console', repoId: repo.id, taskId: parsed.taskId,
       program: process.execPath, args: [script, ...resolveArgs(parsed, attachments.files)],
       auditArgv: [script, ...resolveArgs(parsed, placeholders)],
-      cwd: repo.path, display, line: input.line, attachments: attachments.meta
+      cwd: repo.path, display, line: input.line, attachments: attachments.meta,
+      env: stripLocalEnv(config, { ...process.env })
     });
     exec.done.finally(() => { for (const file of Object.values(attachments.files)) fs.rmSync(file, { force: true }); });
     return send(res, 202, { kind: 'exec', execId: exec.id });

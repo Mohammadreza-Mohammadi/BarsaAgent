@@ -197,3 +197,31 @@ test('fetch issue پاسخ JSON دوبار serialize شدهٔ BarsaWebService ر
     assert.equal(result[0].title, 'نمونه');
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('loadConfig: فهرست کلیدها را از خود فایل .env.local می‌خواند (کامنت، کوتیشن، export) و در config.localEnvKeys می‌گذارد', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-agent-local-env-keys-'));
+  const keys = ['BARSA_TEST_KEYS_A', 'BARSA_TEST_KEYS_B', 'BARSA_TEST_KEYS_C'];
+  const previous = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+  t.after(() => {
+    for (const k of keys) { if (previous[k] === undefined) delete process.env[k]; else process.env[k] = previous[k]; }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  for (const k of keys) delete process.env[k];
+  const file = path.join(root, 'cfg.yml');
+  fs.writeFileSync(file, `repos:\n  - id: fake\n    path: "."\nissueSource:\n  body:\n    UserId: "\${BARSA_TEST_KEYS_A}"\n`, 'utf8');
+  fs.writeFileSync(path.join(root, '.env.local'), `# comment\n\nBARSA_TEST_KEYS_A=uid\nexport BARSA_TEST_KEYS_B="two words"\nBARSA_TEST_KEYS_C='x'\n`, 'utf8');
+
+  const config = loadConfig(file);
+  assert.deepEqual([...config.localEnvKeys].sort(), keys);
+  assert.equal(config.issueSource.body.UserId, 'uid');
+});
+
+test('loadConfig: بدون .env.local (یا با env سفارشی) localEnvKeys خالی است', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-agent-no-local-env-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'cfg.yml');
+  fs.writeFileSync(file, 'repos:\n  - id: fake\n    path: "."\n', 'utf8');
+  assert.deepEqual(loadConfig(file).localEnvKeys, []);
+  fs.writeFileSync(path.join(root, '.env.local'), 'BARSA_TEST_IGNORED=1\n', 'utf8');
+  assert.deepEqual(loadConfig(file, {}).localEnvKeys, [], 'با env سفارشی فایل خوانده نمی‌شود');
+});

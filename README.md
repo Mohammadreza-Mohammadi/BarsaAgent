@@ -225,6 +225,8 @@ Content-Type: application/json
 BARSA_ISSUE_USER_ID=<your-user-id>
 ```
 
+کلیدهای این فایل (فهرست از خود فایل خوانده می‌شود، در `config.localEnvKeys`) از env ِ فرزندان حذف می‌شوند: `buildAgentEnv` (run و به‌روزرسانی) و اجرای Manager از اکشن‌های کارت و کنسول. agent و Manager به آن‌ها نیازی ندارند.
+
 اگر BarsaWebService یک string حاوی JSON را دوباره serialize کند، adapter inner JSON را خودکار parse می‌کند.
 
 ## اجرا

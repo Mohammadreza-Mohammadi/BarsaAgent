@@ -10,6 +10,16 @@
 const DEFAULT_PROXY = 'http://127.0.0.1:10808';
 
 /**
+ * متغیرهایی که از `.env.local` آمده‌اند (config.localEnvKeys، خوانده‌شده از خود فایل در
+ * loadConfig) رازهای محلی کانبان‌اند — مثلاً BARSA_ISSUE_USER_ID. agent و Manager به
+ * آن‌ها نیازی ندارند، پس از env ِ فرزندان حذف می‌شوند. `env` را درجا تغییر می‌دهد و برمی‌گرداند.
+ */
+export function stripLocalEnv(config, env) {
+  for (const key of config?.localEnvKeys ?? []) delete env[key];
+  return env;
+}
+
+/**
  * `config.run.proxy`:
  *   - کلید غایب/`undefined` → پیش‌فرض DEFAULT_PROXY
  *   - `''`/`null` (صریحاً خالی) → بدون پروکسی؛ HTTP_PROXY/HTTPS_PROXY حتی اگر
@@ -21,7 +31,7 @@ const DEFAULT_PROXY = 'http://127.0.0.1:10808';
  * دست‌کاری env واقعی پروسه است.
  */
 export function buildAgentEnv(config, baseEnv = process.env) {
-  const env = { ...baseEnv };
+  const env = stripLocalEnv(config, { ...baseEnv });
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
   const configuredProxy = config?.run?.proxy;
   const proxy = configuredProxy === undefined ? DEFAULT_PROXY : configuredProxy;

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseEnv } from 'node:util';
 
 function splitInline(value) {
   const parts = [];
@@ -83,11 +84,18 @@ function resolveEnvRefs(value, env, pathLabel) {
 }
 
 export function loadConfig(file = process.env.BARSA_AGENT_CONFIG || path.resolve('barsa-agent.config.yml'), env = process.env) {
+  // کلیدهایی که از .env.local آمده‌اند را نگه می‌داریم تا buildAgentEnv آن‌ها را از env ِ
+  // فرزندان (agent/Manager) حذف کند: این‌ها رازهای محلی خود کانبان‌اند (مثل BARSA_ISSUE_USER_ID).
+  let localEnvKeys = [];
   if (env === process.env) {
     const localEnvFile = path.join(path.dirname(path.resolve(file)), '.env.local');
-    if (fs.existsSync(localEnvFile)) process.loadEnvFile(localEnvFile);
+    if (fs.existsSync(localEnvFile)) {
+      localEnvKeys = Object.keys(parseEnv(fs.readFileSync(localEnvFile, 'utf8')));
+      process.loadEnvFile(localEnvFile);
+    }
   }
   const config = resolveEnvRefs(parseConfigYaml(fs.readFileSync(file, 'utf8')), env, 'config');
+  config.localEnvKeys = localEnvKeys;
   if (!Array.isArray(config.repos) || !config.repos.length) throw new Error('حداقل یک repo در کانفیگ لازم است.');
   for (const repo of config.repos) {
     repo.path = path.resolve(repo.path); repo.managerScript = repo.managerScript || 'scripts/manager.js';

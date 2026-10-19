@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
 const dir = __dirname;
-fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify({ args, token: process.env.CLAUDE_CODE_OAUTH_TOKEN || null, proxy: process.env.HTTPS_PROXY || null }) + '\n');
+fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify({ args, token: process.env.CLAUDE_CODE_OAUTH_TOKEN || null, proxy: process.env.HTTPS_PROXY || null, local: process.env.BARSA_TEST_LOCAL_SECRET || null }) + '\n');
 const cmd = args[0];
 const fileArg = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
 if (cmd === '--help' || cmd === '-h' || !cmd) { process.stdout.write(fs.readFileSync(path.join(dir, 'help.txt'), 'utf8')); }

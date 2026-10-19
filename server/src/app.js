@@ -10,6 +10,7 @@ import { ProcessRegistry } from './process-registry.js';
 import { resolveDataDir } from './config.js';
 import { AuditLog } from './audit.js';
 import { createAuth } from './auth.js';
+import { stripLocalEnv } from './agent-env.js';
 import { ActionRunner } from './action-runner.js';
 import { GitOps } from './git-ops.js';
 import { ManagerUpdater } from './manager-update.js';
@@ -205,7 +206,8 @@ export function createApp(config, deps = {}) {
     const script = path.resolve(repo.path, repo.managerScript);
     const exec = runner.start({
       user: session.user, action: meta.action || String(args[0]), repoId: repo.id, taskId: meta.taskId ?? null,
-      program: process.execPath, args: [script, ...args.map(String)], cwd: repo.path
+      program: process.execPath, args: [script, ...args.map(String)], cwd: repo.path,
+      env: stripLocalEnv(config, { ...process.env })
     });
     const { code } = await exec.done;
     const part = stream => exec.lines.filter(line => line.stream === stream).map(line => line.text).join('\n');
