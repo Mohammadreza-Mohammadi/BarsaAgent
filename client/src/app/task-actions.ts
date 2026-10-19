@@ -49,3 +49,81 @@ export function conflictFiles(task: Pick<Task, 'blocker'> | null | undefined): s
   const files = task?.blocker?.conflictFiles;
   return Array.isArray(files) ? files.filter((x): x is string => typeof x === 'string') : null;
 }
+
+// --- کدام دکمه‌ها؟ (تابع خالص؛ هم کامپوننت و هم تست از همین می‌خوانند) ------------------------
+//
+// هر کلید `actions` که true یا آرایه‌ی غیرخالی است دقیقاً **یک** دکمه دارد. جدول زیر تنها جای نگاشت
+// کلید ← دکمه است؛ کلیدی که اینجا نباشد (Manager تازه‌تر از کانبان) در unknownActionKeys می‌آید و UI
+// آن را صریح گزارش می‌کند، نه اینکه بی‌صدا ناپدید شود.
+
+export type ButtonId =
+  | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan' | 'allow-path' | 'allow-shared-knowledge-file'
+  | 'external-access' | 'reset-external' | 'void' | 'unlock' | 'cancel' | 'abandon';
+
+export interface CardButton {
+  id: ButtonId;
+  action: BooleanAction | ListAction;
+  /** برای اکشن‌های آرایه‌ای: attempt یا منبعِ همین دکمه (closeOrphan: یک دکمه به‌ازای هر attempt). */
+  target?: string;
+}
+
+/** نگاشت کلید actions ← جایی که دکمه‌اش رندر می‌شود. */
+export const ACTION_PLACEMENT: Readonly<Record<BooleanAction | ListAction, 'ops' | 'gate' | 'tools'>> = {
+  approve: 'gate', reject: 'gate', clarify: 'gate', note: 'tools',
+  unblock: 'ops', raiseLimit: 'ops', closeOrphan: 'ops', allowPath: 'ops', allowSharedKnowledgeFile: 'ops',
+  externalAccess: 'ops', resetExternal: 'ops', cancel: 'ops', abandon: 'ops', void: 'ops', unlock: 'ops'
+};
+
+export const KNOWN_ACTION_KEYS: readonly string[] = Object.keys(ACTION_PLACEMENT);
+
+const OPS_ORDER: ReadonlyArray<{ key: BooleanAction | ListAction; id: ButtonId }> = [
+  { key: 'unblock', id: 'unblock' }, { key: 'raiseLimit', id: 'raise-limit' }, { key: 'closeOrphan', id: 'close-orphan' },
+  { key: 'allowPath', id: 'allow-path' }, { key: 'allowSharedKnowledgeFile', id: 'allow-shared-knowledge-file' },
+  { key: 'externalAccess', id: 'external-access' }, { key: 'resetExternal', id: 'reset-external' },
+  { key: 'void', id: 'void' }, { key: 'unlock', id: 'unlock' }, { key: 'cancel', id: 'cancel' }, { key: 'abandon', id: 'abandon' }
+];
+
+/**
+ * دکمه‌های بخش «اکشن‌ها»ی کارت، به ترتیب. `rebaseConflict` فقط شکل نمایش `unblock` را عوض می‌کند
+ * (کارت rebase-conflict: «دوباره امتحان کن» = unblock + run) و هیچ‌وقت چیزی را مجاز یا ممنوع نمی‌کند.
+ */
+export function opsButtons(task: Pick<Task, 'actions'> | null | undefined, opts: { rebaseConflict?: boolean } = {}): CardButton[] {
+  const out: CardButton[] = [];
+  for (const { key, id } of OPS_ORDER) {
+    if (key === 'closeOrphan') {
+      for (const attempt of allowed(task, 'closeOrphan')) out.push({ id, action: key, target: attempt });
+    } else if (key === 'externalAccess' || key === 'resetExternal') {
+      if (allowed(task, key).length) out.push({ id, action: key });
+    } else if (can(task, key as BooleanAction)) {
+      out.push({ id: key === 'unblock' && opts.rebaseConflict ? 'retry-rebase' : id, action: key });
+    }
+  }
+  return out;
+}
+
+/** هر کلید actions که الان «چیزی برای نشان دادن دارد» (true یا آرایه‌ی غیرخالی). */
+export function activeActionKeys(task: Pick<Task, 'actions'> | null | undefined): string[] {
+  const a = task?.actions as Record<string, unknown> | undefined;
+  if (!a) return [];
+  return Object.keys(a).filter(k => a[k] === true || (Array.isArray(a[k]) && (a[k] as unknown[]).length > 0));
+}
+
+/** کلیدهای فعالی که این کانبان نمی‌شناسد (Manager تازه‌تر) — UI باید گزارششان کند. */
+export function unknownActionKeys(task: Pick<Task, 'actions'> | null | undefined): string[] {
+  return activeActionKeys(task).filter(k => !KNOWN_ACTION_KEYS.includes(k));
+}
+
+/** کدام کلیدهای فعال در کدام بخش (ops/gate/tools) دکمه دارند — برای تست «هیچ کلید فعالی بی‌دکمه نمی‌ماند». */
+export function renderedActionKeys(task: Pick<Task, 'actions'> | null | undefined, opts: { rebaseConflict?: boolean } = {}): string[] {
+  const ops = opsButtons(task, opts).map(b => b.action as string);
+  const others = activeActionKeys(task).filter(k => (ACTION_PLACEMENT as Record<string, string>)[k] === 'gate' || (ACTION_PLACEMENT as Record<string, string>)[k] === 'tools');
+  return [...new Set([...ops, ...others])];
+}
+
+/**
+ * resume ِ خودکار: بعد از کدام اکشن‌های کارت، کانبان خودش `run` می‌زند (وقتی run.autoResumeAfterAnswer روشن است).
+ * فقط سه تصمیم گیت. بقیه (unblock، raiseLimit، allowPath، externalAccess، resetExternal، note، ...) هرگز، چون انسان
+ * معمولاً چند تا را پشت‌سرهم می‌زند و بعد خودش اجرا می‌کند. تنها استثنا «دوباره امتحان کن» ِ rebase-conflict است که
+ * اسمش و پنجره‌ی تأییدش صریحاً می‌گوید unblock + run.
+ */
+export const AUTO_RESUME_ACTIONS: readonly string[] = ['approve', 'reject', 'clarify'];

@@ -4,11 +4,18 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
 import { HealthStatus, RunRecord, RunningTask, Task } from './models';
-import { RAISE_LIMIT_FIELDS, allowed, can, conflictFiles, hasActions } from './task-actions';
+import { CardButton, RAISE_LIMIT_FIELDS, allowed, can, conflictFiles, hasActions, opsButtons, unknownActionKeys } from './task-actions';
 
 type Pending =
   | 'abandon' | 'cancel' | 'void' | 'unlock' | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan'
   | 'allow-path' | 'allow-shared-knowledge-file' | 'external-access' | 'reset-external';
+
+const BUTTON_LABELS: Record<string, string> = {
+  unblock: '🔓 رفع blocker (unblock)', 'retry-rebase': '🔁 دوباره امتحان کن (main عوض شده)', 'raise-limit': '⬆ بالا بردن سقف',
+  'allow-path': '➕ افزودن مسیر به scope', 'allow-shared-knowledge-file': '➕ فایل دانش مشترک', 'external-access': '🔑 دسترسی منبع بیرونی',
+  'reset-external': '♻ بازنشانی worktree سایه', void: '↩ باطل کردن آخرین transition', unlock: '🔓 آزاد کردن قفل',
+  cancel: 'بستن task (cancel)', abandon: 'کنار گذاشتن (abandon)'
+};
 
 const DANGEROUS = new Set<Pending>(['abandon', 'cancel', 'void', 'unlock', 'reset-external']);
 
@@ -79,25 +86,21 @@ const HINTS: Partial<Record<Pending, string>> = {
         </div>
       }
 
+      <!-- هر کلید فعال actions دقیقاً یک دکمه (opsButtons در task-actions.ts)؛ هیچ شرط دستی دیگری نیست -->
       <div class="danger-actions wrap">
-        @if (rebaseConflict() && can('unblock')) { <button class="secondary" [disabled]="busy() || active()" (click)="open('retry-rebase')">🔁 دوباره امتحان کن (main عوض شده)</button> }
-        @if (can('unblock') && !rebaseConflict()) { <button class="secondary" [disabled]="busy() || active()" (click)="open('unblock')">🔓 رفع blocker (unblock)</button> }
-        @if (can('raiseLimit')) { <button class="secondary" [disabled]="busy() || active()" (click)="open('raise-limit')">⬆ بالا بردن سقف</button> }
-        @for (a of orphans(); track a) { <button class="secondary" [disabled]="busy() || active()" (click)="open('close-orphan', a)">📁 بستن attempt یتیم {{ a }}</button> }
-        @if (can('allowPath')) { <button class="secondary" [disabled]="busy() || active()" (click)="open('allow-path')">➕ افزودن مسیر به scope</button> }
-        @if (can('allowSharedKnowledgeFile')) { <button class="secondary" [disabled]="busy() || active()" (click)="open('allow-shared-knowledge-file')">➕ فایل دانش مشترک</button> }
-        @if (externalAccessSources().length) { <button class="secondary" [disabled]="busy() || active()" (click)="open('external-access')">🔑 دسترسی منبع بیرونی</button> }
-        @if (resetSources().length) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('reset-external')">♻ بازنشانی worktree سایه</button> }
-        @if (can('void')) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('void')">↩ باطل کردن آخرین transition</button> }
-        @if (can('unlock')) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('unlock')">🔓 آزاد کردن قفل</button> }
-        @if (can('cancel')) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('cancel')">بستن task (cancel)</button> }
-        @if (can('abandon')) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('abandon')">کنار گذاشتن (abandon)</button> }
+        @for (b of buttons(); track b.id + (b.target ?? '')) {
+          <button [class]="dangerous(b.id) ? 'danger-outline' : 'secondary'" [disabled]="busy() || active()" (click)="open(b.id, b.target)">{{ label(b) }}</button>
+        }
       </div>
+      @if (unknownKeys().length) {
+        <div class="disabled-gate-warning">Manager این اکشن‌ها را مجاز کرده که کانبان هنوز دکمه‌ای برایشان ندارد: <code dir="ltr">{{ unknownKeys().join(', ') }}</code> — از «کنسول» انجام بده.</div>
+      }
 
       @if (pending(); as p) {
         <div class="confirm-box">
           <b>{{ title(p) }}</b>
           @if (hint(p)) { <small>{{ hint(p) }}</small> }
+          <small class="resume-note">{{ resumeNote(p) }}</small>
 
           @if (p === 'raise-limit') {
             <label><span>سقف</span><select name="limitField" [ngModel]="limitField" (ngModelChange)="pickLimitField($event)">@for (f of limitFields; track f) { <option [value]="f">{{ f }}</option> }</select></label>
@@ -183,6 +186,17 @@ export class TaskOpsComponent {
   active(): boolean { const r = this.running(); return r?.running === true || r?.queued === true; }
 
   // --- فقط از actions ---------------------------------------------------------------
+  buttons(): CardButton[] { return opsButtons(this.task(), { rebaseConflict: this.rebaseConflict() }); }
+  unknownKeys(): string[] { return unknownActionKeys(this.task()); }
+  label(b: CardButton): string {
+    return b.id === 'close-orphan' ? `📁 بستن attempt یتیم ${b.target}` : (BUTTON_LABELS[b.id] ?? b.id);
+  }
+  /** resume ِ خودکار فقط بعد از approve/reject/clarify (پنل گیت)؛ این‌جا هیچ‌کدام نیست جز «دوباره امتحان کن». */
+  resumeNote(p: Pending): string {
+    return p === 'retry-rebase'
+      ? 'بعد از رفع blocker، کانبان خودش run می‌زند (unblock + run).'
+      : 'این اکشن run را خودکار نمی‌زند؛ بعد از آن (و بعد از اکشن‌های پشت‌سرهم) خودت «▶ اجرا / ادامه» را بزن.';
+  }
   can(action: Parameters<typeof can>[1]): boolean { return can(this.task(), action); }
   hasActions(): boolean { return hasActions(this.task()); }
   orphans(): string[] { return allowed(this.task(), 'closeOrphan'); }
@@ -195,7 +209,7 @@ export class TaskOpsComponent {
   lockUnknown(): boolean { return this.task().health?.transitionLock?.alive === null; }
   title(p: Pending): string { return TITLES[p]; }
   hint(p: Pending): string { return HINTS[p] ?? ''; }
-  dangerous(p: Pending): boolean { return DANGEROUS.has(p); }
+  dangerous(p: string): boolean { return DANGEROUS.has(p as Pending); }
 
   /** مقدار پیش‌فرض فقط برای راحتی فرم؛ مجاز بودن raise-limit از actions آمده. */
   currentLimit(): number | null {

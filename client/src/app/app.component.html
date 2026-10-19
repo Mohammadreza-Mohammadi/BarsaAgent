@@ -315,6 +315,8 @@
       <label class="answer-box" *ngIf="can(t, 'reject')"><span>دلیل رد (هنگام رد اجباری)</span><textarea [(ngModel)]="reason" placeholder="اگر تصمیم رد است، دلیل را بنویسید…"></textarea></label>
     </div>
     <footer class="gate-footer">
+      <small class="footer-note resume-note" *ngIf="autoResume()">بعد از ثبت، کانبان خودش <code>run</code> می‌زند (فقط برای approve / reject / clarify).</small>
+      <small class="footer-note resume-note" *ngIf="!autoResume()">resume خودکار خاموش است؛ بعد از ثبت خودت «▶ اجرا / ادامه» را بزن.</small>
       <button class="danger" [disabled]="busy() || !reason.trim()" *ngIf="can(t, 'reject') && gateKind(t) !== 'merge-approval'" (click)="answer('reject')">رد</button>
       <button class="primary" [disabled]="busy() || releaseNoteBlocksApprove(t)" *ngIf="can(t, 'approve') && gateKind(t) !== 'merge-approval'" (click)="answer('approve')">تأیید</button>
 
