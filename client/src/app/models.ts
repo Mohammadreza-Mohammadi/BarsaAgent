@@ -101,7 +101,9 @@ export interface Task {
   stateSince?: string | null;
   previousState?: string | null;
   awaitingHuman?: HumanGate | null;
-  blocker?: { kind?: string | null; reason?: string | null } | null;
+  // فیلدهای اضافه از blocker ِ واقعی Manager (کلید به کلید، بدون تفسیر): base/source برای
+  // rebase-conflict، field/role برای budget-exhausted، maxAttempts/maxSpecRevisions برای attempts-exhausted/spec-churn.
+  blocker?: { kind?: string | null; reason?: string | null; base?: string | null; source?: string | null; field?: string | null; role?: string | null; maxAttempts?: number | null; maxSpecRevisions?: number | null; [key: string]: unknown } | null;
   source?: SourceRef | null;
   budget?: Record<string, BudgetItem>;
   scope?: { allow?: string[]; deny?: string[]; exception?: unknown };
@@ -198,6 +200,8 @@ export interface CreateTaskDraft {
   type: 'task' | 'spike';
   slug: string;
   requestText: string;
+  /** import-issue --external-access <sourceId>=read|write (فقط یک مورد) */
+  externalAccess?: Array<{ sourceId: string; access: 'read' | 'write' }>;
   source?: SourceRef;
   displayId?: string;
   skipped?: boolean;
@@ -237,4 +241,36 @@ export interface AgentEvent extends Record<string, unknown> {
   role?: string;
   attempt?: string | number;
   error?: string;
+}
+
+// --- کانبان فاز ۱ ------------------------------------------------------------------
+
+export interface ConsoleParse {
+  ok: boolean;
+  repo: string;
+  subcommand: string;
+  taskId: string | null;
+  display: string;
+  readOnly: boolean;
+  /** flagهای مسیر-فایل که متنشان از textarea می‌آید (--file, --reason-file, --release-note-file) */
+  attachments: string[];
+}
+export type ConsoleExecResult = { kind: 'exec'; execId: string } | { kind: 'run'; taskId: string; repoId: string };
+export interface ConsoleHistoryItem { line: string; at: string; exitCode: number | null; status: string | null }
+export interface ExecInfo { id: string; action: string; user: string; display: string; startedAt: string; finishedAt: string | null; exitCode: number | null; running: boolean; stopped: boolean }
+export interface StreamLine { text: string; stream: string; at: string }
+export interface RunRecord { runId: string; user: string | null; startedAt: string; endedAt: string | null; exitCode: number | null; status: string; durationMs: number | null; hasLog: boolean }
+export interface StopResult { ok: boolean; stopped: boolean; wasQueued?: boolean; stillAlive?: boolean; exitCode: number | null; health: HealthStatus | null }
+export interface GitStatus { status: string; worktrees: string; log: string; clean: boolean }
+export interface GitWorktree {
+  path: string; head: string | null; branch: string | null; detached: boolean; bare: boolean; managed: boolean;
+  proof: { proven: boolean; commit: string; at: string; user?: string } | null;
+}
+export interface GitInventory { worktreesDir: string | null; proveIsolationScript: string; powershell: string | null; worktrees: GitWorktree[] }
+export interface ManagerInfoView { head: string; branch: string | null; subject: string; clean: boolean; ahead: number | null; behind: number | null; remoteError?: string }
+export interface HealthCheckItem { id: string; group: string; label: string; status: 'ok' | 'warn' | 'fail'; detail: string; hint: string }
+export interface EnvHealthReport { checkedAt: string; ok: boolean; checks: HealthCheckItem[] }
+export interface AuditItem {
+  id: string; user: string | null; action: string; status?: string; startedAt: string; exitCode?: number | null; durationMs?: number | null;
+  repoId?: string; taskId?: string; line?: string; reason?: string; outputFile?: string | null;
 }

@@ -2,6 +2,55 @@
 
 کنسول محلی Angular + Node برای اداره Agent Protocol از طریق `manager.js` خارجی.
 
+## کانبان فاز ۱: همه‌ی کارهای انسان بدون شل
+
+انسان همه‌ی کارهایی را که قبلاً در PowerShell می‌کرد از همین کنسول انجام می‌دهد (سرور ممکن است شل نداشته باشد).
+
+**اصل امنیتی: کانبان شل وب نیست.** هیچ ورودی کاربر به shell نمی‌رسد؛ فقط `spawn`/`execFile` با آرایه‌ی آرگومان.
+برنامه‌های مجاز: `node scripts/manager.js` و فهرست بسته‌ی git (و برای آزمون جداسازی، `pwsh`/`powershell` با آرگومان
+ثابت؛ برای سلامت محیط، `claude`؛ برای به‌روزرسانی `node npm-cli.js ci`).
+
+- **ورود اجباری** (حساب محلی + کوکی HttpOnly/SameSite=Strict + توکن CSRF). هر endpoint زیر `/api/` بدون ورود 401 می‌دهد.
+  سرور پیش‌فرض فقط روی `127.0.0.1` گوش می‌دهد. حساب بساز: `npm run user:add -- <نام>`.
+- **دفتر ممیزی** append-only (JSON lines) بیرون از مخزن‌ها: کاربر، زمان، argv، cwd، exit code، مدت، مسیر خروجی کامل؛
+  اکشن ردشده هم رکورد `rejected` دارد. صفحه‌ی «ممیزی» فقط‌خواندنی است.
+- **کنسول Manager:** یک خط paste می‌شود؛ tokenizer کوتیشن را می‌فهمد ولی `$`، `;`، `|`، `&`، `>`، `<` و backtick بیرون از
+  کوتیشن را رد می‌کند. زیرفرمان از `manager.js --help` می‌آید. `--file/--reason-file/--release-note-file` از textarea
+  پر می‌شوند (فایل UTF-8 موقت). فرمان تغییردهنده پنجره‌ی تأیید با فرمان نهایی دارد؛ `run` از صف و env ِ `buildAgentEnv` می‌گذرد.
+- **کارت task:** توقف (فقط درخت فرآیند اجرای خود کانبان)، لاگ هر اجرا + دانلود، zip ِ پوشه‌ی task، abandon، unblock،
+  raise-limit، close-orphan، و برای `rebase-conflict` فقط «دوباره امتحان کن» و «کنار بگذار».
+- **نگهداری مخزن ابزار:** ساخت worktree، آزمون جداسازی، ادغام (فقط با PROVEN ِ همان commit و درخت تمیز)، حذف worktree و
+  شاخه (`-d`)؛ به‌روزرسانی Manager از origin (`--ff-only`، با پیش‌شرط بیکار بودن).
+- **سلامت محیط:** node، git، claude و احراز هویتش، پروکسی (با درخواست آزمایشی)، pwsh، مسیرها، دیسک، حساب‌ها.
+
+پیکربندی نمونه (بخش‌های تازه؛ همه اختیاری‌اند):
+
+```yaml
+server:
+  port: 4310
+  host: 127.0.0.1            # پیش‌فرض؛ فقط با TLS proxy عوض کن
+dataDir: "D:/barsa-agent-data"   # بیرون از هر مخزن
+auth:
+  sessionTtlMinutes: 480
+  secureCookie: false        # پشت HTTPS: true
+  allowedOrigins: []
+run:
+  stopGraceMs: 5000          # مهلت بین taskkill /T و taskkill /T /F
+health:
+  proxyTestUrl: "https://api.anthropic.com/"
+  claude: { command: "claude" }   # اگر فقط claude.cmd هست: مسیر claude.exe
+repos:
+  - id: barsa-novin-ray
+    path: "C:/ng-web-systemsaz-1"
+    managerScript: "scripts/manager.js"
+    tooling:
+      worktreesDir: "C:/ng-web-tools"
+      shadowPath: "C:/agent-shadow"
+      webiiiPath: "C:/BarsaTFS/Framework/Releases/Release-4.01/Source/Meta/WebIII"
+```
+
+اجرا به‌صورت سرویس ویندوز: `docs/server-service.md`.
+
 ## Health status
 
 نوار سلامت Agent-work سه حالت مستقل دارد:
@@ -30,7 +79,9 @@ C:/ng-web-systemsaz-1/scripts/manager.js
    └─ .agent-work   ← source of truth
 ```
 
-BarsaAgent مستقیم `.agent-work` را نمی‌خواند/نمی‌نویسد و git اجرا نمی‌کند.
+BarsaAgent `.agent-work` را فقط برای **خواندن** (دانلود zip ِ پوشه‌ی task) باز می‌کند و هرگز در آن نمی‌نویسد. git را فقط از
+یک فهرست **بسته** از عملیات نگهداری مخزن ابزار اجرا می‌کند (بخش «کانبان فاز ۱»)؛ مسیر task/پروتکل همچنان فقط از
+`manager.js` است.
 
 ## امکانات
 

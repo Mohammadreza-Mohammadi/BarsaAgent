@@ -8,7 +8,9 @@
 Angular UI -> BarsaAgent Node -> manager.js -> run-agent.js / verify.js / git / .agent-work
 ```
 
-BarsaAgent فقط CLI عمومی Manager را صدا می‌زند. هیچ write مستقیمی در `.agent-work` و هیچ اجرای git ندارد.
+BarsaAgent فقط CLI عمومی Manager را صدا می‌زند. هیچ write مستقیمی در `.agent-work` ندارد (فقط خواندن برای zip ِ پوشه‌ی
+task). گیت را هم برای مسیر task/پروتکل اجرا نمی‌کند؛ تنها استثنا «نگهداری مخزن ابزار» (فهرست بسته‌ی عملیات git با
+پیش‌شرط، README بخش «کانبان فاز ۱») و به‌روزرسانی Manager است.
 
 ## Capability handshake
 

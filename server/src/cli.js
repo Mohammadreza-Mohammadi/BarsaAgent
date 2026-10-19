@@ -12,6 +12,8 @@ export function managerCommand(repo, args, options = {}) {
     cwd: repo.path,
     shell: false,
     windowsHide: true,
+    // posix: برای بستن «درخت» فرزندان، فرزند باید گروه فرآیند خودش را داشته باشد.
+    detached: options.detached === true,
     env: options.env || process.env,
     stdio: ['ignore', 'pipe', 'pipe']
   });

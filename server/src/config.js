@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 function splitInline(value) {
@@ -89,4 +90,22 @@ export function loadConfig(file = process.env.BARSA_AGENT_CONFIG || path.resolve
     if (!/^[a-z0-9][a-z0-9-]*$/i.test(repo.id)) throw new Error(`شناسهٔ repo نامعتبر است: ${repo.id}`);
   }
   return config;
+}
+
+// داده‌های کانبان (دفتر ممیزی، خروجی اجراها، کاربران، اثبات‌های جداسازی) باید
+// **بیرون از هر مخزن** باشند — مخزن‌ها را git و Manager می‌خوانند/می‌نویسند و
+// یک اکشن کانبان نباید بتواند دفتر ممیزی خودش را با یک git clean پاک کند.
+export function defaultDataDir() {
+  return path.join(os.homedir(), '.barsa-agent');
+}
+
+export function resolveDataDir(config) {
+  const dir = path.resolve(config?.dataDir || defaultDataDir());
+  for (const repo of config?.repos || []) {
+    const rel = path.relative(path.resolve(repo.path), dir);
+    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+      throw new Error(`dataDir (${dir}) نباید داخل مخزن "${repo.id}" باشد.`);
+    }
+  }
+  return dir;
 }

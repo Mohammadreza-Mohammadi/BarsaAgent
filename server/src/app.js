@@ -7,6 +7,16 @@ import { spawn } from 'node:child_process';
 import { collect, collectJson, validateAgentWork } from './cli.js';
 import { fetchIssues } from './issues.js';
 import { ProcessRegistry } from './process-registry.js';
+import { resolveDataDir } from './config.js';
+import { AuditLog } from './audit.js';
+import { createAuth } from './auth.js';
+import { ActionRunner } from './action-runner.js';
+import { GitOps } from './git-ops.js';
+import { ManagerUpdater } from './manager-update.js';
+import { ManagerHelp } from './manager-help.js';
+import { idleReason } from './repo-idle.js';
+import { createOpsRoutes } from './routes-ops.js';
+import { validArtifactPath } from './security.js';
 
 // علت ریشه‌ای «بازیابی از داخل ابزار» بند ۴ — یک شنونده‌ی SIGINT/SIGTERM
 // سراسری در سطح ماژول (نه داخل createApp)، چون createApp در تست‌ها بارها در
@@ -21,15 +31,15 @@ function registerShutdownOnce() {
   let shuttingDown = false;
   const shutdown = signal => {
     if (!activeShutdownTarget) return;
-    const { server, registry } = activeShutdownTarget;
-    const active = registry.activeCount();
+    const { server, registry, runner } = activeShutdownTarget;
+    const active = registry.activeCount() + (runner?.activeCount() ?? 0);
     if (active > 0 && !shuttingDown) {
       shuttingDown = true;
       console.warn(
         `⚠️  ${active} اجرا در حال انجام است — منتظر پایانش می‌مانم (Ctrl+C دوباره برای خروج فوری و کشتن اجرای در جریان).`
       );
       const interval = setInterval(() => {
-        if (registry.activeCount() === 0) {
+        if (registry.activeCount() + (runner?.activeCount() ?? 0) === 0) {
           clearInterval(interval);
           server.close(() => process.exit(0));
         }
@@ -55,9 +65,16 @@ const MIME = new Map([
 ]);
 
 function baseHeaders(extra = {}) {
-  return { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...extra };
+  return {
+    'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+    // کانبان ابزار اجراست؛ داخل iframe سایت دیگر (clickjacking) نباید باز شود.
+    'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'",
+    ...extra
+  };
 }
 function send(res, status, value, type = JSON_TYPE, extraHeaders = {}) {
+  // برای ممیزی مرکزی درخواست‌های ردشده (finish handler در createApp)
+  if (status >= 400 && value && typeof value === 'object' && value.error) res.errorMessage = value.error;
   const body = type.startsWith('application/json') ? JSON.stringify(value) : String(value);
   res.writeHead(status, baseHeaders({ 'Content-Type': type, 'Content-Length': Buffer.byteLength(body), ...extraHeaders }));
   res.end(body);
@@ -81,11 +98,6 @@ function route(pattern, pathname) {
     else if (a[i] !== b[i]) return null;
   }
   return params;
-}
-function validArtifactPath(value) {
-  if (!value || path.isAbsolute(value)) return false;
-  const normalized = String(value).replace(/\\/g, '/');
-  return !normalized.split('/').includes('..') && !normalized.includes('\0');
 }
 function staticRoot(config) {
   const candidates = [
@@ -146,13 +158,24 @@ export function createApp(config, deps = {}) {
     autoStartOnCreate: config.run?.autoStartOnCreate !== false,
     autoResumeAfterAnswer: config.run?.autoResumeAfterAnswer !== false
   };
-  const registry = deps.registry ?? new ProcessRegistry({ maxConcurrent: runConfig.maxConcurrent, maxLines: 2000, config });
+  // کانبان فاز ۱: داده‌ها بیرون از مخزن‌ها (دفتر ممیزی، خروجی اجراها، کاربران).
+  const dataDir = deps.dataDir ?? resolveDataDir(config);
+  const audit = deps.audit ?? new AuditLog({ dir: dataDir });
+  const auth = deps.auth ?? createAuth(config, dataDir);
+  const stopGraceMs = Number(config.run?.stopGraceMs ?? 5000);
+  const registry = deps.registry ?? new ProcessRegistry({ maxConcurrent: runConfig.maxConcurrent, maxLines: 2000, config, audit, graceMs: stopGraceMs });
+  const runner = deps.runner ?? new ActionRunner({ audit, graceMs: stopGraceMs });
+  const help = deps.help ?? new ManagerHelp();
   const issueFetcher = deps.issueFetcher ?? fetchIssues;
   const spawnEditor = deps.spawnEditor ?? spawn;
   const repos = new Map(config.repos.map(x => [x.id, x]));
   let issueCache = { at: 0, data: [] };
   const healthCache = new Map();
   const root = staticRoot(config);
+  const readStatus = repo => collectJson(repo, ['status', '--json']);
+  const idleCheck = repo => idleReason(repo, { registry, readStatus });
+  const gitOps = deps.gitOps ?? new GitOps({ runner, audit, registry, dataDir, config, idleCheck, powershell: deps.powershell });
+  const updater = deps.updater ?? new ManagerUpdater({ runner, audit, idleCheck, help, config, npmCli: deps.npmCli });
 
   const repoFor = id => {
     const repo = repos.get(id);
@@ -175,29 +198,37 @@ export function createApp(config, deps = {}) {
   // «externalId تکراری»، ...)، نه خرابی سرور — بازبینی فاز ۲. بدون این، همه‌ی
   // این‌ها به 500 عمومی می‌افتند و UI فرقی بین «Manager رد کرد» و «سرور شکست»
   // نمی‌بیند. پیام خام (stdout/stderr واقعی manager.js) دست‌نخورده می‌ماند.
-  const collectAction = async (repo, args) => {
-    try {
-      return await collect(repo, args);
-    } catch (error) {
-      if (typeof error.code === 'number') error.status = 422;
-      throw error;
-    }
+  //
+  // کانبان فاز ۱: هر اکشن از runner می‌گذرد (فقط node + manager.js با آرایه‌ی
+  // آرگومان) تا دفتر ممیزی رکورد start/end و فایل خروجی کامل داشته باشد.
+  const collectAction = async (session, repo, args, meta = {}) => {
+    const script = path.resolve(repo.path, repo.managerScript);
+    const exec = runner.start({
+      user: session.user, action: meta.action || String(args[0]), repoId: repo.id, taskId: meta.taskId ?? null,
+      program: process.execPath, args: [script, ...args.map(String)], cwd: repo.path
+    });
+    const { code } = await exec.done;
+    const part = stream => exec.lines.filter(line => line.stream === stream).map(line => line.text).join('\n');
+    const stdout = part('stdout');
+    const stderr = part('stderr');
+    if (code === 0) return { stdout, stderr, code: 0 };
+    throw Object.assign(new Error(stderr.trim() || stdout.trim() || `فرآیند با کد ${code} متوقف شد`), { code, stdout, stderr, status: 422, audited: true });
   };
-  const runReasoned = async (repo, verb, taskId, reason, extraArgs = []) => {
+  const runReasoned = async (session, repo, verb, taskId, reason, extraArgs = []) => {
     // متن آزاد هرگز argv نمی‌شود — همان دلیل بند A1.
     const tmp = path.join(os.tmpdir(), `barsa-${verb}-${process.pid}-${randomUUID()}.txt`);
     try {
       fs.writeFileSync(tmp, String(reason), { encoding: 'utf8', mode: 0o600 });
-      return await collectAction(repo, [verb, taskId, '--reason-file', tmp, ...extraArgs]);
+      return await collectAction(session, repo, [verb, taskId, '--reason-file', tmp, ...extraArgs], { action: verb, taskId });
     } finally {
       fs.rmSync(tmp, { force: true });
     }
   };
-  const queueTask = (repo, taskId) => {
-    const run = registry.enqueue(repo, taskId);
+  const queueTask = (session, repo, taskId) => {
+    const run = registry.enqueue(repo, taskId, { user: session.user });
     return run ? { queued: run.queued, started: !run.queued } : { duplicate: true, queued: false, started: false };
   };
-  const createOne = async (draft, startOverride) => {
+  const createOne = async (session, draft, startOverride) => {
     const repo = repoFor(draft.repo || config.repos[0].id);
     const type = draft.type === 'spike' ? 'spike' : 'task';
     const requestText = String(draft.requestText || '');
@@ -215,23 +246,111 @@ export function createApp(config, deps = {}) {
       };
     }
 
+    const importArgs = ['import-issue', '--file'];
+    // بند ب: دسترسی بیرونی هنگام ساخت (فرم import-issue). فقط یک منبع، همان قالب
+    // <sourceId>=read|write که manager.js می‌سنجد؛ اینجا فقط شکل را رد می‌کنیم.
+    const access = Array.isArray(draft.externalAccess) ? draft.externalAccess.filter(x => x && x.sourceId) : [];
+    if (access.length > 1) throw Object.assign(new Error('import-issue فقط یک --external-access می‌پذیرد.'), { status: 400 });
+    for (const entry of access) {
+      if (!/^[a-z0-9][a-z0-9-]*$/i.test(String(entry.sourceId)) || !['read', 'write'].includes(entry.access)) {
+        throw Object.assign(new Error('external-access باید <sourceId> و read|write باشد.'), { status: 400 });
+      }
+    }
     const tmp = path.join(os.tmpdir(), `barsa-task-${process.pid}-${randomUUID()}.json`);
     try {
       fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
-      const output = await collectAction(repo, ['import-issue', '--file', tmp]);
+      importArgs.push(tmp);
+      for (const entry of access) importArgs.push('--external-access', `${entry.sourceId}=${entry.access}`);
+      const output = await collectAction(session, repo, importArgs, { action: 'import-issue' });
       const taskId = parseTaskId(output.stdout);
       const shouldStart = startOverride ?? runConfig.autoStartOnCreate;
-      const queue = shouldStart ? queueTask(repo, taskId) : { queued: false, started: false };
+      const queue = shouldStart ? queueTask(session, repo, taskId) : { queued: false, started: false };
       return { ok: true, taskId, repoId: repo.id, slug, ...queue };
     } finally {
       fs.rmSync(tmp, { force: true });
     }
   };
 
+  // SSE مشترک برای اجرای task (registry) و اجرای کنسول/git/update (runner):
+  // هر دو lines/events/finished/exitCode/finishedAt دارند.
+  const pipeStream = (req, res, source) => {
+    res.writeHead(200, baseHeaders({
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    }));
+    res.write(': connected\n\n');
+    const endPayload = () => ({ code: source.exitCode, at: source.finishedAt, ...(source.stopped ? { stopped: true } : {}) });
+    for (const line of source.lines) res.write(`data: ${JSON.stringify(line)}\n\n`);
+    if (source.finished) {
+      res.write(`event: end\ndata: ${JSON.stringify(endPayload())}\n\n`);
+      return res.end();
+    }
+    const onLine = line => res.write(`data: ${JSON.stringify(line)}\n\n`);
+    const onEnd = payload => { res.write(`event: end\ndata: ${JSON.stringify(payload)}\n\n`); res.end(); };
+    source.events.on('line', onLine);
+    source.events.once('end', onEnd);
+    const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
+    req.on('close', () => {
+      clearInterval(ping);
+      source.events.off('line', onLine);
+      source.events.off('end', onEnd);
+    });
+  };
+
+  const opsRoutes = createOpsRoutes({
+    audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor,
+    managerAudited: collectAction, pipeStream, users: auth.users
+  });
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
+    const mutating = req.method !== 'GET' && req.method !== 'HEAD';
+    let session = null;
+    // ممیزی مرکزی: هر درخواست تغییردهنده‌ای که رد شد (اعتبارسنجی، 401/403، پیش‌شرط)
+    // و هنوز جای دیگری ثبت نشده، یک رکورد rejected می‌گیرد.
+    res.on('finish', () => {
+      if (!mutating || res.statusCode < 400 || res.audited) return;
+      try {
+        audit.reject({ user: session?.user ?? null, action: `http ${req.method} ${pathname}`, status: res.statusCode, ip: req.socket.remoteAddress }, res.errorMessage || `HTTP ${res.statusCode}`);
+      } catch { /* ممیزی نباید پاسخ را بشکند */ }
+    });
     try {
+      // --- احراز هویت: هر چیزی زیر /api/ جز ورود/وضعیت نشست پشت نشست است ---------------
+      if (pathname.startsWith('/api/')) {
+        if (pathname === '/api/auth/session' && req.method === 'GET') {
+          const current = auth.session(req);
+          return send(res, 200, current ? { authenticated: true, user: current.user, csrf: current.csrf } : { authenticated: false });
+        }
+        if (pathname === '/api/auth/login' && req.method === 'POST') {
+          const originProblem = auth.checkOrigin(req);
+          if (originProblem) return send(res, 403, { error: originProblem });
+          if (!/^application\/json/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'Content-Type باید application/json باشد.' });
+          const input = await readBody(req);
+          const result = await auth.login(input.username, input.password, req.socket.remoteAddress);
+          if (!result.ok) {
+            audit.reject({ user: String(input.username ?? '').slice(0, 64), action: 'auth.login', ip: req.socket.remoteAddress }, result.error);
+            res.audited = true;
+            return send(res, result.status, { error: result.error });
+          }
+          audit.note({ user: input.username, action: 'auth.login', ip: req.socket.remoteAddress });
+          return send(res, 200, { authenticated: true, user: result.session.user, csrf: result.session.csrf }, JSON_TYPE, { 'Set-Cookie': auth.cookie(result.token) });
+        }
+        session = auth.session(req);
+        if (!session) return send(res, 401, { error: 'ورود لازم است.' });
+        if (mutating) {
+          const problem = auth.checkCsrf(req, session);
+          if (problem) return send(res, 403, { error: problem });
+        }
+        if (pathname === '/api/auth/logout' && req.method === 'POST') {
+          auth.logout(auth.tokenOf(req));
+          audit.note({ user: session.user, action: 'auth.logout' });
+          return send(res, 200, { ok: true }, JSON_TYPE, { 'Set-Cookie': auth.clearCookie() });
+        }
+        if (await opsRoutes(req, res, url, pathname, session)) return;
+      }
       if (req.method === 'GET' && pathname === '/api/repos') {
         return send(res, 200, config.repos.map(({ id, path: repoPath }) => ({
           id, path: repoPath, manager: config.managerInfo?.[id] || null,
@@ -302,7 +421,7 @@ export function createApp(config, deps = {}) {
       }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/run', pathname))) {
         const repo = repoFor(p.repo);
-        const run = registry.enqueue(repo, p.id);
+        const run = registry.enqueue(repo, p.id, { user: session.user });
         if (!run) return send(res, 409, { error: 'این task هم‌اکنون در حال اجرا یا در صف است.' });
         const current = registry.list(repo).find(x => x.taskId === String(p.id));
         return send(res, 202, {
@@ -349,13 +468,13 @@ export function createApp(config, deps = {}) {
             args.push('--release-note-file', releaseNoteTmp);
           }
           if (input.noReleaseNote) args.push('--no-release-note');
-          await collectAction(repo, args);
+          await collectAction(session, repo, args, { action: 'answer', taskId: p.id });
         } finally {
           if (tmp) fs.rmSync(tmp, { force: true });
           if (reasonTmp) fs.rmSync(reasonTmp, { force: true });
           if (releaseNoteTmp) fs.rmSync(releaseNoteTmp, { force: true });
         }
-        const resumed = runConfig.autoResumeAfterAnswer ? queueTask(repo, p.id) : { queued: false, started: false };
+        const resumed = runConfig.autoResumeAfterAnswer ? queueTask(session, repo, p.id) : { queued: false, started: false };
         return send(res, 200, { ok: true, autoResumed: runConfig.autoResumeAfterAnswer, ...resumed });
       }
       // الحاقیه‌ی ۱، بند ب: --stage-external واقعاً فایل‌های WebIII را عوض
@@ -366,7 +485,7 @@ export function createApp(config, deps = {}) {
         const input = await readBody(req);
         const sourceId = String(input.sourceId || '').trim();
         if (!/^[a-z0-9][a-z0-9-]*$/i.test(sourceId)) return send(res, 400, { error: 'شناسه‌ی منبع بیرونی نامعتبر است.' });
-        await collectAction(repoFor(p.repo), ['answer', p.id, '--stage-external', sourceId]);
+        await collectAction(session, repoFor(p.repo), ['answer', p.id, '--stage-external', sourceId], { action: 'stage-external', taskId: p.id });
         return send(res, 200, { ok: true });
       }
       // TOOLING-023 (manager.js، بند «ز-۴»): --external-checked-in گیت‌محور
@@ -389,7 +508,7 @@ export function createApp(config, deps = {}) {
         }
         const args = ['answer', p.id, '--external-checked-in', sourceId];
         if (changesets.length) args.push('--changeset', changesets.join(','));
-        await collectAction(repoFor(p.repo), args);
+        await collectAction(session, repoFor(p.repo), args, { action: 'external-checked-in', taskId: p.id });
         return send(res, 200, { ok: true });
       }
       // state-محور است، نه awaitingHuman (manager.js، parseAnswerArgs/--note) —
@@ -402,7 +521,7 @@ export function createApp(config, deps = {}) {
         const tmp = path.join(os.tmpdir(), `barsa-note-${process.pid}-${randomUUID()}.txt`);
         try {
           fs.writeFileSync(tmp, String(input.text), { encoding: 'utf8', mode: 0o600 });
-          await collectAction(repo, ['answer', p.id, '--note', '--file', tmp]);
+          await collectAction(session, repo, ['answer', p.id, '--note', '--file', tmp], { action: 'note', taskId: p.id });
         } finally {
           fs.rmSync(tmp, { force: true });
         }
@@ -411,13 +530,13 @@ export function createApp(config, deps = {}) {
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/void', pathname))) {
         const input = await readBody(req);
         if (!input.reason?.trim()) return send(res, 400, { error: 'دلیل الزامی است.' });
-        await runReasoned(repoFor(p.repo), 'void', p.id, input.reason);
+        await runReasoned(session, repoFor(p.repo), 'void', p.id, input.reason);
         return send(res, 200, { ok: true });
       }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/cancel', pathname))) {
         const input = await readBody(req);
         if (!input.reason?.trim()) return send(res, 400, { error: 'دلیل الزامی است.' });
-        await runReasoned(repoFor(p.repo), 'cancel', p.id, input.reason);
+        await runReasoned(session, repoFor(p.repo), 'cancel', p.id, input.reason);
         return send(res, 200, { ok: true });
       }
       // دریچه‌ی اضطراری بازیابی — فقط manager.js unlock را صدا می‌زند (هیچ فایل/
@@ -427,44 +546,27 @@ export function createApp(config, deps = {}) {
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/unlock', pathname))) {
         const input = await readBody(req);
         if (!input.reason?.trim()) return send(res, 400, { error: 'دلیل الزامی است.' });
-        await runReasoned(repoFor(p.repo), 'unlock', p.id, input.reason, input.force ? ['--force'] : []);
+        await runReasoned(session, repoFor(p.repo), 'unlock', p.id, input.reason, input.force ? ['--force'] : []);
         return send(res, 200, { ok: true });
       }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/rebase', pathname))) {
-        await collectAction(repoFor(p.repo), ['rebase', p.id]);
+        await collectAction(session, repoFor(p.repo), ['rebase', p.id], { action: 'rebase', taskId: p.id });
         return send(res, 200, { ok: true });
       }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/tasks/:id/stream', pathname))) {
         const repo = repoFor(p.repo);
-        res.writeHead(200, baseHeaders({
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          'Connection': 'keep-alive',
-          'X-Accel-Buffering': 'no'
-        }));
-        res.write(': connected\n\n');
         const run = registry.get(repo, p.id);
         if (!run) {
+          res.writeHead(200, baseHeaders({
+            'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive', 'X-Accel-Buffering': 'no'
+          }));
+          res.write(': connected\n\n');
           res.write(`data: ${JSON.stringify({ text: 'فرایند فعالی یا سابقهٔ اجرای محلی وجود ندارد.', stream: 'system', at: new Date().toISOString() })}\n\n`);
           res.write(`event: end\ndata: ${JSON.stringify({ code: null })}\n\n`);
           return res.end();
         }
-        for (const line of run.lines) res.write(`data: ${JSON.stringify(line)}\n\n`);
-        if (run.finished) {
-          res.write(`event: end\ndata: ${JSON.stringify({ code: run.exitCode, at: run.finishedAt })}\n\n`);
-          return res.end();
-        }
-        const onLine = line => res.write(`data: ${JSON.stringify(line)}\n\n`);
-        const onEnd = payload => { res.write(`event: end\ndata: ${JSON.stringify(payload)}\n\n`); res.end(); };
-        run.events.on('line', onLine);
-        run.events.once('end', onEnd);
-        const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
-        req.on('close', () => {
-          clearInterval(ping);
-          run.events.off('line', onLine);
-          run.events.off('end', onEnd);
-        });
-        return;
+        return pipeStream(req, res, run);
       }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/health', pathname))) {
         const repo = repoFor(p.repo);
@@ -508,7 +610,7 @@ export function createApp(config, deps = {}) {
           const draft = items[index];
           const key = draft.source?.externalId != null ? String(draft.source.externalId) : `manual-${index + 1}`;
           try {
-            const result = await createOne(draft, input.start == null ? undefined : !!input.start);
+            const result = await createOne(session, draft, input.start == null ? undefined : !!input.start);
             results.push({ key, ...result });
           } catch (error) {
             results.push({ key, ok: false, message: error.message || 'ساخت task شکست خورد.' });
@@ -530,7 +632,7 @@ export function createApp(config, deps = {}) {
           const issue = byId.get(id);
           if (!issue) { results.push({ id, ok: false, message: 'issue در آخرین fetch پیدا نشد.' }); continue; }
           try {
-            const result = await createOne({
+            const result = await createOne(session, {
               repo: input.repo || config.repos[0].id,
               type: 'task',
               slug: slugify(issue.title, `task-${id}`),
@@ -549,8 +651,14 @@ export function createApp(config, deps = {}) {
       if (serveStatic(req, res, root, pathname)) return;
       return send(res, 404, { error: 'UI build پیدا نشد. ابتدا npm run build را اجرا کنید.' });
     } catch (error) {
-      console.error('[BarsaAgent][Server]', req.method, req.url, 'failed:', error?.message || error);
-      if (error?.stack) console.error(error.stack);
+      if (error?.audited) res.audited = true;
+      // رد شدن به‌خاطر ورودی/پیش‌شرط (4xx) خطای سرور نیست: یک خط، بدون stack.
+      if ((error.status || 500) >= 500) {
+        console.error('[BarsaAgent][Server]', req.method, req.url, 'failed:', error?.message || error);
+        if (error?.stack) console.error(error.stack);
+      } else {
+        console.warn('[BarsaAgent][Server]', req.method, pathname, '→', error.status || 500, error?.message || error);
+      }
       return send(res, error.status || 500, { error: error.message || 'خطای داخلی' });
     }
   });
@@ -563,7 +671,7 @@ export function createApp(config, deps = {}) {
   // این کاملاً علامت را حل نمی‌کند (force-kill/کرش هنوز خطرناک است) ولی مسیر
   // عادی close/restart را ایمن می‌کند: اگر اجرایی در جریان است صبر می‌کند، نه
   // این‌که بی‌سروصدا بکشدش.
-  activeShutdownTarget = { server, registry };
+  activeShutdownTarget = { server, registry, runner };
   registerShutdownOnce();
 
   return server;

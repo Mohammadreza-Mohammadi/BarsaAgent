@@ -1,3 +1,5 @@
+<ba-login *ngIf="auth.ready() && !auth.user()"></ba-login>
+<ng-container *ngIf="auth.user()">
 <header class="topbar">
   <div class="brand">
     <span class="mark">B</span>
@@ -10,10 +12,26 @@
     <button class="ghost" (click)="openManualTask()">＋ task دستی</button>
     <button class="ghost" (click)="showIssues(false)">صندوق issue</button>
     <button class="icon" (click)="refresh()" title="به‌روزرسانی">↻</button>
+    <span class="who" [title]="'وارد شده با این حساب؛ همه‌ی اکشن‌ها با این نام در دفتر ممیزی ثبت می‌شوند'">{{auth.user()}}</span>
+    <button class="ghost" (click)="logout()">خروج</button>
   </div>
 </header>
+<nav class="view-nav">
+  <button [class.active]="view() === 'board'" (click)="view.set('board')">برد</button>
+  <button [class.active]="view() === 'console'" (click)="view.set('console')">کنسول Manager</button>
+  <button [class.active]="view() === 'maintenance'" (click)="view.set('maintenance')">نگهداری مخزن ابزار</button>
+  <button [class.active]="view() === 'health'" (click)="view.set('health')">سلامت محیط</button>
+  <button [class.active]="view() === 'audit'" (click)="view.set('audit')">ممیزی</button>
+</nav>
 
-<main>
+<main class="ops-main" *ngIf="view() !== 'board' && repoId()">
+  <ba-console *ngIf="view() === 'console'" [repoId]="repoId()"></ba-console>
+  <ba-maintenance *ngIf="view() === 'maintenance'" [repoId]="repoId()"></ba-maintenance>
+  <ba-env-health *ngIf="view() === 'health'"></ba-env-health>
+  <ba-audit *ngIf="view() === 'audit'"></ba-audit>
+</main>
+
+<main *ngIf="view() === 'board'">
   <section class="health-strip"
            [class.bad]="!!healthError() || (health() && !health()?.ok)"
            [class.checking]="healthLoading() && !health()">
@@ -147,6 +165,8 @@
           <label><span>slug</span><input [ngModel]="d.slug" (ngModelChange)="updateDraft('slug',$event)"></label>
           <label><span>نام پوشه نهایی</span><input [value]="createFolderPreview(d)" readonly></label>
           <label><span>نوع</span><select [ngModel]="d.type" (ngModelChange)="updateDraft('type',$event)"><option value="task">task</option><option value="spike">spike</option></select></label>
+          <label><span>دسترسی بیرونی — شناسه‌ی منبع (اختیاری، --external-access)</span><input dir="ltr" [ngModel]="d.externalAccess?.[0]?.sourceId || ''" (ngModelChange)="setExternalAccess($event, d.externalAccess?.[0]?.access || 'write')" placeholder="webiii"></label>
+          <label><span>سطح دسترسی</span><select [ngModel]="d.externalAccess?.[0]?.access || 'write'" (ngModelChange)="setExternalAccess(d.externalAccess?.[0]?.sourceId || '', $event)"><option value="read">read</option><option value="write">write</option></select></label>
         </div>
         <label class="request-editor"><span>متن request</span><textarea [ngModel]="d.requestText" (ngModelChange)="updateDraft('requestText',$event)" placeholder="متن خام درخواست…"></textarea><small>این متن عیناً <code>request.md</code> می‌شود. ساده و بدون ساختار بنویس — Acceptance Criteria را Intake می‌سازد، نه تو.</small></label>
         <div class="skipped-note" *ngIf="d.skipped">این مورد رد شده و ساخته نمی‌شود. <button class="secondary" (click)="restoreDraft()">برگرداندن</button></div>
@@ -394,6 +414,8 @@
 
       <ng-container *ngIf="taskTab() === 'overview'">
 
+      <ba-task-ops [repoId]="repoId()" [task]="t" [running]="running()[t.id]" (changed)="refresh(true)"></ba-task-ops>
+
       <section class="detail-section"><div class="section-head"><div><h3>Timeline</h3><p>رویدادها از Manager</p></div><span class="count">{{events().length}}</span></div><div class="timeline"><div *ngFor="let e of events()"><i></i><div><b>{{eventLabel(e)}}</b><small>{{formatDate(e.at)}}</small><p *ngIf="eventDetails(e)">{{eventDetails(e)}}</p></div></div><div class="timeline-empty" *ngIf="!events().length">رویدادی ثبت نشده است.</div></div></section>
 
       <section class="detail-section" *ngIf="t.attempts?.length"><div class="section-head"><div><h3>Attemptها</h3><p>result / run-meta / verification</p></div></div><div class="attempt-list"><button *ngFor="let a of t.attempts" [class.active]="selectedAttempt()?.id === a.id" (click)="chooseAttempt(a)"><b>#{{a.id}}</b><span>{{a.role || '—'}}</span><em>{{a.outcome || '—'}}</em></button></div><div class="attempt-view" *ngIf="selectedAttempt() as a"><div class="attempt-meta"><span>شروع: {{formatDate(a.startedAt)}}</span><span>پایان: {{formatDate(a.finishedAt)}}</span><span>transition: {{a.requestedTransition || '—'}}</span></div><details *ngFor="let entry of attemptArtifactEntries()" [open]="entry[0] === 'result.yaml' || entry[0] === 'verification/summary.yaml'"><summary>{{entry[0]}}</summary><pre>{{entry[1]}}</pre></details></div></section>
@@ -485,3 +507,4 @@
     </div>
   </ng-container>
 </aside>
+</ng-container>

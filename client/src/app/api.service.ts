@@ -1,6 +1,9 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { AgentEvent, Board, CreateTaskDraft, CreateTasksResponse, HealthResult, Issue, Repo, RunningTask, Task } from './models';
+import {
+  AgentEvent, AuditItem, Board, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, EnvHealthReport,
+  ExecInfo, GitInventory, GitStatus, HealthResult, Issue, ManagerInfoView, Repo, RunRecord, RunningTask, StopResult, Task
+} from './models';
 
 @Injectable({ providedIn: 'root' })
 export class ApiService {
@@ -56,5 +59,38 @@ export class ApiService {
   );
   issues = (refresh = false) => this.http.get<Issue[]>('/api/issues', { params: refresh ? new HttpParams().set('refresh', '1') : undefined });
   createTasks = (items: CreateTaskDraft[], start?: boolean) => this.http.post<CreateTasksResponse>('/api/tasks/create', { items, start });
+  // --- کانبان فاز ۱ ---------------------------------------------------------------
+  private repoPath = (repo: string) => `/api/repos/${encodeURIComponent(repo)}`;
+  private taskPath = (repo: string, id: string) => `${this.repoPath(repo)}/tasks/${encodeURIComponent(id)}`;
+
+  consoleSubcommands = (repo: string) => this.http.get<{ subcommands: string[]; source: string; at: string; error: string | null }>('/api/console/subcommands', { params: { repo } });
+  consoleParse = (repo: string, line: string) => this.http.post<ConsoleParse>('/api/console/parse', { repo, line });
+  consoleExec = (repo: string, line: string, confirmedCommand: string, attachments: Record<string, string>) =>
+    this.http.post<ConsoleExecResult>('/api/console/exec', { repo, line, confirmedCommand, attachments });
+  consoleHistory = () => this.http.get<ConsoleHistoryItem[]>('/api/console/history');
+  execs = () => this.http.get<ExecInfo[]>('/api/execs');
+  execStreamUrl = (id: string) => `/api/execs/${encodeURIComponent(id)}/stream`;
+  stopExec = (id: string) => this.http.post<{ ok: boolean }>(`/api/execs/${encodeURIComponent(id)}/stop`, {});
+  logUrl = (id: string) => `/api/logs/${encodeURIComponent(id)}`;
+  zipUrl = (repo: string, id: string) => `${this.taskPath(repo, id)}/zip`;
+
+  stopTask = (repo: string, id: string) => this.http.post<StopResult>(`${this.taskPath(repo, id)}/stop`, {});
+  taskRuns = (repo: string, id: string) => this.http.get<RunRecord[]>(`${this.taskPath(repo, id)}/runs`);
+  abandonTask = (repo: string, id: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/abandon`, { reason });
+  unblockTask = (repo: string, id: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/unblock`, { reason });
+  raiseLimit = (repo: string, id: string, field: string, value: number, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/raise-limit`, { field, value, reason });
+  closeOrphan = (repo: string, id: string, attempt: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/close-orphan`, { attempt, reason });
+  retryRebase = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`${this.taskPath(repo, id)}/retry-rebase`, { reason });
+
+  gitStatus = (repo: string) => this.http.get<GitStatus>(`${this.repoPath(repo)}/git/status`);
+  gitInventory = (repo: string) => this.http.get<GitInventory>(`${this.repoPath(repo)}/git/inventory`);
+  gitAction = (repo: string, name: 'worktree-add' | 'prove' | 'merge' | 'worktree-remove' | 'branch-delete', body: Record<string, string>) =>
+    this.http.post<{ execId: string }>(`${this.repoPath(repo)}/git/${name}`, body);
+  managerInfo = (repo: string) => this.http.get<ManagerInfoView>(`${this.repoPath(repo)}/manager/info`);
+  managerCheck = (repo: string) => this.http.post<{ execId: string }>(`${this.repoPath(repo)}/manager/check`, {});
+  managerUpdate = (repo: string) => this.http.post<{ execId: string }>(`${this.repoPath(repo)}/manager/update`, {});
+  envHealth = () => this.http.get<EnvHealthReport>('/api/env-health');
+  audit = (limit = 100) => this.http.get<AuditItem[]>('/api/audit', { params: { limit } });
+
   streamUrl(repo: string, id: string) { return `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/stream`; }
 }

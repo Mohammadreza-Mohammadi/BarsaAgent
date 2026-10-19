@@ -1,8 +1,14 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, effect, inject, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
+import { AuthService } from './auth.service';
+import { LoginComponent } from './login.component';
+import { ConsoleComponent } from './console.component';
+import { MaintenanceComponent } from './maintenance.component';
+import { AuditComponent, EnvHealthComponent } from './env-health.component';
+import { TaskOpsComponent } from './task-ops.component';
 import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, ExternalSource, HealthResult, Issue, Repo, RunningTask, Task } from './models';
 
 const LANES = [
@@ -37,6 +43,8 @@ const EXIT_LABELS: Record<number, string> = {
   10: 'منتظر توست',
   20: 'متوقف',
   30: 'بدون پیشرفت — احتمالاً باگ',
+  40: 'منتظر آزاد شدن scope (خطا نیست)',
+  42: 'ردِ تکراری — بررسی دستی لازم است',
   1: 'خطای اجرایی'
 };
 
@@ -56,11 +64,15 @@ type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 
 @Component({
   selector: 'ba-root',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent],
   templateUrl: './app.component.html'
 })
 export class AppComponent implements OnInit, OnDestroy {
   readonly api = inject(ApiService);
+  readonly auth = inject(AuthService);
+  // کانبان فاز ۱: صفحه‌های کنسول/نگهداری/سلامت/ممیزی کنار برد
+  readonly view = signal<'board' | 'console' | 'maintenance' | 'health' | 'audit'>('board');
+  private started = false;
   private poll?: number;
   private source?: EventSource;
 
@@ -127,7 +139,35 @@ export class AppComponent implements OnInit, OnDestroy {
   noteText = '';
   stageSourceId = '';
 
+  constructor() {
+    // ورود اجباری است: داده‌ها فقط بعد از ورود خوانده می‌شوند و با پایان نشست پاک می‌شوند.
+    effect(() => {
+      const user = this.auth.user();
+      untracked(() => { if (user) void this.start(); else this.stop(); });
+    });
+  }
+
   async ngOnInit(): Promise<void> {
+    await this.auth.init();
+  }
+
+  async logout(): Promise<void> { await this.auth.logout(); }
+
+  private stop(): void {
+    this.started = false;
+    if (this.poll) window.clearInterval(this.poll);
+    this.poll = undefined;
+    this.closeStream();
+    this.board.set(null);
+    this.selected.set(null);
+    this.panel.set(null);
+    this.view.set('board');
+    this.loading.set(true);
+  }
+
+  private async start(): Promise<void> {
+    if (this.started) return;
+    this.started = true;
     try {
       const repos = await firstValueFrom(this.api.repos());
       this.repos.set(repos);
@@ -142,7 +182,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.loading.set(false);
     }
     this.poll = window.setInterval(() => {
-      if (this.panel() === 'task' || this.panel() === 'action') return;
+      if (this.panel() === 'task' || this.panel() === 'action' || !this.auth.user() || this.view() !== 'board') return;
       void this.refresh(true);
     }, 3000);
   }
@@ -846,6 +886,9 @@ export class AppComponent implements OnInit, OnDestroy {
   createActiveCount(): number { return this.createDrafts().filter(x => !x.skipped).length; }
   createStepLabel(): string { return `${this.createIndex() + 1} از ${this.createDrafts().length}`; }
   createFolderPreview(d: CreateTaskDraft): string { return `${d.source?.externalId || '<auto>'}-${d.slug || '<slug>'}`; }
+  setExternalAccess(sourceId: string, access: 'read' | 'write'): void {
+    this.updateDraft('externalAccess', sourceId.trim() ? [{ sourceId: sourceId.trim(), access }] : []);
+  }
   updateDraft(field: keyof CreateTaskDraft, value: unknown): void {
     const index = this.createIndex();
     this.createDrafts.update(items => items.map((item, i) => i === index ? ({ ...item, [field]: value } as CreateTaskDraft) : item));
