@@ -378,6 +378,8 @@ export class AppComponent implements OnInit, OnDestroy {
   can(t: Task | null, action: Parameters<typeof can>[1]): boolean { return can(t, action); }
   canAnswerGate(t: Task | null): boolean { return canAnswerGate(t); }
   externalAccessChoices(t: Task | null): string[] { return allowed(t, 'externalAccess'); }
+  /** بعد از approve/reject/clarify (فقط همین سه) کانبان خودش run می‌زند — وقتی run.autoResumeAfterAnswer روشن است. */
+  autoResume(): boolean { return this.currentRepo()?.run?.autoResumeAfterAnswer !== false; }
 
   // الحاقیه‌ی ۱، بند ب: externalSources از status --json (TOOLING-032) —
   // actions همان شرط‌هایی است که answer خودش می‌سنجد؛ کانبان شرط دیگری

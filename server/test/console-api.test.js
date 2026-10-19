@@ -361,3 +361,45 @@ test('status --json با cache سرد کند است: درخواست‌های ه�
   await get(base, '/api/repos/fake/board');
   assert.equal(statusCalls(), 2, 'بعد از تمام شدن، درخواست بعدی دوباره می‌خواند');
 });
+
+test('resume ِ خودکار: فقط approve/reject/clarify بعد از answer خودکار run می‌زنند؛ هیچ اکشن دیگر کارت run نمی‌زند', async t => {
+  const fake = makeFakeManagerRepo(t, { run: "console.log('r');" });
+  const { base } = await boot(t, fake); // autoResumeAfterAnswer پیش‌فرض روشن
+  const runs = () => fake.calls().filter(c => c.args[0] === 'run').map(c => c.args[1]).sort();
+
+  // سه تصمیم گیت: هرکدام یک run
+  assert.equal((await post(base, '/api/repos/fake/tasks/21/answer', { mode: 'approve' })).status, 200);
+  assert.equal((await post(base, '/api/repos/fake/tasks/22/answer', { mode: 'reject', reason: 'دلیل' })).status, 200);
+  assert.equal((await post(base, '/api/repos/fake/tasks/23/answer', { mode: 'clarify', text: 'پاسخ' })).status, 200);
+  for (let i = 0; i < 100 && runs().length < 3; i += 1) await new Promise(r => setTimeout(r, 50));
+  assert.deepEqual(runs(), ['21', '22', '23']);
+
+  // بقیه‌ی اکشن‌های کارت: هیچ run ای
+  const reason = 'دلیل';
+  const post2 = (p, body) => post(base, `/api/repos/fake/tasks/${p}`, body);
+  const calls = [
+    ['31/unblock', { reason }], ['32/raise-limit', { field: 'maxAttempts', value: 9, reason }], ['33/allow-path', { path: 'a/b.ts', reason }],
+    ['34/allow-shared-knowledge-file', { path: 'a/b.md', reason }], ['35/external-access', { sourceId: 'webiii', access: 'write', reason }],
+    ['36/reset-external', { sourceId: 'webiii', reason }], ['37/close-orphan', { attempt: '013', reason }], ['38/void', { reason }],
+    ['39/unlock', { reason }], ['40/cancel', { reason }], ['41/abandon', { reason }], ['42/note', { text: 'یادداشت' }],
+    ['43/stage-external', { sourceId: 'webiii' }], ['44/external-checked-in', { sourceId: 'webiii', changesets: ['C1'] }], ['45/rebase', {}]
+  ];
+  for (const [p, body] of calls) assert.equal((await post2(p, body)).status, 200, p);
+  await new Promise(r => setTimeout(r, 800));
+  assert.deepEqual(runs(), ['21', '22', '23'], 'هیچ اکشن غیرگیتی run نمی‌زند');
+  const mutated = fake.mutations().filter(c => c.args[0] !== 'run').length;
+  assert.ok(mutated >= 3 + calls.length, 'خود اکشن‌ها به Manager رسیده‌اند');
+
+  // و صریح: سیاست مستند همان سه تاست
+  const { AUTO_RESUME_ACTIONS } = await import('../../client/src/app/task-actions.ts');
+  assert.deepEqual([...AUTO_RESUME_ACTIONS], ['approve', 'reject', 'clarify']);
+});
+
+test('resume ِ خودکار خاموش (run.autoResumeAfterAnswer:false): حتی approve/reject/clarify هم run نمی‌زنند', async t => {
+  const fake = makeFakeManagerRepo(t);
+  const { base } = await boot(t, fake, { run: { autoResumeAfterAnswer: false } });
+  await post(base, '/api/repos/fake/tasks/51/answer', { mode: 'approve' });
+  await post(base, '/api/repos/fake/tasks/52/answer', { mode: 'clarify', text: 'x' });
+  await new Promise(r => setTimeout(r, 600));
+  assert.deepEqual(fake.calls().filter(c => c.args[0] === 'run'), []);
+});
