@@ -9,7 +9,10 @@
     "build": "ng build --project barsa-agent --configuration production",
     "start": "node server/src/index.js",
     "test": "node --test server/test/*.test.js",
-    "check:manager": "node server/check-manager.js"
+    "check:manager": "node server/check-manager.js",
+    "user:add": "node server/src/users-cli.js add",
+    "user:remove": "node server/src/users-cli.js remove",
+    "user:list": "node server/src/users-cli.js list"
   },
   "dependencies": {
     "@angular/common": "^22.0.8",

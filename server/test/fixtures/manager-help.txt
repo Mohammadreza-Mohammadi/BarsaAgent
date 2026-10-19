@@ -1,0 +1,22 @@
+استفاده: node scripts/manager.js <subcommand> [آرگومان‌ها]
+       یا: node scripts/manager.js --task <id>   (حالت قدیمی/تک‌مرحله‌ای: فقط dispatch همان state فعلی)
+
+زیرفرمان‌ها:
+  answer <id> --approve | --reject --reason "..." | --clarify --text "..." | ...
+                                 پاسخ انسانی به یک گیت awaitingHuman (برای شکل کامل: node scripts/manager.js answer)
+  capabilities                   چاپ Contract capabilities (JSON)
+  status [--task <id>]           وضعیت یک/همه‌ی Taskها (JSON)
+  events <id>                    رویدادهای یک Task (JSON)
+  artifact <id> --path <rel>      محتوای یک فایل artifact از Task (JSON)
+  run <id>                       اجرای حلقه‌ی یک Task تا توقف/گیت بعدی
+  import-issue                   ساخت Task تازه از یک ورودی request (JSON روی stdin)
+  cancel <id> [--reason "..."]    لغو Task (state نهایی cancelled)
+  abandon <id> --reason "..."     کنار گذاشتن Task (state نهایی abandoned)
+  rebase <id>                     rebase دستی worktree روی base تازه
+  external-init <sourceId> [--changeset Cxxxx]
+                                 ساخت یک‌بارهٔ مخزن سایه برای یک منبع بیرونی
+  void <id>                       پاک‌سازی worktree/قفل‌های یک Task بدون تغییر state
+  unlock                         آزادسازی قفل سراسری .manager.lock کهنه
+
+هر زیرفرمان بدون آرگومان الزامی‌اش، شکل کامل usage خودش را چاپ می‌کند.
+--help / -h همین راهنما را چاپ می‌کند؛ بدون هیچ آرگومانی هم همین است.

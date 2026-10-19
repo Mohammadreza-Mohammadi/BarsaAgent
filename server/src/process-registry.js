@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import { managerCommand } from './cli.js';
 import { buildAgentEnv } from './agent-env.js';
 import { environmentSecrets, redact } from './security.js';
+import { lineSplitter, killProcessTree } from './process-tools.js';
 
 export class ProcessRegistry {
   #runs = new Map();
@@ -16,6 +18,11 @@ export class ProcessRegistry {
     // DEFAULT_PROXY را می‌دهد و CLAUDE_CODE_OAUTH_TOKEN را همیشه حذف می‌کند؛
     // محافظت هرگز opt-in نیست.
     this.config = options.config || {};
+    // کانبان فاز ۱: دفتر ممیزی (اختیاری تا تست‌های قدیمی‌تر بدون آن کار کنند) و
+    // بستن درخت فرآیند. کانبان فقط فرزندانی را می‌بندد که همین registry ساخته.
+    this.audit = options.audit || null;
+    this.killTree = options.killTree || killProcessTree;
+    this.graceMs = Number(options.graceMs ?? 5000);
   }
 
   key(repo, task) { return `${repo.id}:${task}`; }
@@ -29,21 +36,24 @@ export class ProcessRegistry {
       .filter(x => x.repo === repo.id)
       .map(x => ({
         taskId: x.taskId,
+        runId: x.runId ?? null,
+        user: x.user ?? null,
         queuedAt: x.queuedAt ?? null,
         startedAt: x.startedAt ?? null,
         finishedAt: x.finishedAt ?? null,
         queued: x.queued === true,
         queuePosition: x.queued ? this.#queue.indexOf(this.key(repo, x.taskId)) + 1 : null,
         running: !x.finished && !!x.startedAt,
+        stopped: x.stopped === true,
         exitCode: x.exitCode
       }));
   }
 
   get(repo, task) { return this.#runs.get(this.key(repo, task)); }
 
-  start(repo, task) { return this.enqueue(repo, task); }
+  start(repo, task, context) { return this.enqueue(repo, task, context); }
 
-  enqueue(repo, task) {
+  enqueue(repo, task, context = {}) {
     const key = this.key(repo, task);
     const existing = this.#runs.get(key);
     if (existing && !existing.finished) return null;
@@ -52,15 +62,19 @@ export class ProcessRegistry {
       repo: repo.id,
       repoConfig: repo,
       taskId: String(task),
+      user: context.user ?? null,
+      runId: null,
       queuedAt: new Date().toISOString(),
       startedAt: null,
       finishedAt: null,
       queued: true,
       finished: false,
+      stopped: false,
       exitCode: null,
       lines: [],
       events: new EventEmitter(),
-      child: null
+      child: null,
+      outputFile: null
     };
 
     this.#runs.set(key, run);
@@ -68,6 +82,30 @@ export class ProcessRegistry {
     this.#push(run, 'system', 'در صف اجرا قرار گرفت.');
     this.#pump();
     return run;
+  }
+
+  /**
+   * بند «ز»: توقف یک اجرا. فقط run هایی که همین registry ساخته (در Map است)؛
+   * هیچ pid دلخواهی از بیرون پذیرفته نمی‌شود. اجرای هنوز-در-صف فقط از صف حذف
+   * می‌شود (فرآیندی نیست که بسته شود).
+   */
+  async stop(repo, task) {
+    const key = this.key(repo, task);
+    const run = this.#runs.get(key);
+    if (!run || run.finished) return { stopped: false, reason: 'no-active-run' };
+    if (run.queued) {
+      const index = this.#queue.indexOf(key);
+      if (index >= 0) this.#queue.splice(index, 1);
+      run.queued = false;
+      run.stopped = true;
+      this.#finish(run, null, 'از صف حذف شد (توقف).');
+      return { stopped: true, wasQueued: true };
+    }
+    if (!run.child?.pid) return { stopped: false, reason: 'no-process' };
+    run.stopped = true;
+    this.#push(run, 'system', 'درخواست توقف: بستن درخت فرآیند این اجرا…');
+    const result = await this.killTree(run.child.pid, { graceMs: this.graceMs });
+    return { stopped: true, wasQueued: false, stillAlive: result.stillAlive };
   }
 
   #pump() {
@@ -85,54 +123,60 @@ export class ProcessRegistry {
     const item = { text, stream, at: new Date().toISOString() };
     run.lines.push(item);
     if (run.lines.length > this.maxLines) run.lines.splice(0, run.lines.length - this.maxLines);
+    if (run.outputFile) {
+      try { fs.appendFileSync(run.outputFile, `${item.at} [${stream}] ${item.text}\n`, 'utf8'); } catch { /* stream زنده ادامه دارد */ }
+    }
     run.events.emit('line', item);
+  }
+
+  #finish(run, code, systemNote) {
+    if (run.finished) return;
+    if (systemNote) this.#push(run, 'system', systemNote);
+    run.finished = true;
+    run.exitCode = Number.isInteger(code) ? code : (run.stopped ? null : 1);
+    run.finishedAt = new Date().toISOString();
+    run.auditHandle?.finish({ exitCode: run.exitCode, status: run.stopped ? 'stopped' : undefined });
+    run.events.emit('end', { code: run.exitCode, at: run.finishedAt, ...(run.stopped ? { stopped: true } : {}) });
+    this.#pump();
   }
 
   #launch(run) {
     run.queued = false;
     run.startedAt = new Date().toISOString();
-    this.#push(run, 'system', 'اجرا از صف شروع شد.');
 
     // بند الف: env ِ همین فرآیند — manager.js «run» خودش بعداً run-agent.js را
     // با `{...process.env}` صدا می‌زند (TOOLING-023/manager.js:9064)، پس هر
     // چیزی که اینجا حذف/ست شود تا پایین زنجیره‌ی spawn هم می‌رسد.
-    const child = managerCommand(run.repoConfig, ['run', run.taskId], { env: buildAgentEnv(this.config) });
+    const args = ['run', run.taskId];
+    if (this.audit) {
+      run.auditHandle = this.audit.begin({
+        user: run.user, action: 'run', repoId: run.repo, taskId: run.taskId,
+        cwd: run.repoConfig.path, argv: [process.execPath, run.repoConfig.managerScript, ...args]
+      });
+      run.runId = run.auditHandle.id;
+      run.outputFile = run.auditHandle.outputFile;
+    }
+    this.#push(run, 'system', 'اجرا از صف شروع شد.');
+
+    const child = managerCommand(run.repoConfig, args, {
+      env: buildAgentEnv(this.config),
+      detached: process.platform !== 'win32'
+    });
     run.child = child;
     // همان دلیل cli.js#collectChild: بدون setEncoding، یک کاراکتر فارسی روی
     // مرز chunk لاگ زنده را می‌شکند.
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
 
-    const capture = stream => {
-      let pending = '';
-      const onData = chunk => {
-        pending += chunk;
-        const parts = pending.split(/\r?\n/);
-        pending = parts.pop() ?? '';
-        for (const line of parts) this.#push(run, stream, line);
-      };
-      onData.flush = () => {
-        if (pending) {
-          this.#push(run, stream, pending);
-          pending = '';
-        }
-      };
-      return onData;
-    };
-
-    const stdout = capture('stdout');
-    const stderr = capture('stderr');
-    child.stdout.on('data', stdout);
-    child.stderr.on('data', stderr);
+    const stdout = lineSplitter(line => this.#push(run, 'stdout', line));
+    const stderr = lineSplitter(line => this.#push(run, 'stderr', line));
+    child.stdout.on('data', chunk => stdout.push(chunk));
+    child.stderr.on('data', chunk => stderr.push(chunk));
     child.on('error', error => this.#push(run, 'stderr', error.message));
     child.on('close', code => {
       stdout.flush();
       stderr.flush();
-      run.finished = true;
-      run.exitCode = Number.isInteger(code) ? code : 1;
-      run.finishedAt = new Date().toISOString();
-      run.events.emit('end', { code: run.exitCode, at: run.finishedAt });
-      this.#pump();
+      this.#finish(run, code);
     });
   }
 }

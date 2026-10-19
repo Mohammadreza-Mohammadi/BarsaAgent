@@ -26,3 +26,11 @@ issueSource:
     url: "url"
     status: "status"
     labels: "labels"
+
+# --- کانبان فاز ۱ (همه اختیاری؛ جزئیات: README و docs/server-service.md) ---
+# server:
+#   host: 127.0.0.1            # پیش‌فرض localhost
+# dataDir: "D:/barsa-agent-data" # ممیزی/خروجی/کاربران؛ باید بیرون از مخزن‌ها باشد
+# auth: { sessionTtlMinutes: 480, secureCookie: false, allowedOrigins: [] }
+# health: { proxyTestUrl: "https://api.anthropic.com/", claude: { command: "claude" } }
+# و زیر هر repo:  tooling: { worktreesDir: "C:/ng-web-tools", shadowPath: "C:/agent-shadow", webiiiPath: "..." }

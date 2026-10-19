@@ -48,3 +48,48 @@
 .editor-wrap{display:block}.editor-action{width:100%;border:1px solid #cfd9e5;background:#f6f9fc;color:#425a76;border-radius:5px;padding:6px;margin-bottom:7px;font-size:10px}.task-tools{margin-top:10px;display:flex;justify-content:flex-end}.diff-view{border:1px solid #dfe5ec;border-radius:9px;margin:14px 0;overflow:hidden;background:#fff}.diff-view>header{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:9px 12px;background:#f3f6f9;border-bottom:1px solid #dfe5ec}.diff-view h3,.diff-view h4{margin:0;font-size:12px}.diff-view header small{display:block;margin-top:3px;color:#68768a;direction:ltr;text-align:left}.diff-view header span{font-size:10px;color:#667386;white-space:nowrap}.diff-view>pre{margin:0;padding:12px;max-height:55vh;overflow:auto;direction:ltr;text-align:left;white-space:pre;background:#101927;color:#dce8f3;font-size:10px;line-height:1.5;font-family:ui-monospace,Consolas,monospace}.diff-limit{margin:0;padding:8px 12px;background:#fff2cc;color:#765516;font-size:10px}.diff-view>.disabled-gate-warning,.diff-view>small,.diff-view>.empty-artifact{display:block;margin:10px}.diff-view .diff-add{color:#7ee787}.diff-view .diff-del{color:#ff8b8b}.diff-view .diff-hunk{color:#79b8ff}.diff-view .diff-file-line{color:#c9d6e3;font-weight:600}.diff-stale{margin:0;padding:8px 12px;background:#fde2e2;color:#8a2323;font-size:10px;border-bottom:1px solid #f3b8b8}.diff-files{direction:rtl;text-align:right;display:flex;flex-direction:column;gap:1px;max-height:180px;overflow:auto;border-bottom:1px solid #dfe5ec;background:#eef2f6}.diff-file-row{display:flex;align-items:center;gap:8px;padding:6px 12px;background:#fff;border:none;border-bottom:1px solid #eef2f6;cursor:pointer;font-size:10px;text-align:right}.diff-file-row.all{font-weight:600}.diff-file-row:hover{background:#f3f6f9}.diff-file-row.active{background:#e5f0ff}.diff-file-row code{flex:1;direction:ltr;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.diff-file-row .diff-stat{display:flex;gap:6px;white-space:nowrap;direction:ltr}.diff-file-row .diff-stat .add{color:#1a7f37}.diff-file-row .diff-stat .del{color:#cf222e}.diff-file-row small{color:#8a97a8;white-space:nowrap}.diff-file-row.out-of-scope{background:#fff7e6}.diff-file-row .oos-badge{color:#a15c00}
 .task-tabs{display:flex;gap:4px;margin-top:14px;border-bottom:1px solid #dfe5ec}.task-tabs button{border:0;background:transparent;color:#657288;padding:8px 14px;border-bottom:2px solid transparent}.task-tabs button.active{color:#147d68;border-bottom-color:#147d68;font-weight:700}
 .release-note-card{border:1px solid #cfe3da;border-radius:9px;background:#f4fbf7;padding:12px;margin-bottom:12px}.release-note-card>header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.release-note-card>header>b{font-size:12px;color:#1c5c45}.release-note-headline{margin:0 0 6px;font-size:13px;color:#13402f}.release-note-hidden{color:#6b5a1e;background:#fff6df;border-radius:6px;padding:7px 9px;font-size:11px;margin:0}.release-note-malformed{color:#8d3932;background:#fff0ee;border-radius:6px;padding:7px 9px;font-size:11px;margin:6px 0 0}.release-note-missing{color:#8a5a00;background:#fff6df;border-radius:6px;padding:8px 10px;font-size:11px;margin:0 0 8px}.release-note-choice{display:flex;align-items:center;gap:6px;font-size:11px;color:#526076;margin:8px 0}.release-note-field{display:flex;flex-direction:column;gap:5px;margin-top:10px;color:#526076;font-size:11px}.release-note-field input{border:1px solid #ced7e2;border-radius:8px;padding:8px 10px;color:#263348;background:#fff}
+
+/* --- کانبان فاز ۱: ورود، صفحه‌های عملیات، اکشن‌های task --- */
+.view-nav{display:flex;gap:6px;padding:10px 28px 0;background:#f3f6fa;border-bottom:1px solid #dbe2ea}
+.view-nav button{border:0;background:none;padding:9px 14px;border-radius:8px 8px 0 0;color:#526076;border-bottom:3px solid transparent}
+.view-nav button.active{color:#0f6b5a;border-bottom-color:#147d68;font-weight:700;background:#fff}
+.who{color:#93a3b8;font-size:11px;direction:ltr}
+.ops-main{max-width:1180px;margin:0 auto}
+.ops-page{display:flex;flex-direction:column;gap:6px}
+.ops-page h2{margin:0 0 4px;font-size:19px}
+.login-card{max-width:380px;margin:12vh auto 0;background:#fff;border:1px solid #dbe2ea;border-radius:14px;padding:26px;display:flex;flex-direction:column;gap:14px;box-shadow:0 10px 36px #1a2a4318}
+.login-card label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:#526076}
+.login-card input,.console-line input,.inline-form input,.confirm-box input,.confirm-box select{border:1px solid #ced7e2;border-radius:8px;padding:9px 11px;font:inherit;background:#fff;color:#263348}
+.login-brand{color:#101b2d}.login-brand small{color:#758196}
+.login-note{color:#758196;font-size:10px}
+.console-line{display:flex;gap:9px}.console-line input{flex:1;font-family:Consolas,"Cascadia Code",monospace;font-size:13px}
+.confirm-box{border:2px solid #eca729;background:#fff9e8;border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:9px;margin:10px 0}
+.confirm-box small{color:#7f6738}
+.final-command{direction:ltr;text-align:left;background:#111c2d;color:#a8f2d6;border-radius:7px;padding:10px 12px;font-size:12px;overflow-wrap:anywhere;white-space:pre-wrap}
+.attachment{display:flex;flex-direction:column;gap:5px;font-size:11px;color:#526076}
+.history-row{display:flex;justify-content:space-between;gap:10px;width:100%;border:1px solid #e1e6ed;background:#fff;border-radius:7px;padding:7px 10px;margin:4px 0;text-align:left}
+.history-row em{font-size:10px;color:#6c7a8e;font-style:normal;white-space:nowrap}.history-row em.bad{color:#b13b35}
+.exec-end{margin-top:6px;font-size:11px;color:#157d61}.exec-end.bad{color:#b13b35}
+.exec-live{margin-top:6px;font-size:11px;color:#157d61;display:flex;align-items:center;gap:6px}
+.exec-live i{width:7px;height:7px;border-radius:50%;background:#1aa77b;animation:pulseLive 1.4s infinite}
+.live-output{min-height:90px}
+.inline-form{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:8px 0}
+.inline-form label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#526076}
+.git-status{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.git-status pre{max-height:180px;margin:4px 0 0}
+.wt-table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0}
+.wt-table th,.wt-table td{border-bottom:1px solid #e6eaf0;padding:7px 8px;text-align:right;vertical-align:top}
+.wt-table small{display:block;color:#7a8697;font-size:10px;max-width:420px;overflow-wrap:anywhere}
+.wt-actions{display:flex;gap:6px;flex-wrap:wrap}
+.audit-table tr.rejected td{background:#fff3f2}
+.badge{display:inline-block;border-radius:9px;padding:1px 8px;font-size:10px;background:#edf1f6;color:#526076}.badge.ok{background:#e1f5ec;color:#157d61}.badge.bad{background:#ffe4e1;color:#b13b35}
+.bad{color:#b13b35}
+.link-btn{display:inline-block;text-decoration:none;font-size:13px}
+.danger-actions.wrap{flex-wrap:wrap;margin:8px 0}
+.conflict-card{border:1px solid #efc5c2;background:#fff8f7;border-radius:9px;padding:12px;margin:10px 0}.conflict-card p{margin:6px 0;font-size:12px}
+.runs-head{margin-top:16px}
+.runs-list{display:flex;flex-direction:column;gap:4px}
+.run-row{display:grid;grid-template-columns:1.4fr .8fr 1.2fr .6fr auto;gap:8px;background:#f6f8fa;border-radius:6px;padding:6px 9px;font-size:11px}.run-row.bad{background:#fff1f0}
+.check-row{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;background:#f1faf7;margin:5px 0}.check-row.warn{background:#fff7e3}.check-row.fail{background:#ffecea}
+.check-row>div{display:flex;flex-direction:column;gap:2px}.check-row small{color:#5e6d80;font-size:11px;overflow-wrap:anywhere}.check-row small.hint{color:#8a5a00}.check-row.fail small.hint{color:#a32e29}
+.check-badge{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#1fac7c;color:#fff;font-size:12px;flex:0 0 auto}.check-row.warn .check-badge{background:#e0a21b}.check-row.fail .check-badge{background:#c4423b}
+@media(max-width:850px){.git-status{grid-template-columns:1fr}.view-nav{padding:8px 15px 0;overflow:auto}.run-row{grid-template-columns:1fr 1fr}}

@@ -1,3 +1,4 @@
+import path from 'node:path';
 const TOKEN_PATTERNS = [
   /\b(?:sk|ghp|github_pat|xox[baprs])[-_A-Za-z0-9.]{12,}\b/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{8,})?\b/g,
@@ -16,4 +17,11 @@ export function redact(value, secrets = environmentSecrets()) {
   }
   for (const pattern of TOKEN_PATTERNS) text = text.replace(pattern, '[MASKED]');
   return text;
+}
+
+// مسیر نسبی artifact: بدون absolute، بدون "..". (منبع قبلی: app.js)
+export function validArtifactPath(value) {
+  if (!value || path.isAbsolute(value)) return false;
+  const normalized = String(value).replace(/\\/g, '/');
+  return !normalized.split('/').includes('..') && !normalized.includes('\0');
 }

@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter, once } from 'node:events';
-import { createApp } from '../src/app.js';
+import { authedFetch, startAuthedServer } from './helpers.js';
+
+// ورود اجباری است: همه‌ی fetchهای این فایل با نشست واقعی (Cookie + CSRF) می‌روند.
+const fetch = authedFetch;
 
 function makeFakeRepo(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-agent-server-'));
@@ -38,12 +41,8 @@ if (cmd === 'capabilities') {
 }
 
 async function startServer(t, config, deps) {
-  const server = createApp(config, deps);
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  t.after(() => server.close());
-  const address = server.address();
-  return `http://127.0.0.1:${address.port}`;
+  const { base } = await startAuthedServer(t, config, deps);
+  return base;
 }
 
 async function waitForRun(base, taskId, predicate, timeoutMs = 5000) {
