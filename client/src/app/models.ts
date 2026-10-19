@@ -169,7 +169,8 @@ export interface RunSettings {
   autoResumeAfterAnswer: boolean;
 }
 
-export interface Repo { id: string; path: string; manager?: ManagerInfo | null; run?: RunSettings }
+export interface Repo {
+  id: string; path: string; manager?: ManagerInfo | null; run?: RunSettings; board?: { doneDays?: number } }
 
 export interface RunningTask {
   taskId: string;

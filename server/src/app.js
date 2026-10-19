@@ -159,6 +159,9 @@ export function createApp(config, deps = {}) {
     autoStartOnCreate: config.run?.autoStartOnCreate !== false,
     autoResumeAfterAnswer: config.run?.autoResumeAfterAnswer !== false
   };
+  // آرشیو: ستون «تمام»ِ برد فقط taskهای پایان‌یافته در این چند روز اخیر را نشان می‌دهد.
+  const doneDaysRaw = Number(config.board?.doneDays);
+  const boardConfig = { doneDays: Number.isFinite(doneDaysRaw) && doneDaysRaw > 0 ? doneDaysRaw : 3 };
   // کانبان فاز ۱: داده‌ها بیرون از مخزن‌ها (دفتر ممیزی، خروجی اجراها، کاربران).
   const dataDir = deps.dataDir ?? resolveDataDir(config);
   const audit = deps.audit ?? new AuditLog({ dir: dataDir });
@@ -356,7 +359,7 @@ export function createApp(config, deps = {}) {
       if (req.method === 'GET' && pathname === '/api/repos') {
         return send(res, 200, config.repos.map(({ id, path: repoPath }) => ({
           id, path: repoPath, manager: config.managerInfo?.[id] || null,
-          run: runConfig
+          run: runConfig, board: boardConfig
         })));
       }
 

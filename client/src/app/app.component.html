@@ -17,14 +17,19 @@
   </div>
 </header>
 <nav class="view-nav">
-  <button [class.active]="view() === 'board'" (click)="view.set('board')">برد</button>
-  <button [class.active]="view() === 'console'" (click)="view.set('console')">کنسول Manager</button>
-  <button [class.active]="view() === 'maintenance'" (click)="view.set('maintenance')">نگهداری مخزن ابزار</button>
-  <button [class.active]="view() === 'health'" (click)="view.set('health')">سلامت محیط</button>
-  <button [class.active]="view() === 'audit'" (click)="view.set('audit')">ممیزی</button>
+  <button [class.active]="view() === 'board'" (click)="showView('board')">برد</button>
+  <button [class.active]="view() === 'archive'" (click)="showView('archive')">آرشیو</button>
+  <button [class.active]="view() === 'console'" (click)="showView('console')">کنسول Manager</button>
+  <button [class.active]="view() === 'maintenance'" (click)="showView('maintenance')">نگهداری مخزن ابزار</button>
+  <button [class.active]="view() === 'health'" (click)="showView('health')">سلامت محیط</button>
+  <button [class.active]="view() === 'audit'" (click)="showView('audit')">ممیزی</button>
 </nav>
 
-<main class="ops-main" *ngIf="view() !== 'board' && repoId()">
+<main class="ops-main" *ngIf="view() === 'archive' && repoId()">
+  <ba-archive [tasks]="board()?.tasks || []" (open)="openTask($event)"></ba-archive>
+</main>
+
+<main class="ops-main" *ngIf="view() !== 'board' && view() !== 'archive' && repoId()">
   <ba-console *ngIf="view() === 'console'" [repoId]="repoId()"></ba-console>
   <ba-maintenance *ngIf="view() === 'maintenance'" [repoId]="repoId()"></ba-maintenance>
   <ba-env-health *ngIf="view() === 'health'"></ba-env-health>
@@ -109,13 +114,14 @@
           </div>
         </article>
         <div class="empty" *ngIf="!tasksFor(lane.states).length">—</div>
+        <button type="button" class="archive-link" *ngIf="laneIsDone(lane)" (click)="showView('archive')">همه ({{archiveCount()}}) در آرشیو ←</button>
       </div>
     </div>
   </section>
   <ng-template #boardLoading><div class="loading">در حال خواندن وضعیت از Manager…</div></ng-template>
 
   <section class="terminal" *ngIf="terminalTasks().length">
-    <h2>متوقف و کنارگذاشته‌شده <span>{{terminalTasks().length}}</span></h2>
+    <h2>متوقف (blocked) <span>{{terminalTasks().length}}</span></h2>
     <div><button *ngFor="let t of terminalTasks()" (click)="openTask(t)"><code>#{{t.id}}</code> {{t.title || t.slug}} <em>{{t.state}}</em><small *ngIf="t.blocker?.kind">{{blockerLabel(t)}}<span class="blocker-hint" *ngIf="blockerHint(t)">{{blockerHint(t)}}</span></small></button></div>
   </section>
   <section class="terminal error-lane" *ngIf="errorTasks().length">
@@ -426,7 +432,7 @@
 
       <section class="detail-section" *ngIf="logs().length || isRunning(t) || isQueued(t)"><div class="section-head"><div><h3>لاگ اجرا</h3><p>SSE · بافر حلقوی سمت سرور</p></div><span class="run-badge inline" *ngIf="isRunning(t)"><span></span> زنده</span></div><pre class="logs">{{logs().join('\n') || 'در انتظار خروجی…'}}</pre></section>
 
-      <section class="detail-section danger-zone">
+      <section class="detail-section danger-zone" *ngIf="!finished(t)">
         <div class="section-head"><div><h3>منطقه خطر</h3><p>هر دو عمل غیرقابل‌بازگشت‌اند و دلیل اجباری دارند</p></div></div>
         <div class="danger-actions" *ngIf="!dangerOpen()">
           <button class="danger-outline" [disabled]="busy()" (click)="openDanger('void')">باطل کردن آخرین transition</button>
@@ -447,8 +453,9 @@
     </div>
     <footer class="task-footer">
       <span class="footer-note">{{isQueued(t) ? 'در صف اجرا' : isRunning(t) ? 'فرآیند فعال است' : exitLabel(exitCodeFor(t))}}</span>
-      <button class="secondary" [disabled]="busy() || isRunning(t) || isQueued(t)" (click)="rebaseTask()" title="معمولاً لازم نیست — حلقه خودش این کار را می‌کند">rebase دستی</button>
-      <button class="primary" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.awaitingHuman || !!t.error" (click)="runTask()">▶ اجرا / ادامه</button>
+      <!-- task پایان‌یافته هیچ دکمه‌ی اکشنی ندارد: نمایش اکشن‌ها از actions ِ status --json است و Manager برای state پایانی هیچ‌کدام را نمی‌دهد -->
+      <button class="secondary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t)" (click)="rebaseTask()" title="معمولاً لازم نیست — حلقه خودش این کار را می‌کند">rebase دستی</button>
+      <button class="primary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.awaitingHuman || !!t.error" (click)="runTask()">▶ اجرا / ادامه</button>
     </footer>
   </ng-container>
 

@@ -9,6 +9,8 @@ import { ConsoleComponent } from './console.component';
 import { MaintenanceComponent } from './maintenance.component';
 import { AuditComponent, EnvHealthComponent } from './env-health.component';
 import { TaskOpsComponent } from './task-ops.component';
+import { ArchiveComponent } from './archive.component';
+import { BOARD_DONE_STATES, archiveTasks, isFinished, isRecentlyDone, normalizeDoneDays } from './task-archive';
 import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, ExternalSource, HealthResult, Issue, Repo, RunningTask, Task } from './models';
 
 const LANES = [
@@ -59,19 +61,27 @@ const BLOCKER_LABELS: Record<string, { label: string; hint: string }> = {
   'attempts-exhausted': { label: 'سقف تلاش‌ها', hint: 'شمارنده‌ی سراسری attempts پر شده — task را ببند یا بودجه را دستی زیاد کن.' }
 };
 
+const VIEW_STORAGE_KEY = 'ba.view';
+
+/** آخرین تب انتخاب‌شده‌ی «برد یا آرشیو» (فقط این دو ذخیره می‌شوند؛ صفحه‌های عملیاتی نه). */
+function readStoredView(): 'board' | 'archive' {
+  try { return localStorage.getItem(VIEW_STORAGE_KEY) === 'archive' ? 'archive' : 'board'; }
+  catch { return 'board'; } // localStorage بسته است (حالت خصوصی/سیاست)
+}
+
 type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 'note' | 'stage' | null;
 
 @Component({
   selector: 'ba-root',
   standalone: true,
-  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent],
+  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, ArchiveComponent],
   templateUrl: './app.component.html'
 })
 export class AppComponent implements OnInit, OnDestroy {
   readonly api = inject(ApiService);
   readonly auth = inject(AuthService);
   // کانبان فاز ۱: صفحه‌های کنسول/نگهداری/سلامت/ممیزی کنار برد
-  readonly view = signal<'board' | 'console' | 'maintenance' | 'health' | 'audit'>('board');
+  readonly view = signal<'board' | 'archive' | 'console' | 'maintenance' | 'health' | 'audit'>(readStoredView());
   private started = false;
   private poll?: number;
   private source?: EventSource;
@@ -161,7 +171,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.board.set(null);
     this.selected.set(null);
     this.panel.set(null);
-    this.view.set('board');
+    this.view.set(readStoredView());
     this.loading.set(true);
   }
 
@@ -182,7 +192,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.loading.set(false);
     }
     this.poll = window.setInterval(() => {
-      if (this.panel() === 'task' || this.panel() === 'action' || !this.auth.user() || this.view() !== 'board') return;
+      if (this.panel() === 'task' || this.panel() === 'action' || !this.auth.user() || (this.view() !== 'board' && this.view() !== 'archive')) return;
       void this.refresh(true);
     }, 3000);
   }
@@ -266,10 +276,24 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  tasksFor(states: readonly string[]): Task[] {
-    return (this.board()?.tasks ?? []).filter(t => states.includes(t.state) && !t.error);
+  showView(view: 'board' | 'archive' | 'console' | 'maintenance' | 'health' | 'audit'): void {
+    this.view.set(view);
+    if (view === 'board' || view === 'archive') {
+      try { localStorage.setItem(VIEW_STORAGE_KEY, view); } catch { /* ذخیره اختیاری است */ }
+    }
   }
-  terminalTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => (TERMINAL_STATES as readonly string[]).includes(t.state) && !t.error); }
+
+  doneDays(): number { return normalizeDoneDays(this.currentRepo()?.board?.doneDays); }
+  /** پایان‌یافته‌ها فقط در ستون «تمام» و فقط در N روز اخیر؛ بقیه در تب آرشیو. */
+  tasksFor(states: readonly string[]): Task[] {
+    const now = new Date();
+    return (this.board()?.tasks ?? []).filter(t => states.includes(t.state) && !t.error && (!isFinished(t) || isRecentlyDone(t, this.doneDays(), now)));
+  }
+  laneIsDone(lane: { states: readonly string[] }): boolean { return lane.states.some(s => BOARD_DONE_STATES.includes(s)); }
+  archiveCount(): number { return archiveTasks(this.board()?.tasks ?? []).length; }
+  finished(t: Task): boolean { return isFinished(t); }
+  /** بخش جدای برد: فقط blocked (تصمیم انسان لازم است). cancelled/abandoned فقط در آرشیواند. */
+  terminalTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => t.state === 'blocked' && !t.error); }
   errorTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => !!t.error || t.state === '__error__'); }
   // بند الف کانبان-اکشن‌های-وب‌تری: هر state ای که نه در lanes، نه در
   // TERMINAL_STATES باشد — یعنی چیزی که این UI هنوز نمی‌شناسد — باید دیده
