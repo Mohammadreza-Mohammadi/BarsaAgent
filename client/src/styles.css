@@ -93,3 +93,14 @@
 .check-row>div{display:flex;flex-direction:column;gap:2px}.check-row small{color:#5e6d80;font-size:11px;overflow-wrap:anywhere}.check-row small.hint{color:#8a5a00}.check-row.fail small.hint{color:#a32e29}
 .check-badge{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#1fac7c;color:#fff;font-size:12px;flex:0 0 auto}.check-row.warn .check-badge{background:#e0a21b}.check-row.fail .check-badge{background:#c4423b}
 @media(max-width:850px){.git-status{grid-template-columns:1fr}.view-nav{padding:8px 15px 0;overflow:auto}.run-row{grid-template-columns:1fr 1fr}}
+
+/* --- آرشیو --- */
+.archive-link{margin:6px 0 0;width:100%;border:1px dashed #b8c4d2;background:#f6f8fb;color:#41536f;border-radius:7px;padding:7px 10px;font-size:11px}
+.archive-link:hover{background:#eaf0f7}
+.archive-filters{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:6px 0 12px}
+.archive-filters label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#526076}.archive-filters label.grow{flex:1;min-width:220px}
+.archive-filters input,.archive-filters select{border:1px solid #ced7e2;border-radius:8px;padding:8px 10px;font:inherit;background:#fff;color:#263348}
+.archive-table th .sort{border:0;background:none;font:inherit;font-weight:700;color:#41536f;padding:0}
+.archive-row{cursor:pointer}.archive-row:hover td,.archive-row:focus td{background:#eef6f3;outline:none}
+.archive-empty{text-align:center;color:#7a8697;padding:28px!important}
+.archive-pager{display:flex;gap:14px;align-items:center;justify-content:center;margin:12px 0;font-size:12px;color:#526076}

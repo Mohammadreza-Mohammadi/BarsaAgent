@@ -7,6 +7,8 @@ repos:
   - id: barsa-novin-ray
     path: "C:/ng-web-systemsaz-1"
     managerScript: "scripts/manager.js"
+board:
+  doneDays: 3   # ستون «تمام» فقط taskهای پایان‌یافته در این چند روز اخیر؛ بقیه در تب «آرشیو»
 run:
   maxConcurrent: 2
   autoStartOnCreate: true
