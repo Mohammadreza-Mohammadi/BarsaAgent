@@ -104,3 +104,8 @@
 .archive-row{cursor:pointer}.archive-row:hover td,.archive-row:focus td{background:#eef6f3;outline:none}
 .archive-empty{text-align:center;color:#7a8697;padding:28px!important}
 .archive-pager{display:flex;gap:14px;align-items:center;justify-content:center;margin:12px 0;font-size:12px;color:#526076}
+
+/* --- اکشن‌ها از status.actions --- */
+.conflict-files{margin:6px 0;padding:8px 10px;background:#fff;border:1px solid #efc5c2;border-radius:7px;max-height:180px;overflow:auto;list-style:none;font-size:11px}
+.conflict-files li{padding:2px 0}
+.link-btn.disabled{opacity:.5;cursor:not-allowed}

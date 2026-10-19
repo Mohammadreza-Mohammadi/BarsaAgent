@@ -84,29 +84,34 @@ test('resolveTaskDir: traversal، شناسه‌ی مخرب و مسیر اعلا�
   fs.mkdirSync(path.join(repoRoot, '.agent-work', 'tasks', '10'), { recursive: true });
   fs.mkdirSync(path.join(repoRoot, 'elsewhere'), { recursive: true });
 
-  const ok = resolveTaskDir(repo, { id: '10' });
-  assert.equal(ok.source, 'convention');
+  const ok = resolveTaskDir(repo, { id: '10', dir: '.agent-work/tasks/10' });
+  assert.equal(ok.source, 'status');
   assert.equal(path.basename(ok.dir), '10');
-  assert.equal(resolveTaskDir(repo, { id: '10', dir: '.agent-work/tasks/10' }).source, 'status');
+  // dir نباید حدس زده شود: بدون dir (Manager قدیمی) → 409، حتی اگر پوشه‌ی قراردادی وجود داشته باشد
+  assert.throws(() => resolveTaskDir(repo, { id: '10' }), e => e.status === 409 && /dir/.test(e.message));
+  assert.throws(() => resolveTaskDir(repo, { id: '10', dir: '' }), e => e.status === 409);
+  // نام پوشه با slug فارسی (مثل task 9999 واقعی) از dir می‌آید، نه از id
+  fs.mkdirSync(path.join(repoRoot, '.agent-work', 'tasks', '11-دکمه'), { recursive: true });
+  assert.equal(path.basename(resolveTaskDir(repo, { id: '11', dir: '.agent-work/tasks/11-دکمه' }).dir), '11-دکمه');
 
   for (const task of [
     { id: '10', dir: '../../etc' },
     { id: '10', dir: 'elsewhere' },
     { id: '10', dir: '.agent-work/tasks' },
-    { id: '10', taskDir: path.join(repoRoot, '..') },
-    { id: '../10' },
-    { id: '10/../../x' },
-    { id: '' },
+    { id: '10', dir: path.join(repoRoot, '..') },
+    { id: '../10', dir: '.agent-work/tasks/10' },
+    { id: '10/../../x', dir: '.agent-work/tasks/10' },
+    { id: '', dir: '.agent-work/tasks/10' },
     {}
   ]) {
     assert.throws(() => resolveTaskDir(repo, task), e => [400, 404].includes(e.status), JSON.stringify(task));
   }
-  assert.throws(() => resolveTaskDir(repo, { id: '99' }), e => e.status === 404);
+  assert.throws(() => resolveTaskDir(repo, { id: '99', dir: '.agent-work/tasks/99' }), e => e.status === 404);
 });
 
 test('دانلود zip پوشه‌ی task: فقط خواندنی، با ممیزی؛ task ناشناس 404؛ مسیر اعلام‌شده‌ی مخرب 400', async t => {
   const fake = makeFakeManagerRepo(t, {
-    status: { schemaVersion: 1, repo: {}, tasks: [{ id: '10', state: 'review' }, { id: '11', state: 'review', dir: '../../outside' }] }
+    status: { schemaVersion: 1, repo: {}, tasks: [{ id: '10', state: 'review', dir: '.agent-work/tasks/10' }, { id: '11', state: 'review', dir: '../../outside' }, { id: '12', state: 'review' }] }
   });
   const dir = path.join(fake.root, '.agent-work', 'tasks', '10');
   fs.mkdirSync(path.join(dir, 'attempts'), { recursive: true });
@@ -124,6 +129,7 @@ test('دانلود zip پوشه‌ی task: فقط خواندنی، با ممیز
 
   assert.equal((await get(base, '/api/repos/fake/tasks/404/zip')).status, 404);
   assert.equal((await get(base, '/api/repos/fake/tasks/11/zip')).status, 400);
+  assert.equal((await get(base, '/api/repos/fake/tasks/12/zip')).status, 409, 'بدون dir در status: حدس نمی‌زند');
   const downloads = new AuditLog({ dir: config.dataDir }).readAll().filter(r => r.action === 'zip.download');
   assert.equal(downloads.length, 1);
   assert.equal(downloads[0].files, 2);

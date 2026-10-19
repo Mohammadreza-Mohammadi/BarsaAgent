@@ -4,17 +4,34 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
 import { HealthStatus, RunRecord, RunningTask, Task } from './models';
+import { RAISE_LIMIT_FIELDS, allowed, can, conflictFiles, hasActions } from './task-actions';
 
-type Pending = 'abandon' | 'unblock' | 'raise-limit' | 'close-orphan' | 'retry-rebase';
+type Pending =
+  | 'abandon' | 'cancel' | 'void' | 'unlock' | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan'
+  | 'allow-path' | 'allow-shared-knowledge-file' | 'external-access' | 'reset-external';
 
-const TERMINAL = new Set(['integrated', 'cancelled', 'abandoned']);
+const DANGEROUS = new Set<Pending>(['abandon', 'cancel', 'void', 'unlock', 'reset-external']);
+
+const TITLES: Record<Pending, string> = {
+  abandon: 'کنار گذاشتن task (abandon)', cancel: 'بستن task (cancel)', void: 'باطل کردن آخرین transition (void)',
+  unlock: 'آزاد کردن قفل transition (unlock)', unblock: 'رفع blocker (unblock)', 'retry-rebase': 'دوباره امتحان کن (rebase)',
+  'raise-limit': 'بالا بردن سقف (raise-limit)', 'close-orphan': 'بستن attempt یتیم (close-orphan)',
+  'allow-path': 'افزودن مسیر به scope.allow (allow-path)', 'allow-shared-knowledge-file': 'استثنای فایل دانش مشترک',
+  'external-access': 'تغییر دسترسی منبع بیرونی', 'reset-external': 'بازنشانی worktree سایه (reset-external)'
+};
+
+const HINTS: Partial<Record<Pending, string>> = {
+  abandon: 'task را برای همیشه کنار می‌گذارد؛ برنمی‌گردد.',
+  cancel: 'task را می‌بندد؛ برنمی‌گردد.',
+  void: 'آخرین transition (بدون اثر بیرونی) را برمی‌گرداند.',
+  unlock: 'فقط .transition.lock همین task را آزاد می‌کند؛ manifest، worktree و تاریخچه دست‌نخورده می‌مانند.',
+  'reset-external': 'worktree سایه‌ی این task را به یک commit برمی‌گرداند (پیش‌فرض Manager: merge-base)؛ تغییرات وب‌تری در آن worktree از دست می‌رود.'
+};
 
 /**
- * اکشن‌های تایپ‌شده‌ی کارت task (بند ب) + توقف (ز) + شواهد (ج) + برخورد rebase (ط).
- *
- * قاعده: نمایش هر دکمه فقط از فیلدهای `status --json` تصمیم گرفته می‌شود. اگر
- * status برای مجاز بودن یک اکشن سیگنال نمی‌دهد (allow-path، external-access)
- * دکمه‌ای ساخته نشده و آن کار از «کنسول» انجام می‌شود؛ فیلد کم در گزارش آمده.
+ * اکشن‌های کارت task. **هیچ شرط «مجاز است؟»ی در کانبان نیست**: هر دکمه فقط وقتی دیده می‌شود که
+ * `status --json` در `actions` اجازه داده باشد (task-actions.ts). منبع/attempt هم از همان آرایه‌ها
+ * می‌آیند. فقط توقف (فرآیند خود کانبان) و zip (فیلد `dir`) از جای دیگری هستند.
  */
 @Component({
   selector: 'ba-task-ops',
@@ -22,15 +39,17 @@ const TERMINAL = new Set(['integrated', 'cancelled', 'abandoned']);
   imports: [FormsModule],
   template: `
     <section class="detail-section task-ops">
-      <div class="section-head"><div><h3>اجراها و اکشن‌ها</h3><p>هر اکشن با نام تو در دفتر ممیزی ثبت می‌شود.</p></div></div>
+      <div class="section-head"><div><h3>اجراها و اکشن‌ها</h3><p>هر اکشن با نام تو در دفتر ممیزی ثبت می‌شود؛ مجاز بودنش را خود Manager می‌گوید.</p></div></div>
       @if (error()) { <div class="notice error"><span>{{ error() }}</span><button (click)="error.set('')">×</button></div> }
       @if (info()) { <div class="notice info"><span>{{ info() }}</span><button (click)="info.set('')">×</button></div> }
 
       <div class="danger-actions wrap">
-        @if (active()) {
-          <button class="danger" [disabled]="busy()" (click)="stop()">⏹ توقف این اجرا</button>
+        @if (active()) { <button class="danger" [disabled]="busy()" (click)="stop()">⏹ توقف این اجرا</button> }
+        @if (task().dir) {
+          <a class="secondary link-btn" [href]="api.zipUrl(repoId(), task().id)" download>⬇ zip پوشه‌ی task (بازبینی بیرونی)</a>
+        } @else {
+          <span class="secondary link-btn disabled" title="Manager فیلد dir را نداد (قدیمی‌تر از TOOLING-037)">⬇ zip پوشه‌ی task (dir نیست)</span>
         }
-        <a class="secondary link-btn" [href]="api.zipUrl(repoId(), task().id)" download>⬇ zip پوشه‌ی task (بازبینی بیرونی)</a>
       </div>
       @if (afterStop(); as h) {
         <div class="disabled-gate-warning">
@@ -40,45 +59,73 @@ const TERMINAL = new Set(['integrated', 'cancelled', 'abandoned']);
         </div>
       }
 
+      @if (!hasActions()) {
+        <div class="disabled-gate-warning">این Manager بلوک <code>actions</code> را در <code>status --json</code> نمی‌دهد (قدیمی‌تر از TOOLING-037)؛ هیچ دکمه‌ی اکشنی نمایش داده نمی‌شود — از «کنسول» انجام بده.</div>
+      }
+
       @if (rebaseConflict()) {
         <div class="conflict-card">
           <b>⚠ تداخل rebase</b>
           <p>rebase خودکار روی <code dir="ltr">{{ task().blocker?.base || 'main' }}</code>@if (task().blocker?.source) { (منبع بیرونی <code dir="ltr">{{ task().blocker?.source }}</code>) } تعارض داد و abort شد؛ worktree همان‌جایی است که قبل از rebase بود.</p>
-          <div class="disabled-gate-warning">فایل‌های درگیر در <code>status --json</code> و رویداد <code>rebase.conflict</code> نیستند (فقط <code>base</code> و <code>oldBaseCommit</code>). فیلد کم در Manager گزارش شده؛ تا آن موقع فایل‌ها را در worktree ببین. ویرایشگر حل تعارض در این فاز نیست.</div>
+          @if (conflicts(); as files) {
+            @if (files.length) {
+              <small>فایل‌های درگیر ({{ files.length }}) — از <code>blocker.conflictFiles</code>:</small>
+              <ul class="conflict-files" dir="ltr">@for (f of files; track f) { <li><code>{{ f }}</code></li> }</ul>
+            } @else { <div class="disabled-gate-warning">git هیچ فایل درگیری گزارش نکرد (<code>conflictFiles: []</code>).</div> }
+          } @else {
+            <div class="disabled-gate-warning">فهرست فایل‌ها ثبت نشده (<code>conflictFiles: null</code>) — رویداد <code>rebase.conflict</code> قدیمی‌تر از این قابلیت است.</div>
+          }
+          <small>ویرایشگر حل تعارض در این فاز نیست؛ حل با git در worktree یا «دوباره امتحان کن» وقتی main عوض شد.</small>
         </div>
       }
 
       <div class="danger-actions wrap">
-        @if (rebaseConflict()) {
-          <button class="secondary" [disabled]="busy() || active()" (click)="open('retry-rebase')">🔁 دوباره امتحان کن (main عوض شده)</button>
-        }
-        @if (canUnblock()) {
-          <button class="secondary" [disabled]="busy() || active()" (click)="open('unblock')">🔓 رفع blocker (unblock)</button>
-        }
-        @if (raiseField(); as f) {
-          <button class="secondary" [disabled]="busy() || active()" (click)="open('raise-limit')">⬆ بالا بردن {{ f.field }}</button>
-        }
-        @if (orphanAttempt(); as a) {
-          <button class="secondary" [disabled]="busy() || active()" (click)="open('close-orphan')">📁 بستن attempt یتیم {{ a }}</button>
-        }
-        @if (canAbandon()) {
-          <button class="danger-outline" [disabled]="busy() || active()" (click)="open('abandon')">{{ rebaseConflict() ? 'کنار بگذار (abandon)' : 'کنار گذاشتن task (abandon)' }}</button>
-        }
+        @if (rebaseConflict() && can('unblock')) { <button class="secondary" [disabled]="busy() || active()" (click)="open('retry-rebase')">🔁 دوباره امتحان کن (main عوض شده)</button> }
+        @if (can('unblock') && !rebaseConflict()) { <button class="secondary" [disabled]="busy() || active()" (click)="open('unblock')">🔓 رفع blocker (unblock)</button> }
+        @if (can('raiseLimit')) { <button class="secondary" [disabled]="busy() || active()" (click)="open('raise-limit')">⬆ بالا بردن سقف</button> }
+        @for (a of orphans(); track a) { <button class="secondary" [disabled]="busy() || active()" (click)="open('close-orphan', a)">📁 بستن attempt یتیم {{ a }}</button> }
+        @if (can('allowPath')) { <button class="secondary" [disabled]="busy() || active()" (click)="open('allow-path')">➕ افزودن مسیر به scope</button> }
+        @if (can('allowSharedKnowledgeFile')) { <button class="secondary" [disabled]="busy() || active()" (click)="open('allow-shared-knowledge-file')">➕ فایل دانش مشترک</button> }
+        @if (externalAccessSources().length) { <button class="secondary" [disabled]="busy() || active()" (click)="open('external-access')">🔑 دسترسی منبع بیرونی</button> }
+        @if (resetSources().length) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('reset-external')">♻ بازنشانی worktree سایه</button> }
+        @if (can('void')) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('void')">↩ باطل کردن آخرین transition</button> }
+        @if (can('unlock')) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('unlock')">🔓 آزاد کردن قفل</button> }
+        @if (can('cancel')) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('cancel')">بستن task (cancel)</button> }
+        @if (can('abandon')) { <button class="danger-outline" [disabled]="busy() || active()" (click)="open('abandon')">کنار گذاشتن (abandon)</button> }
       </div>
 
       @if (pending(); as p) {
         <div class="confirm-box">
           <b>{{ title(p) }}</b>
+          @if (hint(p)) { <small>{{ hint(p) }}</small> }
+
           @if (p === 'raise-limit') {
-            <label><span>{{ raiseField()?.field }} (فعلی: {{ raiseField()?.current ?? '؟' }})</span>
-              <input type="number" min="1" max="1000" name="limit" [(ngModel)]="limitValue"></label>
+            <label><span>سقف</span><select name="limitField" [ngModel]="limitField" (ngModelChange)="pickLimitField($event)">@for (f of limitFields; track f) { <option [value]="f">{{ f }}</option> }</select></label>
+            <label><span>مقدار جدید (فعلی: {{ currentLimit() ?? '؟' }})</span><input type="number" min="1" max="1000" name="limitValue" [(ngModel)]="limitValue"></label>
           }
+          @if (p === 'allow-path' || p === 'allow-shared-knowledge-file') {
+            <label><span>مسیر یا الگو (نسبت به ریشه‌ی مخزن)</span><input dir="ltr" name="path" [(ngModel)]="path" placeholder="projects/…/file.ts"></label>
+          }
+          @if (p === 'external-access' || p === 'reset-external') {
+            <label><span>منبع بیرونی</span>
+              <select name="sourceId" [(ngModel)]="sourceId">@for (s of (p === 'reset-external' ? resetSources() : externalAccessSources()); track s) { <option [value]="s">{{ s }}</option> }</select></label>
+          }
+          @if (p === 'external-access') {
+            <label><span>سطح دسترسی</span><select name="access" [(ngModel)]="access"><option value="read">read</option><option value="write">write</option></select></label>
+          }
+          @if (p === 'reset-external') {
+            <label><span>--to (اختیاری — sha ِ commit؛ خالی = پیش‌فرض Manager)</span><input dir="ltr" name="to" [(ngModel)]="toSha" placeholder="مثلاً a1b2c3d"></label>
+          }
+          @if (p === 'unlock' && lockUnknown()) {
+            <label class="force-check"><input type="checkbox" name="force" [(ngModel)]="force"> مطمئنم — با <code>--force</code> اجرا کن (Manager نمی‌تواند زنده/مرده بودن این قفل را اثبات کند)</label>
+          }
+
           <textarea name="reason" [(ngModel)]="reason" [placeholder]="p === 'retry-rebase' ? 'دلیل (اختیاری)' : 'دلیل (اجباری)…'"></textarea>
           <small>فرمان نهایی:</small>
           <code class="final-command" dir="ltr">{{ command(p) }}</code>
           <div class="danger-confirm-actions">
             <button class="secondary" (click)="pending.set(null)">انصراف</button>
-            <button [class]="p === 'abandon' ? 'danger' : 'primary'" [disabled]="busy() || (p !== 'retry-rebase' && !reason.trim())" (click)="confirm(p)">تأیید نهایی</button>
+            <button [class]="dangerous(p) ? 'danger' : 'primary'" [disabled]="busy() || !valid(p)" (click)="confirm(p)">تأیید نهایی</button>
           </div>
         </div>
       }
@@ -104,6 +151,7 @@ export class TaskOpsComponent {
   readonly task = input.required<Task>();
   readonly running = input<RunningTask | undefined>(undefined);
   readonly changed = output<void>();
+  readonly limitFields = RAISE_LIMIT_FIELDS;
 
   readonly runs = signal<RunRecord[]>([]);
   readonly pending = signal<Pending | null>(null);
@@ -112,7 +160,14 @@ export class TaskOpsComponent {
   readonly info = signal('');
   readonly afterStop = signal<HealthStatus | null>(null);
   reason = '';
+  limitField = 'maxAttempts';
   limitValue = 1;
+  path = '';
+  sourceId = '';
+  access: 'read' | 'write' = 'write';
+  toSha = '';
+  attempt = '';
+  force = false;
 
   constructor() {
     // فهرست اجراها وقتی task عوض شد یا اجرا شروع/تمام شد دوباره خوانده می‌شود.
@@ -127,48 +182,79 @@ export class TaskOpsComponent {
 
   active(): boolean { const r = this.running(); return r?.running === true || r?.queued === true; }
 
-  // --- نمایش فقط از status --json -------------------------------------------------
-  rebaseConflict(): boolean { return this.task().state === 'blocked' && this.task().blocker?.kind === 'rebase-conflict'; }
-  canUnblock(): boolean { return this.task().state === 'blocked' && !!this.task().blocker && !this.rebaseConflict(); }
-  canAbandon(): boolean { return !TERMINAL.has(this.task().state) && !this.task().error; }
-  raiseField(): { field: 'maxAttempts' | 'maxSpecRevisions'; current: number | null } | null {
-    const b = this.task().blocker;
-    if (this.task().state !== 'blocked' || !b) return null;
-    if (typeof b.maxAttempts === 'number') return { field: 'maxAttempts', current: b.maxAttempts };
-    if (typeof b.maxSpecRevisions === 'number') return { field: 'maxSpecRevisions', current: b.maxSpecRevisions };
-    return null;
+  // --- فقط از actions ---------------------------------------------------------------
+  can(action: Parameters<typeof can>[1]): boolean { return can(this.task(), action); }
+  hasActions(): boolean { return hasActions(this.task()); }
+  orphans(): string[] { return allowed(this.task(), 'closeOrphan'); }
+  externalAccessSources(): string[] { return allowed(this.task(), 'externalAccess'); }
+  resetSources(): string[] { return allowed(this.task(), 'resetExternal'); }
+
+  // --- فقط نمایش (نه اجازه) ---------------------------------------------------------
+  rebaseConflict(): boolean { return this.task().blocker?.kind === 'rebase-conflict'; }
+  conflicts(): string[] | null { return conflictFiles(this.task()); }
+  lockUnknown(): boolean { return this.task().health?.transitionLock?.alive === null; }
+  title(p: Pending): string { return TITLES[p]; }
+  hint(p: Pending): string { return HINTS[p] ?? ''; }
+  dangerous(p: Pending): boolean { return DANGEROUS.has(p); }
+
+  /** مقدار پیش‌فرض فقط برای راحتی فرم؛ مجاز بودن raise-limit از actions آمده. */
+  currentLimit(): number | null {
+    const t = this.task();
+    const budget = t.budget?.[this.limitField]?.max;
+    if (typeof budget === 'number') return budget;
+    const fromBlocker = (t.blocker as Record<string, unknown> | null | undefined)?.[this.limitField];
+    return typeof fromBlocker === 'number' ? fromBlocker : null;
   }
-  orphanAttempt(): string | null {
-    const gate = this.task().awaitingHuman;
-    if (gate?.kind !== 'orphan-attempt' || !gate.artifact) return null;
-    const last = gate.artifact.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? '';
-    return /^\d{1,6}$/.test(last) ? last : null;
+  pickLimitField(field: string): void { this.limitField = field; this.limitValue = (this.currentLimit() ?? 0) + 5; }
+
+  open(p: Pending, attempt = ''): void {
+    this.reason = '';
+    this.error.set('');
+    this.path = '';
+    this.toSha = '';
+    this.force = false;
+    this.attempt = attempt;
+    this.access = 'write';
+    this.sourceId = (p === 'reset-external' ? this.resetSources() : this.externalAccessSources())[0] ?? '';
+    if (p === 'raise-limit') {
+      const named = this.task().blocker?.field;
+      const field = typeof named === 'string' && RAISE_LIMIT_FIELDS.includes(named) ? named
+        : typeof this.task().blocker?.maxSpecRevisions === 'number' ? 'maxSpecRevisions' : 'maxAttempts';
+      this.pickLimitField(field);
+    }
+    this.pending.set(p);
   }
 
-  title(p: Pending): string {
-    return {
-      abandon: 'کنار گذاشتن task', unblock: 'رفع blocker', 'raise-limit': 'بالا بردن سقف',
-      'close-orphan': 'بستن attempt یتیم', 'retry-rebase': 'دوباره امتحان کن (rebase)'
-    }[p];
+  // --- فرم ---------------------------------------------------------------------------
+  valid(p: Pending): boolean {
+    if (p !== 'retry-rebase' && !this.reason.trim()) return false;
+    switch (p) {
+      case 'raise-limit': return Number.isInteger(Number(this.limitValue)) && Number(this.limitValue) >= 1;
+      case 'allow-path': case 'allow-shared-knowledge-file': return !!this.path.trim();
+      case 'external-access': return !!this.sourceId;
+      case 'reset-external': return !!this.sourceId && (!this.toSha.trim() || /^[0-9a-f]{7,40}$/i.test(this.toSha.trim()));
+      case 'close-orphan': return !!this.attempt;
+      default: return true;
+    }
   }
 
   command(p: Pending): string {
     const id = this.task().id;
-    const why = this.reason.trim() ? JSON.stringify(this.reason.trim()) : '"…"';
+    const why = '--reason-file ‹متن دلیل›';
     switch (p) {
-      case 'abandon': return `node scripts/manager.js abandon ${id} --reason-file ‹متن دلیل›`;
-      case 'unblock': return `node scripts/manager.js answer ${id} --unblock --reason ${why}`;
-      case 'raise-limit': return `node scripts/manager.js answer ${id} --raise-limit ${this.raiseField()?.field}=${this.limitValue} --reason ${why}`;
-      case 'close-orphan': return `node scripts/manager.js answer ${id} --close-orphan ${this.orphanAttempt()} --reason ${why}`;
-      case 'retry-rebase': return `node scripts/manager.js answer ${id} --unblock --reason ${this.reason.trim() ? why : '"تلاش دوباره بعد از تغییر main"'}  ←  سپس  node scripts/manager.js run ${id}`;
+      case 'abandon': return `node scripts/manager.js abandon ${id} ${why}`;
+      case 'cancel': return `node scripts/manager.js cancel ${id} ${why}`;
+      case 'void': return `node scripts/manager.js void ${id} ${why}`;
+      case 'unlock': return `node scripts/manager.js unlock ${id} ${why}${this.force ? ' --force' : ''}`;
+      case 'unblock': return `node scripts/manager.js answer ${id} --unblock ${why}`;
+      case 'retry-rebase': return `node scripts/manager.js answer ${id} --unblock ${why}  ←  سپس  node scripts/manager.js run ${id}`;
+      case 'raise-limit': return `node scripts/manager.js answer ${id} --raise-limit ${this.limitField}=${this.limitValue} ${why}`;
+      case 'close-orphan': return `node scripts/manager.js answer ${id} --close-orphan ${this.attempt} ${why}`;
+      case 'allow-path': return `node scripts/manager.js answer ${id} --allow-path ${this.path.trim() || '‹مسیر›'} ${why}`;
+      case 'allow-shared-knowledge-file': return `node scripts/manager.js answer ${id} --allow-shared-knowledge-file ${this.path.trim() || '‹مسیر›'} ${why}`;
+      case 'external-access': return `node scripts/manager.js answer ${id} --external-access ${this.sourceId}=${this.access} ${why}`;
+      case 'reset-external': return `node scripts/manager.js answer ${id} --reset-external ${this.sourceId}${this.toSha.trim() ? ' --to ' + this.toSha.trim() : ''} ${why}`;
     }
-  }
-
-  open(p: Pending): void {
-    this.reason = '';
-    this.error.set('');
-    this.limitValue = (this.raiseField()?.current ?? 0) + 5;
-    this.pending.set(p);
   }
 
   private message(e: unknown): string { return e instanceof HttpErrorResponse ? (e.error?.error ?? e.message) : String(e); }
@@ -182,7 +268,7 @@ export class TaskOpsComponent {
     this.error.set('');
     try {
       const result = await firstValueFrom(this.api.stopTask(this.repoId(), this.task().id));
-      this.afterStop.set(result.health ?? { stuck: false } as HealthStatus);
+      this.afterStop.set(result.health ?? ({ stuck: false } as HealthStatus));
       this.info.set(result.wasQueued ? 'از صف حذف شد.' : 'درخت فرآیند این اجرا بسته شد.');
       this.changed.emit();
     } catch (e) { this.error.set(this.message(e)); }
@@ -198,10 +284,17 @@ export class TaskOpsComponent {
     try {
       switch (p) {
         case 'abandon': await firstValueFrom(this.api.abandonTask(repo, id, reason)); break;
+        case 'cancel': await firstValueFrom(this.api.cancelTask(repo, id, reason)); break;
+        case 'void': await firstValueFrom(this.api.voidTask(repo, id, reason)); break;
+        case 'unlock': await firstValueFrom(this.api.unlockTask(repo, id, reason, this.force)); break;
         case 'unblock': await firstValueFrom(this.api.unblockTask(repo, id, reason)); break;
-        case 'raise-limit': await firstValueFrom(this.api.raiseLimit(repo, id, this.raiseField()!.field, Number(this.limitValue), reason)); break;
-        case 'close-orphan': await firstValueFrom(this.api.closeOrphan(repo, id, this.orphanAttempt()!, reason)); break;
         case 'retry-rebase': await firstValueFrom(this.api.retryRebase(repo, id, reason || undefined)); break;
+        case 'raise-limit': await firstValueFrom(this.api.raiseLimit(repo, id, this.limitField, Number(this.limitValue), reason)); break;
+        case 'close-orphan': await firstValueFrom(this.api.closeOrphan(repo, id, this.attempt, reason)); break;
+        case 'allow-path': await firstValueFrom(this.api.allowPath(repo, id, this.path.trim(), reason)); break;
+        case 'allow-shared-knowledge-file': await firstValueFrom(this.api.allowSharedKnowledgeFile(repo, id, this.path.trim(), reason)); break;
+        case 'external-access': await firstValueFrom(this.api.externalAccess(repo, id, this.sourceId, this.access, reason)); break;
+        case 'reset-external': await firstValueFrom(this.api.resetExternal(repo, id, this.sourceId, this.toSha.trim() || null, reason)); break;
       }
       this.pending.set(null);
       this.info.set('انجام شد.');

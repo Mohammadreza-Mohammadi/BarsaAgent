@@ -26,7 +26,7 @@ export class ApiService {
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/open-editor`, {}
   );
   run = (repo: string, id: string) => this.http.post<{ accepted: boolean; queued?: boolean; queuePosition?: number | null }>(`/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/run`, {});
-  answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect'; respec?: boolean; releaseNoteText?: string; noReleaseNote?: boolean }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
+  answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect'; respec?: boolean; releaseNoteText?: string; noReleaseNote?: boolean; externalAccess?: { sourceId: string; access: 'read' | 'write' } }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/answer`, body
   );
   // الحاقیه‌ی ۱، بند ب: فقط وقتی actions.canStageExternal === true (از
@@ -80,6 +80,10 @@ export class ApiService {
   unblockTask = (repo: string, id: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/unblock`, { reason });
   raiseLimit = (repo: string, id: string, field: string, value: number, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/raise-limit`, { field, value, reason });
   closeOrphan = (repo: string, id: string, attempt: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/close-orphan`, { attempt, reason });
+  allowPath = (repo: string, id: string, path: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/allow-path`, { path, reason });
+  allowSharedKnowledgeFile = (repo: string, id: string, path: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/allow-shared-knowledge-file`, { path, reason });
+  externalAccess = (repo: string, id: string, sourceId: string, access: 'read' | 'write', reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/external-access`, { sourceId, access, reason });
+  resetExternal = (repo: string, id: string, sourceId: string, to: string | null, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/reset-external`, { sourceId, to, reason });
   retryRebase = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`${this.taskPath(repo, id)}/retry-rebase`, { reason });
 
   gitStatus = (repo: string) => this.http.get<GitStatus>(`${this.repoPath(repo)}/git/status`);

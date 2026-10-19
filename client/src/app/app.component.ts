@@ -10,6 +10,7 @@ import { MaintenanceComponent } from './maintenance.component';
 import { AuditComponent, EnvHealthComponent } from './env-health.component';
 import { TaskOpsComponent } from './task-ops.component';
 import { ArchiveComponent } from './archive.component';
+import { allowed, can, canAnswerGate } from './task-actions';
 import { BOARD_DONE_STATES, archiveTasks, isFinished, isRecentlyDone, normalizeDoneDays } from './task-archive';
 import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, ExternalSource, HealthResult, Issue, Repo, RunningTask, Task } from './models';
 
@@ -35,10 +36,6 @@ const KNOWN_STATES = new Set<string>([
   ...LANES.flatMap(lane => [...lane.states]),
   ...TERMINAL_STATES
 ]);
-
-// manager.js#handleNoteDecision: --note فقط همین چهار state را رد می‌کند
-// (بعد از آن‌ها دیگر هیچ agent ای اجرا نمی‌شود که یادداشت را بخواند).
-const NOTE_BLOCKED_STATES = new Set(['integrated', 'awaiting-external-checkin', 'cancelled', 'abandoned']);
 
 const EXIT_LABELS: Record<number, string> = {
   0: 'تمام شد — integrated',
@@ -144,6 +141,9 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly mergeAck = signal(false);
   private readonly openedHeadCommit = signal<string | null | undefined>(undefined);
 
+  // clarify + --external-access اختیاری (فقط وقتی actions.externalAccess غیرخالی است)
+  clarifyAccessSource = '';
+  clarifyAccessLevel: 'read' | 'write' = 'write';
   checkinSourceId = '';
   checkinChangesets = '';
   noteText = '';
@@ -211,8 +211,21 @@ export class AppComponent implements OnInit, OnDestroy {
     await this.refresh();
   }
 
+  // status --json در اولین اجرا (cache سرد Manager) تا ~۱۵ ثانیه طول می‌کشد؛ poll ِ بعدی تا تمام شدن
+  // این یکی شروع نمی‌شود (وگرنه چند فرآیند Manager روی هم انباشته می‌شود).
+  private refreshInFlight = false;
+
   async refresh(silent = false): Promise<void> {
     if (!this.repoId()) return;
+    if (silent) {
+      if (this.refreshInFlight) return;
+    }
+    this.refreshInFlight = true;
+    try { await this.refreshOnce(silent); }
+    finally { this.refreshInFlight = false; }
+  }
+
+  private async refreshOnce(silent: boolean): Promise<void> {
 
     // Health مستقل از board/running بارگذاری می‌شود. خرابی یا تأخیر یکی نباید
     // وضعیت دیگری را مبهم کند یا Health را به‌اشتباه «ناسالم» نشان دهد.
@@ -361,7 +374,10 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!t) return true;
     return t.health?.stuck === true || t.health?.transitionLock != null;
   }
-  noteAllowed(t: Task | null): boolean { return !!t && !NOTE_BLOCKED_STATES.has(t.state); }
+  // «مجاز است؟» فقط از actions ِ status --json (task-actions.ts)؛ هیچ تصمیمی از روی state/blocker/awaitingHuman نیست.
+  can(t: Task | null, action: Parameters<typeof can>[1]): boolean { return can(t, action); }
+  canAnswerGate(t: Task | null): boolean { return canAnswerGate(t); }
+  externalAccessChoices(t: Task | null): string[] { return allowed(t, 'externalAccess'); }
 
   // الحاقیه‌ی ۱، بند ب: externalSources از status --json (TOOLING-032) —
   // actions همان شرط‌هایی است که answer خودش می‌سنجد؛ کانبان شرط دیگری
@@ -555,6 +571,7 @@ export class AppComponent implements OnInit, OnDestroy {
         text: this.answerText.trim() || undefined,
         route,
         respec: mode === 'clarify' ? this.respec : undefined,
+        externalAccess: mode === 'clarify' && this.clarifyAccessSource ? { sourceId: this.clarifyAccessSource, access: this.clarifyAccessLevel } : undefined,
         releaseNoteText,
         noReleaseNote
       }));
@@ -598,7 +615,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   openDanger(kind: 'void' | 'cancel' | 'unlock'): void { this.dangerOpen.set(kind); this.dangerReason = ''; this.dangerForce = false; }
-  closeDanger(): void { this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; }
+  closeDanger(): void { this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; this.clarifyAccessSource = ''; this.clarifyAccessLevel = 'write'; }
 
   // نشان قرمز کارت — «بازیابی از داخل ابزار» بند ۳: پنل جدا، جدا از جزئیات
   // معمولی task، تا کاربر مجبور نباشد اول تب Diff/جزئیات را رد کند تا به
@@ -638,7 +655,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
   async confirmCheckin(): Promise<void> {
     const t = this.selected();
-    if (!t || !this.checkinValid(t) || this.taskLocked(t)) return;
+    if (!t || !this.checkinValid(t)) return;
     this.busy.set(true); this.error.set('');
     try {
       const changesets = this.checkinChangesetList().map(v => /^\d+$/.test(v) ? `C${v}` : v);
@@ -667,7 +684,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
   async confirmStage(): Promise<void> {
     const t = this.selected();
-    if (!t || !this.stageValid(t) || this.taskLocked(t)) return;
+    if (!t || !this.stageValid(t)) return;
     this.busy.set(true); this.error.set('');
     try {
       await firstValueFrom(this.api.stageExternal(this.repoId(), t.id, { sourceId: this.stageSourceId }));
@@ -680,7 +697,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   // کانبان-اکشن‌های-وب‌تری، بند د — یادداشت برای اجرای بعدی. state-محور است
   // (manager.js#handleNoteDecision)، نه awaitingHuman — در هر state غیرپایانی
-  // (noteAllowed) قابل ارسال است.
+  // (actions.note) قابل ارسال است.
   openNote(t: Task, event?: Event): void {
     event?.stopPropagation();
     this.resetPanelState();
@@ -690,7 +707,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
   async submitNote(): Promise<void> {
     const t = this.selected();
-    if (!t || !this.noteText.trim() || this.taskLocked(t)) return;
+    if (!t || !this.noteText.trim()) return;
     this.busy.set(true); this.error.set('');
     try {
       await firstValueFrom(this.api.note(this.repoId(), t.id, this.noteText));
