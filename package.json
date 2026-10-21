@@ -12,7 +12,11 @@
     "check:manager": "node server/check-manager.js",
     "user:add": "node server/src/users-cli.js add",
     "user:remove": "node server/src/users-cli.js remove",
-    "user:list": "node server/src/users-cli.js list"
+    "user:list": "node server/src/users-cli.js list",
+    "token:create": "node server/src/tokens-cli.js create",
+    "token:list": "node server/src/tokens-cli.js list",
+    "token:revoke": "node server/src/tokens-cli.js revoke",
+    "barsa": "node server/src/remote-cli.js"
   },
   "dependencies": {
     "@angular/common": "^22.0.8",

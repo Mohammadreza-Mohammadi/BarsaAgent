@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# shim ِ کوتاه و ثابت برای Claude Code (Git Bash روی ویندوز): `./barsa <فرمان>` ← node server/src/remote-cli.js
+# برنامه کجاست؟ BARSA_APP_DIR، وگرنه کنار همین فایل (../server)، وگرنه D:/BarsaAgent (مسیر سرور).
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+app="${BARSA_APP_DIR:-}"
+if [ -z "$app" ]; then
+  if [ -f "$here/../server/src/remote-cli.js" ]; then app="$here/.."; else app="D:/BarsaAgent"; fi
+fi
+exec node "$app/server/src/remote-cli.js" "$@"

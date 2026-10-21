@@ -53,8 +53,9 @@ export function probeUrl(target, proxy, timeoutMs = 10_000) {
   });
 }
 
-function check(id, group, label, status, detail, hint) {
-  return { id, group, label, status, detail: detail ?? '', hint: hint ?? '' };
+/** `data` (اختیاری): همان وضعیت به‌صورت ساختاریافته، برای مصرف ماشینی (CLI ِ barsa) تا متن فارسی پارس نشود. */
+function check(id, group, label, status, detail, hint, data) {
+  return { id, group, label, status, detail: detail ?? '', hint: hint ?? '', ...(data !== undefined ? { data } : {}) };
 }
 
 async function safe(id, group, label, fn) {
@@ -160,9 +161,9 @@ export async function runHealthChecks({ config, repos, dataDir, managerInfo, hel
         const counts = `${info.ahead} commit جلوتر · ${info.behind} commit عقب‌تر از ${info.upstream || 'origin/main'}`;
         const detail = `${where} · ${counts} · ${fetched}`;
         if (info.behind > 0 || info.ahead > 0) {
-          return check(syncId, 'مسیرها', syncLabel, 'warn', detail, 'از صفحه‌ی «نگهداری مخزن ابزار» اکشن «sync» را اجرا کن (ff / push / merge ِ واقعی؛ هرگز rebase).');
+          return check(syncId, 'مسیرها', syncLabel, 'warn', detail, 'از صفحه‌ی «نگهداری مخزن ابزار» اکشن «sync» را اجرا کن (ff / push / merge ِ واقعی؛ هرگز rebase).', { ahead: info.ahead, behind: info.behind, lastFetchAt: info.lastFetchAt });
         }
-        return check(syncId, 'مسیرها', syncLabel, info.lastFetchAt ? 'ok' : 'warn', detail, info.lastFetchAt ? '' : 'ahead/behind از آخرین fetch است؛ با «پیش‌نمایش sync» تازه می‌شود.');
+        return check(syncId, 'مسیرها', syncLabel, info.lastFetchAt ? 'ok' : 'warn', detail, info.lastFetchAt ? '' : 'ahead/behind از آخرین fetch است؛ با «پیش‌نمایش sync» تازه می‌شود.', { ahead: info.ahead, behind: info.behind, lastFetchAt: info.lastFetchAt });
       });
 
       const localId = `manager-localconfig-${repo.id}`;
@@ -184,9 +185,9 @@ export async function runHealthChecks({ config, repos, dataDir, managerInfo, hel
         const execution = info.execution;
         if (!execution) return check(execId, 'مسیرها', execLabel, 'warn', 'این Manager repository.execution را نمی‌دهد (قدیمی‌تر از TOOLING-040)');
         if (execution.enabled === false) {
-          return check(execId, 'مسیرها', execLabel, 'warn', `خاموش — execution.enabled=false (منبع: ${execution.source || '؟'})`, `${execution.reason || ''} فقط sync کار می‌کند. روی سرور باید روشن باشد: execution.enabled را در repository.local.yaml برگردان.`.trim());
+          return check(execId, 'مسیرها', execLabel, 'warn', `خاموش — execution.enabled=false (منبع: ${execution.source || '؟'})`, `${execution.reason || ''} فقط sync کار می‌کند. روی سرور باید روشن باشد: execution.enabled را در repository.local.yaml برگردان.`.trim(), { enabled: false });
         }
-        return check(execId, 'مسیرها', execLabel, 'ok', `روشن (منبع: ${execution.source || 'پیش‌فرض'})`);
+        return check(execId, 'مسیرها', execLabel, 'ok', `روشن (منبع: ${execution.source || 'پیش‌فرض'})`, '', { enabled: true });
       });
 
       const actionsId = `manager-actions-${repo.id}`;
