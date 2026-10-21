@@ -1,0 +1,4 @@
+# shim ِ bash با CRLF روی Git Bash می‌شکند (`\r` در shebang/دستورها)؛ همیشه LF.
+bin/barsa text eol=lf
+docs/remote-control/bin/barsa text eol=lf
+*.cmd text eol=crlf

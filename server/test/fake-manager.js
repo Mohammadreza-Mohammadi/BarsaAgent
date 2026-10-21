@@ -31,6 +31,11 @@ const args = process.argv.slice(2);
 const dir = __dirname;
 fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify({ args, token: process.env.CLAUDE_CODE_OAUTH_TOKEN || null, proxy: process.env.HTTPS_PROXY || null, local: process.env.BARSA_TEST_LOCAL_SECRET || null }) + '\n');
 const cmd = args[0];
+// fail.json: { "<زیرفرمان>": { code, stderr } } — آن زیرفرمان با همین کد و پیام رد می‌شود (رد مشروع Manager).
+try {
+  const fail = JSON.parse(fs.readFileSync(path.join(dir, 'fail.json'), 'utf8'))[cmd];
+  if (fail) { process.stderr.write(fail.stderr || ''); process.exit(fail.code); }
+} catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
 const fileArg = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
 if (cmd === '--help' || cmd === '-h' || !cmd) { process.stdout.write(fs.readFileSync(path.join(dir, 'help.txt'), 'utf8')); }
 else if (cmd === 'status') {
@@ -81,6 +86,7 @@ ${extra}
     mutations: () => read('calls.jsonl').filter(c => !['--help', 'status', 'capabilities', 'events', 'artifact'].includes(c.args[0])),
     files: () => read('files.jsonl'),
     setStatus: value => fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify(value), 'utf8'),
+    setFail: value => fs.writeFileSync(path.join(root, 'fail.json'), JSON.stringify(value), 'utf8'),
     setSync: value => fs.writeFileSync(path.join(root, 'sync.json'), JSON.stringify(value), 'utf8')
   };
 }
@@ -103,7 +109,7 @@ export function configureGit(dir) {
 
 /** فایل‌های ساختگی manager داخل .git/info/exclude تا git status تمیز بماند. */
 export function excludeFakeManagerFiles(dir) {
-  fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'calls.jsonl\nfiles.jsonl\nhelp.txt\nstatus.json\nsync.json\nmanager.cjs\ngrandchild-*.pid\n');
+  fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'calls.jsonl\nfiles.jsonl\nhelp.txt\nstatus.json\nsync.json\nfail.json\nmanager.cjs\ngrandchild-*.pid\n');
 }
 
 export function initGitRepo(root, { files = { 'README.md': '# test\n' } } = {}) {

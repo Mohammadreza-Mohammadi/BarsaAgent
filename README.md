@@ -64,6 +64,16 @@ repos:
 
 اجرا به‌صورت سرویس ویندوز: `docs/server-service.md`.
 
+## کنترل از راه دور: CLI ِ `barsa` + Claude Remote Control
+
+برای کارهای کوتاه از گوشی (دیدن issueها و تسک‌ها، ساخت/اجرای تسک، تصمیم گیت‌ها، لاگ) یک CLI ِ محلی هست که **فقط کلاینت HTTP ِ همین
+سرور** است (`server/src/remote-cli.js`، shim ِ `bin/barsa` و `bin/barsa.cmd`) و با توکن نام‌دار از loopback وصل می‌شود؛ هیچ
+`manager.js` ای را مستقیم صدا نمی‌زند. توکن: `npm run token:create -- <name>` / `token:list` / `token:revoke -- <name>` (فقط hash روی دیسک، خود
+توکن فقط در `<dataDir>/tokens/<name>.token` با دسترسی فقط-مالک، چاپ نمی‌شود، باطل‌سازی فوری). سرور برای توکن remote فقط فهرست بسته‌ی
+endpointها (`REMOTE_ENDPOINTS` در `server/src/remote-cli-spec.js`) را باز می‌گذارد، actor ِ ممیزی `remote:<name>` است و رابط کاربری با
+برچسب `remote` نشانش می‌دهد. `abandon`، `void`، `unlock`، `cancel`، منبع بیرونی، scope، `sync` و کنسول عمداً از CLI بیرون‌اند.
+قالب‌ها و راه‌اندازی روی سرور: `docs/remote-control/` (`CLAUDE.md`، `settings.json`، `guard.mjs`، `bin/`، `README.md`).
+
 ## دکمه‌های کارت: فقط از `actions` (TOOLING-037)
 
 «این اکشن الان مجاز است؟» را خود Manager می‌گوید (`status --json` ← `task.actions`، همان تابعی که handlerها پیش از اجرا می‌پرسند).
