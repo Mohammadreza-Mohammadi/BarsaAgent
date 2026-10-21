@@ -18,6 +18,9 @@ import { ManagerHelp } from './manager-help.js';
 import { idleReason } from './repo-idle.js';
 import { createOpsRoutes } from './routes-ops.js';
 import { validArtifactPath } from './security.js';
+import { RemoteTokenStore, bearerOf, isLoopbackAddress, proxiedHeaders, REMOTE_ACTOR_PREFIX } from './remote-tokens.js';
+import { isRemoteAllowed } from './remote-cli-spec.js';
+import { createRemoteRoutes } from './remote-routes.js';
 
 // علت ریشه‌ای «بازیابی از داخل ابزار» بند ۴ — یک شنونده‌ی SIGINT/SIGTERM
 // سراسری در سطح ماژول (نه داخل createApp)، چون createApp در تست‌ها بارها در
@@ -135,6 +138,11 @@ function slugify(value, fallback = 'task') {
     .replace(/^-|-$/g, '');
   return slug || fallback;
 }
+/** exit code ِ Manager پشت یک خطا (collectAction: error.code عدد؛ قفل اجرا: managerExit=41) — برای CLI ِ remote. */
+function managerExitOf(error) {
+  if (Number.isInteger(error?.managerExit)) return error.managerExit;
+  return Number.isInteger(error?.code) ? error.code : undefined;
+}
 function parseTaskId(stdout) {
   // strict: بازبینی فاز ۲ — یک fallback با regex یعنی قراردادی که شکستنِ خودش
   // را تحمل می‌کند، و دیگر کسی متوجه شکستنش نمی‌شود. اگر manager.js روی
@@ -182,6 +190,10 @@ export function createApp(config, deps = {}) {
   // وضعیت sync از status ِ Manager (repository.sync)، نه از git ِ خود کانبان؛ با board مشترک (یک اجرای در جریان).
   const updater = deps.updater ?? new ManagerUpdater({ runner, audit, registry, help, config, readStatus: repo => boardFor(repo), inspect: deps.inspectManager });
 
+  // توکن‌های remote (CLI ِ barsa): فقط hash روی دیسک؛ هر درخواست از فایل (با کش mtime) می‌خواند ⇒ باطل‌سازی فوری است.
+  const remoteTokens = deps.remoteTokens ?? new RemoteTokenStore(dataDir);
+  const remoteAddressOf = deps.remoteAddress ?? (req => req.socket.remoteAddress);
+
   const repoFor = id => {
     const repo = repos.get(id);
     if (!repo) throw Object.assign(new Error('مخزن پیدا نشد.'), { status: 404 });
@@ -217,8 +229,13 @@ export function createApp(config, deps = {}) {
   const assertExecution = async repo => {
     const execution = await executionOf(repo);
     if (execution?.enabled === false) {
-      throw Object.assign(new Error(execution.reason || 'اجرای تسک روی این دستگاه خاموش است (execution.enabled=false).'), { status: 409 });
+      throw Object.assign(new Error(execution.reason || 'اجرای تسک روی این دستگاه خاموش است (execution.enabled=false).'), { status: 409, managerExit: 41 });
     }
+  };
+  // کش ِ status برای endpointهای سبک (waiting/tasks): تا maxAgeMs قدیمی را می‌پذیرد، وگرنه یک اجرای (مشترک) ِ status.
+  const boardCached = (repo, maxAgeMs) => {
+    const cached = lastBoard.get(repo.id);
+    return cached && Date.now() - cached.at <= maxAgeMs ? Promise.resolve(cached.board) : boardFor(repo);
   };
   const refreshIssues = async force => {
     if (force || Date.now() - issueCache.at > 15_000) {
@@ -333,6 +350,7 @@ export function createApp(config, deps = {}) {
     });
   };
 
+  const remoteRoutes = createRemoteRoutes({ registry, audit, repoFor, config, send, route, boardCached });
   const opsRoutes = createOpsRoutes({
     audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor,
     managerAudited: collectAction, pipeStream, users: auth.users, assertExecution
@@ -354,9 +372,29 @@ export function createApp(config, deps = {}) {
     try {
       // --- احراز هویت: هر چیزی زیر /api/ جز ورود/وضعیت نشست پشت نشست است ---------------
       if (pathname.startsWith('/api/')) {
+        // --- توکن remote (Authorization: Bearer): فقط از loopback، فقط endpointهای فهرست مجاز، بدون CSRF ----------
+        const bearer = bearerOf(req);
+        if (bearer !== null) {
+          const ip = remoteAddressOf(req);
+          const refuse = (status, message, reason) => {
+            audit.reject({ user: null, action: 'auth.token', ip, method: req.method, path: pathname }, reason);
+            res.audited = true;
+            return send(res, status, { error: message });
+          };
+          if (!isLoopbackAddress(ip)) return refuse(403, 'توکن remote فقط از loopback پذیرفته می‌شود.', 'توکن remote از آدرس غیر-loopback');
+          if (proxiedHeaders(req).length) return refuse(403, 'توکن remote از پشت proxy پذیرفته نمی‌شود.', 'توکن remote همراه هدر proxy');
+          const verdict = bearer ? remoteTokens.verify(bearer) : { rejected: 'malformed' };
+          if (!verdict.name) return refuse(401, 'توکن نامعتبر یا باطل‌شده است.', `توکن remote رد شد (${verdict.rejected})`);
+          session = { user: `${REMOTE_ACTOR_PREFIX}${verdict.name}`, remote: true, csrf: null };
+          if (!isRemoteAllowed(req.method, pathname)) {
+            audit.reject({ user: session.user, action: 'auth.token', ip, method: req.method, path: pathname }, 'endpoint برای توکن remote مجاز نیست');
+            res.audited = true;
+            return send(res, 403, { error: 'این مسیر برای توکن remote مجاز نیست؛ این کار را از رابط کاربری کانبان انجام بده.' });
+          }
+        }
         if (pathname === '/api/auth/session' && req.method === 'GET') {
-          const current = auth.session(req);
-          return send(res, 200, current ? { authenticated: true, user: current.user, csrf: current.csrf } : { authenticated: false });
+          const current = session ?? auth.session(req);
+          return send(res, 200, current ? { authenticated: true, user: current.user, csrf: current.csrf, ...(current.remote ? { remote: true } : {}) } : { authenticated: false });
         }
         if (pathname === '/api/auth/login' && req.method === 'POST') {
           const originProblem = auth.checkOrigin(req);
@@ -372,9 +410,9 @@ export function createApp(config, deps = {}) {
           audit.note({ user: input.username, action: 'auth.login', ip: req.socket.remoteAddress });
           return send(res, 200, { authenticated: true, user: result.session.user, csrf: result.session.csrf }, JSON_TYPE, { 'Set-Cookie': auth.cookie(result.token) });
         }
-        session = auth.session(req);
+        session = session ?? auth.session(req);
         if (!session) return send(res, 401, { error: 'ورود لازم است.' });
-        if (mutating) {
+        if (mutating && !session.remote) {
           const problem = auth.checkCsrf(req, session);
           if (problem) return send(res, 403, { error: problem });
         }
@@ -383,6 +421,7 @@ export function createApp(config, deps = {}) {
           audit.note({ user: session.user, action: 'auth.logout' });
           return send(res, 200, { ok: true }, JSON_TYPE, { 'Set-Cookie': auth.clearCookie() });
         }
+        if (await remoteRoutes(req, res, url, pathname, session)) return;
         if (await opsRoutes(req, res, url, pathname, session)) return;
       }
       if (req.method === 'GET' && pathname === '/api/repos') {
@@ -476,6 +515,7 @@ export function createApp(config, deps = {}) {
         // answer --clarify --external-access <sourceId>=read|write (اختیاری؛ فقط کنار clarify). «مجاز است؟» با Manager
         // (actions.externalAccess غیرخالی) و رد/قبول با خود فرمان؛ این‌جا فقط شکل.
         let externalAccessArg = null;
+        if (input.externalAccess && session.remote) return send(res, 403, { error: 'external-access از راه دور مجاز نیست؛ از رابط کاربری کانبان بده.' });
         if (input.externalAccess) {
           const { sourceId, access } = input.externalAccess;
           if (input.mode !== 'clarify') return send(res, 400, { error: 'external-access فقط کنار clarify معنا دارد.' });
@@ -650,6 +690,7 @@ export function createApp(config, deps = {}) {
         const input = await readBody(req);
         const items = Array.isArray(input.items) ? input.items : [];
         if (!items.length) return send(res, 400, { error: 'حداقل یک draft برای ساخت لازم است.' });
+        if (session.remote && items.some(item => item?.externalAccess?.length)) return send(res, 403, { error: 'external-access از راه دور مجاز نیست؛ از رابط کاربری کانبان بده.' });
         for (const repoId of new Set(items.map(item => item?.repo || config.repos[0].id))) await assertExecution(repoFor(repoId));
         const results = [];
         for (let index = 0; index < items.length; index += 1) {
@@ -659,7 +700,7 @@ export function createApp(config, deps = {}) {
             const result = await createOne(session, draft, input.start == null ? undefined : !!input.start);
             results.push({ key, ...result });
           } catch (error) {
-            results.push({ key, ok: false, message: error.message || 'ساخت task شکست خورد.' });
+            results.push({ key, ok: false, message: error.message || 'ساخت task شکست خورد.', ...(managerExitOf(error) !== undefined ? { managerExit: managerExitOf(error) } : {}) });
           }
         }
         const succeeded = results.filter(x => x.ok).length;
@@ -685,10 +726,10 @@ export function createApp(config, deps = {}) {
               slug: slugify(issue.title, `task-${id}`),
               requestText: [issue.title, issue.body].filter(Boolean).join('\n\n'),
               source: { system: issue.system || 'internal', externalId: issue.externalId, url: issue.url || '', fetchedAt: issue.fetchedAt }
-            });
+            }, input.start == null ? undefined : !!input.start);
             results.push({ id, ...result });
           } catch (error) {
-            results.push({ id, ok: false, message: error.message || 'import شکست خورد.' });
+            results.push({ id, ok: false, message: error.message || 'import شکست خورد.', ...(managerExitOf(error) !== undefined ? { managerExit: managerExitOf(error) } : {}) });
           }
         }
         return send(res, 207, { results });
@@ -706,7 +747,8 @@ export function createApp(config, deps = {}) {
       } else {
         console.warn('[BarsaAgent][Server]', req.method, pathname, '→', error.status || 500, error?.message || error);
       }
-      return send(res, error.status || 500, { error: error.message || 'خطای داخلی' });
+      const managerExit = managerExitOf(error);
+      return send(res, error.status || 500, { error: error.message || 'خطای داخلی', ...(managerExit !== undefined ? { managerExit } : {}) });
     }
   });
 

@@ -144,7 +144,7 @@ const HINTS: Partial<Record<Pending, string>> = {
         @for (r of runs(); track r.runId) {
           <div class="run-row" [class.bad]="r.exitCode !== null && r.exitCode !== 0 && r.exitCode !== 10 && r.exitCode !== 40">
             <span dir="ltr">{{ r.startedAt.slice(0, 19).replace('T', ' ') }}</span>
-            <span>{{ r.user || '—' }}</span>
+            <span>{{ r.user || '—' }}@if (r.user?.startsWith('remote:')) { <span class="remote-badge" title="از راه دور، با CLI ِ barsa و توکن">remote</span> }</span>
             <span>{{ r.status }}{{ r.exitCode !== null ? ' · exit ' + r.exitCode : '' }}</span>
             <span dir="ltr">{{ r.durationMs !== null ? (r.durationMs / 1000).toFixed(1) + 's' : '…' }}</span>
             @if (r.hasLog) { <a [href]="api.logUrl(r.runId)" download>⬇ لاگ</a> } @else { <span></span> }

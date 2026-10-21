@@ -71,7 +71,7 @@ export class EnvHealthComponent implements OnInit {
           @for (a of items(); track a.id) {
             <tr [class.rejected]="a.status === 'rejected'">
               <td dir="ltr">{{ a.startedAt.slice(11, 19) }} <small>{{ a.startedAt.slice(0, 10) }}</small></td>
-              <td dir="ltr">{{ a.user || '—' }}</td>
+              <td dir="ltr">{{ a.user || '—' }}@if (a.user?.startsWith('remote:')) { <span class="remote-badge" title="از راه دور، با CLI ِ barsa و توکن">remote</span> }</td>
               <td dir="ltr"><code>{{ a.action }}</code>@if (a.line) { <small>{{ a.line }}</small> }@if (a.reason) { <small>{{ a.reason }}</small> }</td>
               <td dir="ltr">{{ a.taskId || '' }}</td>
               <td>{{ a.status || '…' }}{{ a.exitCode !== null && a.exitCode !== undefined ? ' · ' + a.exitCode : '' }}</td>

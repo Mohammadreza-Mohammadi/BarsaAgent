@@ -115,3 +115,4 @@
 .limit-facts b{color:#182235}
 .sync-facts{margin-top:8px}
 .sync-note{display:block;margin:8px 0 0;color:#6a778b;font-size:10px;line-height:1.8}
+.remote-badge{display:inline-block;margin-right:5px;padding:0 5px;border-radius:5px;background:#e6efff;color:#2c4f9e;border:1px solid #c7d8fb;font-size:9px;line-height:15px;vertical-align:middle}
