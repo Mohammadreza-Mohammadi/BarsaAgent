@@ -6,6 +6,28 @@
 هدف: بعد از reboot خودکار بالا بیاید، لاگ بگیرد، و با **یک حساب مشخص** اجرا شود که همان حساب `tf` و `claude` را هم
 اجرا می‌کند.
 
+> **تصمیم‌های واقعی این سرور (مالک سیستم)** — نمونه‌های پایین با همین‌ها نوشته شده‌اند:
+>
+> | موضوع | تصمیم |
+> |---|---|
+> | حساب سرویس | کاربر ویندوزی موجود **`client01`** (نه حساب جدا) |
+> | مسیر کانبان | `D:\BarsaAgent` |
+> | config | **بیرون از مخزن**: `D:\barsa-agent-data\barsa-agent.config.yml`، با `BARSA_AGENT_CONFIG` |
+> | `dataDir` | `D:\barsa-agent-data` |
+> | پروکسی | **بدون پروکسی: `run.proxy: ""`** (پایین را ببین) |
+> | `BARSA_ISSUE_USER_ID` | در `AppEnvironmentExtra` ِ NSSM |
+> | به‌روزرسانی Manager | فقط با اکشن **`sync`** ِ کانبان |
+>
+> ⚠ **`run.proxy: ""` را حتماً بگذار.** نبودن کلید `run.proxy` یعنی پیش‌فرض `http://127.0.0.1:10808` (پروکسی سیستم توسعه)
+> که روی سرور وجود ندارد و **همه‌ی agentها را خراب می‌کند**. فقط رشته‌ی خالی صریح یعنی «بدون پروکسی»
+> (`HTTP_PROXY`/`HTTPS_PROXY` را حتی اگر در env ِ سرور باشند حذف می‌کند).
+>
+> ```yaml
+> run:
+>   proxy: ""   # بدون پروکسی؛ توضیح بعد از مقدار اشکالی ندارد (پارسر YAML واقعی است)
+> dataDir: "D:/barsa-agent-data"
+> ```
+
 ## ۱. چرا یک حساب مشخص (و چرا همان حساب برای `tf` و `claude`)
 
 سه چیز به‌جای سیستم، به **پروفایل کاربر** وصل‌اند:
@@ -18,7 +40,11 @@
 
 اگر سرویس با `LocalSystem` اجرا شود هیچ‌کدام را نمی‌بیند و Manager/agentها بدون هشدار شکست می‌خورند. پس:
 
-1. یک حساب اختصاصی بساز، مثلاً `SRV\svc-barsa-agent` (محلی یا دامنه‌ای؛ **نه** Administrator).
+> **تصمیم این سرور:** حساب سرویس همان کاربر ویندوزی موجود `client01` است (تصمیم صاحب سیستم). هشدار این بخش درباره‌ی
+> **حساب جدا و بدون دسترسی اضافه** سر جایش می‌ماند — اگر `client01` Administrator است، سرویس هم با آن سطح دسترسی اجرا
+> می‌شود (کانبان فرمان اجرا می‌کند). بقیه‌ی قدم‌ها با `client01` همان است.
+
+1. یک حساب اختصاصی بساز، مثلاً `SRV\svc-barsa-agent` (محلی یا دامنه‌ای؛ **نه** Administrator) — *روی این سرور: `client01` موجود.*
 2. حق «Log on as a service» (`secpol.msc` ← Local Policies ← User Rights Assignment) به او بده.
 3. دسترسی NTFS (Modify) فقط به این مسیرها: مخزن Manager، پوشه‌ی worktreeهای ابزار (`tooling.worktreesDir`)، مخزن
    shadow، WebIII، پوشه‌ی `dataDir` کانبان، و پوشه‌ی لاگ سرویس.
@@ -26,13 +52,19 @@
    - `claude auth login` (و تأیید با `claude auth status`)
    - ساخت/اتصال workspace ِ `tf` و یک `tf` تست
    - `git config --global user.name/user.email` (merge ِ ابزار commit می‌سازد)
-5. در همان نشست `npm ci` و `npm run build` را در پوشه‌ی کانبان اجرا کن، و یک حساب ورود بساز:
+5. در همان نشست `npm ci` و `npm run build` را در پوشه‌ی کانبان (`D:\BarsaAgent`) اجرا کن، و یک حساب ورود بساز:
 
 ```powershell
+cd D:\BarsaAgent
+npx ng analytics disable --global     # یک بار؛ وگرنه اولین build ِ angular.json را کثیف می‌کند (cli.analytics)
 npm ci
 npm run build
+$env:BARSA_AGENT_CONFIG = 'D:\barsa-agent-data\barsa-agent.config.yml'
 npm run user:add -- <نام-کاربری>      # گذرواژه‌ی مخفی می‌پرسد؛ حداقل ۱۰ نویسه
 ```
+
+`user:add` به `BARSA_ISSUE_USER_ID` نیازی ندارد. `.env.local` (اگر استفاده می‌کنی) از کنار config یا کنار برنامه
+(`D:\BarsaAgent\.env.local`) خوانده می‌شود؛ متغیر محیطی ِ از پیش تنظیم‌شده (NSSM) بر فایل مقدم است.
 
 ## ۲. ابزار پیشنهادی: NSSM
 
@@ -44,12 +76,13 @@ exe). «Task Scheduler با trigger ِ At startup» هم کار می‌کند و
 
 ### قدم‌ها (PowerShell با Administrator)
 
-مسیرها نمونه‌اند؛ `C:\BarsaAgent` پوشه‌ی کانبان است.
+مسیرها همان تصمیم‌های بالاست: `D:\BarsaAgent` پوشه‌ی کانبان و `D:\barsa-agent-data` داده و config.
 
 ```powershell
 $svc = 'BarsaAgent'
-$app = 'C:\BarsaAgent'
-$logs = 'C:\BarsaAgent-logs'
+$app = 'D:\BarsaAgent'
+$data = 'D:\barsa-agent-data'
+$logs = 'D:\BarsaAgent-logs'
 New-Item -ItemType Directory -Force $logs | Out-Null
 
 nssm install $svc "C:\Program Files\nodejs\node.exe" "server\src\index.js"
@@ -57,8 +90,8 @@ nssm set $svc AppDirectory $app
 nssm set $svc DisplayName "BarsaAgent Kanban"
 nssm set $svc Description "Kanban console for Manager (BarsaAgent)"
 
-# حساب مشخص (همان حساب tf و claude)
-nssm set $svc ObjectName "SRV\svc-barsa-agent" "<گذرواژه>"
+# حساب مشخص (همان حساب tf و claude) — روی این سرور: کاربر موجود client01
+nssm set $svc ObjectName ".\client01" "<گذرواژه>"
 
 # بعد از reboot خودکار
 nssm set $svc Start SERVICE_AUTO_START
@@ -70,8 +103,8 @@ nssm set $svc AppRotateFiles 1
 nssm set $svc AppRotateOnline 1
 nssm set $svc AppRotateBytes 10485760
 
-# config و متغیرهای محیطی (بدون گذاشتن راز در config داخل مخزن)
-nssm set $svc AppEnvironmentExtra "BARSA_AGENT_CONFIG=$app\barsa-agent.config.yml" "BARSA_ISSUE_USER_ID=<شناسه>"
+# config بیرون از مخزن و راز در متغیر محیطی (نه در فایل ثبت‌شده در git): BARSA_ISSUE_USER_ID فقط اینجا
+nssm set $svc AppEnvironmentExtra "BARSA_AGENT_CONFIG=$data\barsa-agent.config.yml" "BARSA_ISSUE_USER_ID=<شناسه>"
 
 # خرابی → ۵ ثانیه بعد دوباره بالا بیاید
 nssm set $svc AppExit Default Restart
@@ -88,7 +121,8 @@ nssm start $svc
 
 بعد از شروع:
 
-1. در لاگ باید `BarsaAgent: http://127.0.0.1:4310` و `Manager <id>: … · Contract v1` ببینی.
+1. در لاگ باید `BarsaAgent: http://127.0.0.1:4310` و `Manager <id>: … · Contract v1` ببینی (و اگر `.env.local` خوانده شد،
+   مسیر فایل و **نام** کلیدها چاپ می‌شود، نه مقدارشان).
 2. وارد شو و صفحه‌ی **«سلامت محیط»** را باز کن: `node`، `git`، `claude`، احراز هویت `claude`، پروکسی، `pwsh`،
    مسیرهای مخزن/shadow/WebIII و دیسک باید سبز باشند.
 3. اگر `claude` قرمز بود چون فقط `claude.cmd` وجود دارد: مسیر `claude.exe` را در `health.claude.command` بگذار
@@ -140,13 +174,23 @@ nssm remove BarsaAgent confirm
 
 ## ۵. به‌روزرسانی
 
-- **Manager** (`scripts/manager.js` و …): از صفحه‌ی «نگهداری مخزن ابزار ← به‌روزرسانی Manager از origin».
-- **خود کانبان**: از داخل کانبان قابل به‌روزرسانی نیست (عمداً). روی سرور:
-  `nssm stop` ← `git pull --ff-only` ← `npm ci` ← `npm run build` ← `nssm start`.
+- **Manager** (`scripts/manager.js` و …): **فقط** با اکشن «همگام‌سازی با origin (sync)» در صفحه‌ی «نگهداری مخزن ابزار» (فرمان
+  `node scripts/manager.js sync --json`؛ «پیش‌نمایش» همان با `--dry-run`). کانبان خودش `git fetch/merge` یا `npm ci` ِ مخزن Manager را
+  نمی‌زند و دستی هم نباید زد: سرور روی `main` ِ خودش commit می‌سازد (`chore(agent-work)`، merge ِ کد هر تسک) پس `merge --ff-only`
+  بعد از اولین commit ِ سرور همیشه رد می‌شد. `sync` خودش تصمیم می‌گیرد: برابر ← هیچ؛ عقب ← ff؛ جلو ← push؛ واگرا ← merge ِ واقعی
+  (هرگز rebase) + push؛ برخورد ← abort و فهرست فایل‌ها؛ `npm ci` فقط با تغییر `package-lock.json`.
+  - **زمان:** `npm ci` تا ۲۰ دقیقه و hook ِ `pre-push` ِ سنگین (`ng lint` و `ng build`) روی push ِ main تا ۳۰ دقیقه؛ خروجی زنده در لاگ اجرا
+    دیده می‌شود. سرویس را وسط sync stop نکن.
+  - **کدها:** `50` پیش‌شرط (باید روی main، درخت تمیز، بدون اجرای زنده)، `51` fetch، `52` برخورد (فهرست فایل‌ها نمایش داده می‌شود،
+    هیچ push ای نشده)، `53`/`54` push، `55`/`56` `npm ci`، `57` merge. با `execution.enabled=false` هم کار می‌کند.
+- **خود کانبان**: از داخل کانبان قابل به‌روزرسانی نیست (عمداً). روی سرور، به همین ترتیب:
+  `nssm stop BarsaAgent` ← `git pull --ff-only` ← `npm ci` ← `npm run build` ← `nssm start BarsaAgent`
+  (در `D:\BarsaAgent`).
 
 ## ۶. فهرست بررسی امنیتی قبل از باز کردن به روی شبکه
 
-- [ ] حساب سرویس اختصاصی، نه Administrator و نه LocalSystem
+- [ ] حساب سرویس: روی این سرور `client01` (تصمیم صاحب سیستم)؛ هشدار «حساب اختصاصی، نه Administrator و نه LocalSystem» را ببین و آگاهانه بپذیر
+- [ ] `run.proxy: ""` در config (نبودنش = پروکسی `127.0.0.1:10808` که روی سرور نیست)
 - [ ] `server.host` همان `127.0.0.1` است و proxy ِ TLS جلوی آن است
 - [ ] `auth.secureCookie: true` و `auth.allowedOrigins` تنظیم شده
 - [ ] `npm run user:list` فقط حساب‌های لازم را نشان می‌دهد

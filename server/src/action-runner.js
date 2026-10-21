@@ -141,7 +141,16 @@ export class ActionRunner {
         } catch (error) { push('stderr', error.message); code = 1; break; }
         push('system', `$ ${step.label}`);
         if (step.run) {
-          try { await step.run(push); } catch (error) { push('stderr', error.message); code = 1; break; }
+          // گام run می‌تواند فرآیند فرزندش را با adopt(sub) به این اجرا بدهد (تا «توقف» آن را ببندد) و با throw ِ
+          // Error ای که exitCode دارد، همان exit code را برای کل اجرا نگه دارد (مثلاً کدهای sync).
+          try { await step.run(push, sub => { exec.currentStep = sub; }); }
+          catch (error) {
+            push('stderr', error.message);
+            code = Number.isInteger(error.exitCode) && error.exitCode > 0 ? error.exitCode : 1;
+            exec.currentStep = null;
+            break;
+          }
+          exec.currentStep = null;
           continue;
         }
         const sub = this.start({

@@ -6,14 +6,14 @@ import {
 } from '../../client/src/app/task-actions.ts';
 
 const ALL_FALSE = {
-  approve: false, reject: false, clarify: false, note: false, unblock: false, raiseLimit: false, closeOrphan: [],
+  approve: false, reject: false, clarify: false, note: false, unblock: false, raiseLimit: [], closeOrphan: [],
   allowPath: false, allowSharedKnowledgeFile: false, externalAccess: [], resetExternal: [], cancel: false, abandon: false, void: false, unlock: false
 };
 
 // نمونه‌ی واقعی task 10013 از status --json ِ Manager بعد از TOOLING-037
 const BLOCKED_10013 = {
   id: '10013', state: 'blocked', blocker: { kind: 'budget-exhausted', field: 'implementerRuns' },
-  actions: { ...ALL_FALSE, note: true, unblock: true, raiseLimit: true, allowPath: true, externalAccess: ['webiii'], resetExternal: ['webiii'], cancel: true, abandon: true, void: true }
+  actions: { ...ALL_FALSE, note: true, unblock: true, raiseLimit: ['implementerRuns', 'maxAttempts', 'maxSpecRevisions'], allowPath: true, externalAccess: ['webiii'], resetExternal: ['webiii'], cancel: true, abandon: true, void: true }
 };
 
 test('can: فقط true ِ دقیق مجاز است؛ هر چیز دیگر (false، غایب، رشته، عدد) نه', () => {
@@ -109,7 +109,7 @@ import {
 const REPORTED_10013 = {
   id: '10013', state: 'blocked',
   blocker: { kind: 'budget-exhausted', field: 'implementerRuns', role: 'implementer' },
-  actions: JSON.parse('{"approve":false,"reject":false,"clarify":false,"note":true,"unblock":true,"raiseLimit":true,"closeOrphan":[],"allowPath":true,"allowSharedKnowledgeFile":false,"externalAccess":["webiii"],"resetExternal":["webiii"],"cancel":true,"abandon":true,"void":true,"unlock":false}')
+  actions: JSON.parse('{"approve":false,"reject":false,"clarify":false,"note":true,"unblock":true,"raiseLimit":["implementerRuns","maxAttempts","maxSpecRevisions","architectRuns","intakeRuns","reviewerRuns","rebaseRuns"],"closeOrphan":[],"allowPath":true,"allowSharedKnowledgeFile":false,"externalAccess":["webiii"],"resetExternal":["webiii"],"cancel":true,"abandon":true,"void":true,"unlock":false}')
 };
 
 test('fixture ِ ۱۰۰۱۳ (blocked + budget-exhausted): همه‌ی دکمه‌های مجاز رندر می‌شوند، نه فقط unblock و abandon', () => {
@@ -134,7 +134,7 @@ test('کارت ۱۰۰۱۳ به blocker/state بستگی ندارد: همان act
 
 test('هر کلید به‌تنهایی یک دکمه‌ی دقیقاً یکی در جای خودش می‌دهد؛ فهرست‌ها یکی به‌ازای هر عنصر یا یکی برای منبع‌ها', () => {
   for (const key of KNOWN_ACTION_KEYS) {
-    const isList = ['closeOrphan', 'externalAccess', 'resetExternal'].includes(key);
+    const isList = ['closeOrphan', 'externalAccess', 'resetExternal', 'raiseLimit'].includes(key);
     const task = { actions: { [key]: isList ? ['x1'] : true } };
     assert.deepEqual(activeActionKeys(task), [key], key);
     assert.deepEqual(renderedActionKeys(task), [key], `${key} باید رندر شود`);
@@ -174,4 +174,72 @@ test('نگهبان قالب: دکمه‌های کارت از opsButtons می‌�
 
 test('resume ِ خودکار فقط برای approve/reject/clarify (سیاست مستند)', () => {
   assert.deepEqual([...AUTO_RESUME_ACTIONS], ['approve', 'reject', 'clarify']);
+});
+
+// --- TOOLING-038: actions.raiseLimit فهرست است (actionsVersion: 2) ----------------------------------------
+
+import { raiseLimitFields, supportsRaiseLimitList, actionsVersionOf } from '../../client/src/app/task-actions.ts';
+
+test('raiseLimit: آرایه‌ی خالی یعنی دکمه پنهان است ([] در JS «مقدار دارد» ولی دکمه ندارد)', () => {
+  const task = { actions: { ...ALL_FALSE, raiseLimit: [] } };
+  assert.deepEqual(raiseLimitFields(task), []);
+  assert.deepEqual(opsButtons(task).map(b => b.id), []);
+  assert.deepEqual(activeActionKeys(task), []);
+  assert.equal(anyAction(task), false);
+});
+
+test('raiseLimit: دو عضو یعنی یک دکمه و عضو اول (فیلد سدکننده) اول می‌آید؛ ترتیب Manager حفظ می‌شود', () => {
+  const task = { actions: { ...ALL_FALSE, raiseLimit: ['implementerRuns', 'maxAttempts'] } };
+  assert.deepEqual(raiseLimitFields(task), ['implementerRuns', 'maxAttempts']);
+  assert.deepEqual(opsButtons(task).map(b => [b.id, b.action]), [['raise-limit', 'raiseLimit']]);
+  assert.deepEqual(activeActionKeys(task), ['raiseLimit']);
+  // فرم: عضو اول از پیش انتخاب‌شده است (open ِ task-ops)
+  const ops = fs.readFileSync(new URL('../../client/src/app/task-ops.component.ts', import.meta.url), 'utf8');
+  assert.match(ops, /this\.pickLimitField\(this\.limitFields\(\)\[0\] \?\? ''\)/);
+  assert.match(ops, /@for \(f of limitFields\(\); track f\)/);
+  assert.match(ops, /سقف تازه \(کل\)/);
+  assert.match(ops, /مصرف‌شده:.*usedLimit\(\).*سقف فعلی:.*currentLimit\(\)/s);
+  assert.match(ops, /raiseLimit\(repo, id, this\.limitField, Number\(this\.limitValue\), reason\)/);
+});
+
+test('raiseLimit: شکل‌های نامعتبر (boolean ِ نسخه‌ی ۱، رشته، عدد، عضو غیررشته) هرگز دکمه نمی‌دهند', () => {
+  for (const bad of [true, false, 'maxAttempts', 5, null, { 0: 'maxAttempts' }, [1, null]]) {
+    assert.deepEqual(opsButtons({ actions: { raiseLimit: bad } }).map(b => b.id), [], JSON.stringify(bad));
+  }
+  assert.deepEqual(raiseLimitFields({ actions: { raiseLimit: ['a', 3, 'b'] } }), ['a', 'b']);
+  assert.deepEqual(raiseLimitFields(null), []);
+});
+
+test('actionsVersion کمتر از ۲ یا نبودن: دکمه پنهان و اخطار «Manager قدیمی است»', () => {
+  const task = { actions: { ...ALL_FALSE, raiseLimit: ['maxAttempts'] } };
+  assert.equal(supportsRaiseLimitList(2), true);
+  assert.equal(supportsRaiseLimitList(3), true);
+  for (const v of [1, 0, undefined, null, '2', NaN]) assert.equal(supportsRaiseLimitList(v), false, String(v));
+  assert.deepEqual(opsButtons(task, { raiseLimitSupported: supportsRaiseLimitList(1) }).map(b => b.id), []);
+  assert.deepEqual(opsButtons(task, { raiseLimitSupported: supportsRaiseLimitList(undefined) }).map(b => b.id), []);
+  assert.deepEqual(opsButtons(task, { raiseLimitSupported: supportsRaiseLimitList(2) }).map(b => b.id), ['raise-limit']);
+  // اکشن‌های دیگر به نسخه وابسته نیستند
+  const other = { actions: { ...ALL_FALSE, unblock: true, raiseLimit: ['maxAttempts'] } };
+  assert.deepEqual(opsButtons(other, { raiseLimitSupported: false }).map(b => b.id), ['unblock']);
+
+  assert.equal(actionsVersionOf({ status: { actionsVersion: 2 } }), 2);
+  assert.equal(actionsVersionOf({ status: { base: true } }), null);
+  assert.equal(actionsVersionOf({ status: true }), null);
+  assert.equal(actionsVersionOf(undefined), null);
+
+  const read = name => fs.readFileSync(new URL(`../../client/src/app/${name}`, import.meta.url), 'utf8');
+  const ops = read('task-ops.component.ts');
+  assert.match(ops, /@if \(!raiseLimitSupported\(\)\)[\s\S]*Manager قدیمی است/);
+  assert.match(ops, /raiseLimitSupported: this\.raiseLimitSupported\(\)/);
+  assert.match(read('app.component.html'), /\[actionsVersion\]="actionsVersion\(\)"/);
+});
+
+test('raiseLimit: سقف تازه باید از سقف فعلی بزرگ‌تر باشد (فرم می‌سنجد) و بعد از موفقیت run خودکار نیست', () => {
+  const ops = fs.readFileSync(new URL('../../client/src/app/task-ops.component.ts', import.meta.url), 'utf8');
+  assert.match(ops, /limitTooLow\(\)[\s\S]*value <= current/);
+  assert.match(ops, /case 'raise-limit': return !!this\.limitField[\s\S]*!this\.limitTooLow\(\)/);
+  assert.ok(!AUTO_RESUME_ACTIONS.includes('raiseLimit'));
+  // confirm() برای raise-limit فقط changed.emit می‌کند، هیچ run ای نمی‌زند
+  const confirm = ops.slice(ops.indexOf('async confirm('));
+  assert.doesNotMatch(confirm, /api\.run\(/);
 });

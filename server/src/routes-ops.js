@@ -49,7 +49,7 @@ export function resolveTaskDir(repo, task) {
 }
 
 export function createOpsRoutes(ctx) {
-  const { audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor, managerAudited, pipeStream, users, managerInfo } = ctx;
+  const { audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor, managerAudited, pipeStream, users, managerInfo, assertExecution } = ctx;
 
   const defaultRepo = () => config.repos[0];
 
@@ -110,6 +110,7 @@ export function createOpsRoutes(ctx) {
       throw reject(409, 'فرمان تأییدشده با فرمان نهایی نمی‌خواند؛ دوباره «بررسی» بزن و تأیید کن.');
     }
     if (parsed.subcommand === 'run') {
+      await assertExecution(repo).catch(error => { throw reject(error.status || 409, error.message); });
       const run = registry.enqueue(repo, parsed.taskId, { user: session.user });
       if (!run) throw reject(409, 'این task هم‌اکنون در حال اجرا یا در صف است.');
       // رکورد ممیزی خود run را registry می‌نویسد؛ این رکورد فقط خطِ تایپ‌شده را برای تاریخچه نگه می‌دارد.
@@ -252,7 +253,8 @@ export function createOpsRoutes(ctx) {
         const field = String(input?.field ?? '');
         if (!RAISE_LIMIT_FIELDS.includes(field)) throw bad(`field باید یکی از ${RAISE_LIMIT_FIELDS.join('، ')} باشد.`);
         const value = Number(input?.value);
-        if (!Number.isInteger(value) || value < 1 || value > 1000) throw bad('مقدار باید عدد صحیح بین ۱ و ۱۰۰۰ باشد.');
+        // فقط شکل: <n> «سقف تازه‌ی کل» است؛ «از سقف فعلی بزرگ‌تر باشد» را خود Manager می‌سنجد و پیامش عیناً برمی‌گردد (422).
+        if (!Number.isInteger(value) || value < 1 || value > 1_000_000) throw bad('مقدار باید عدد صحیح مثبت باشد.');
         return reasoned(session, repo, id, kind, ['--raise-limit', `${field}=${value}`], input);
       }
       case 'allow-path': return reasoned(session, repo, id, kind, ['--allow-path', relativePathArg(input?.path, 'مسیر')], input);
@@ -280,6 +282,7 @@ export function createOpsRoutes(ctx) {
   // previousState) و بعد run که خودش دوباره rebase را امتحان می‌کند.
   async function retryRebase(session, repo, id, input) {
     // «مجاز است؟» با خود Manager است (actions.unblock)؛ اگر مجاز نباشد unblock همان‌جا رد می‌شود و run هرگز نمی‌رسد.
+    await assertExecution(repo); // اجرا خاموش است ⇒ unblock هم رد می‌شود؛ پیش از هر نوشتنی با پیام Manager
     const reason = String(input?.reason ?? '').trim() || 'تلاش دوباره بعد از تغییر main (از کانبان)';
     await withReasonFile(reason, file => managerAudited(session, repo, ['answer', id, '--unblock', '--reason-file', file], { action: 'unblock', taskId: id }));
     const run = registry.enqueue(repo, id, { user: session.user });
@@ -380,8 +383,9 @@ export function createOpsRoutes(ctx) {
     if ((p = route('/api/repos/:repo/manager/info', pathname)) && method === 'GET') {
       return send(res, 200, await updater.info(repoFor(p.repo))), true;
     }
-    if ((p = route('/api/repos/:repo/manager/check', pathname)) && method === 'POST') {
-      return send(res, 202, execResponse(updater.check(repoFor(p.repo), { user: session.user }))), true;
+    // sync = TOOLING-040: پیش‌نمایش (--dry-run) و اجرای واقعی؛ هر دو یک اجرای stream‌شونده‌اند.
+    if ((p = route('/api/repos/:repo/manager/sync-preview', pathname)) && method === 'POST') {
+      return send(res, 202, execResponse(updater.preview(repoFor(p.repo), { user: session.user }))), true;
     }
     if ((p = route('/api/repos/:repo/manager/update', pathname)) && method === 'POST') {
       return send(res, 202, execResponse(await updater.start(repoFor(p.repo), { user: session.user }))), true;

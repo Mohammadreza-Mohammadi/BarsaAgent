@@ -1,112 +1,133 @@
-// کانبان فاز ۱، الحاقیه‌ی «ح»: به‌روزرسانی Manager روی سرور.
+// کانبان فاز ۱، الحاقیه‌ی «ح»: به‌روزرسانی Manager روی سرور — با `manager.js sync` (TOOLING-040).
 //
-// روی سرور کسی کد Manager را توسعه نمی‌دهد؛ فقط باید آخرین نسخه‌ی origin را بگیرد.
-// پیش‌شرط‌ها (همه قبل از اولین فرمان): بیکار بودن، درخت تمیز، روی main بودن.
-// merge فقط fast-forward است؛ اگر نشد git خودش کاری نمی‌کند و پیامش نمایش داده می‌شود.
-import { execFile } from 'node:child_process';
-import fs from 'node:fs';
+// کانبان هیچ منطق git یا `npm ci` ِ مخزن Manager را نگه نمی‌دارد: همه‌چیز (پیش‌شرط‌ها، fetch، ff/push/merge ِ
+// واقعی، هرگز rebase، `npm ci` فقط با تغییر package-lock) در خود Manager است. این‌جا فقط:
+//   - `sync [--dry-run] --json` را اجرا می‌کند (stderr ِ زنده‌ی git/npm مستقیم در لاگ اجرا)،
+//   - JSON ِ نهایی و exit code را به متن فارسی روشن تبدیل می‌کند (sync-report.js)،
+//   - بعد از sync ِ موفق `--help` و capabilities را دوباره می‌خواند،
+//   - وضعیت ahead/behind را از `repository.sync` ِ `status --json` می‌خواند (نه از محاسبه‌ی خودش).
 import path from 'node:path';
 import { gitEnv, GitOpError } from './git-ops.js';
 import { buildAgentEnv } from './agent-env.js';
+import { inspectManager } from './protocol-contract.js';
+import { exitMessage, formatSyncReport, parseSyncJson } from './sync-report.js';
 
-function git(cwd, args) {
-  return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, shell: false, windowsHide: true, env: gitEnv(), timeout: 30_000, encoding: 'utf8' }, (error, stdout, stderr) => {
-      if (error) return reject(Object.assign(new Error((stderr || error.message).trim()), { stdout, stderr }));
-      resolve(stdout);
-    });
-  });
-}
-
-/** npm را بدون shell اجرا می‌کنیم: node <npm-cli.js> (npm.cmd با shell:false روی ویندوز خراب است). */
-export function findNpmCli(execPath = process.execPath) {
-  const candidates = [
-    path.join(path.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-    path.join(path.dirname(execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
-  ];
-  return candidates.find(file => fs.existsSync(file)) || null;
+/** نمای «سلامت sync» از بدنه‌ی `status --json`: فقط همان فیلدهایی که Manager داده. */
+export function syncInfoFromStatus(board) {
+  const sync = board?.repository?.sync ?? null;
+  const out = {
+    head: board?.repo?.head ?? null,
+    branch: sync?.branch ?? null,
+    upstream: sync?.upstream ?? null,
+    ahead: Number.isInteger(sync?.ahead) ? sync.ahead : null,
+    behind: Number.isInteger(sync?.behind) ? sync.behind : null,
+    lastFetchAt: sync?.lastFetchAt ?? null,
+    execution: board?.repository?.execution ?? null,
+    localConfig: board?.repository?.localConfig ?? null
+  };
+  if (!sync) out.remoteError = 'این Manager repository.sync را در status --json نمی‌دهد (قدیمی‌تر از TOOLING-040) — با «sync» نمی‌توان به‌روزش کرد.';
+  else if (out.ahead === null || out.behind === null) out.remoteError = 'ahead/behind در status --json خالی است (upstream تعریف نشده یا هنوز fetch نشده).';
+  return out;
 }
 
 export class ManagerUpdater {
-  constructor({ runner, audit, idleCheck, help, config, npmCli }) {
+  constructor({ runner, audit, registry, help, config, readStatus, inspect }) {
     this.runner = runner;
     this.audit = audit;
-    this.idleCheck = idleCheck;
+    this.registry = registry;
     this.help = help;
     this.config = config;
-    this.npmCli = npmCli === undefined ? findNpmCli() : npmCli;
+    this.readStatus = readStatus;
+    this.inspect = inspect ?? inspectManager;
   }
 
-  /** commit فعلی و فاصله با origin/main — فقط از ref های محلی (بدون شبکه). */
+  /** وضعیت sync از `status --json` ِ Manager (بدون git و بدون شبکه). */
   async info(repo) {
-    const out = {};
-    out.head = (await git(repo.path, ['rev-parse', 'HEAD'])).trim();
-    out.branch = (await git(repo.path, ['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim() || null;
-    out.subject = (await git(repo.path, ['log', '-1', '--format=%s'])).trim();
-    out.clean = (await git(repo.path, ['status', '--short'])).trim() === '';
-    try {
-      const counts = (await git(repo.path, ['rev-list', '--left-right', '--count', 'HEAD...origin/main'])).trim().split(/\s+/).map(Number);
-      out.ahead = counts[0];
-      out.behind = counts[1];
-    } catch {
-      out.ahead = null;
-      out.behind = null;
-      out.remoteError = 'origin/main پیدا نشد (هنوز fetch نشده یا remote تعریف نشده).';
+    return syncInfoFromStatus(await this.readStatus(repo));
+  }
+
+  /** `sync --dry-run --json`: فقط می‌سنجد (fetch می‌کند، چیزی عوض نمی‌شود). */
+  preview(repo, ctx) {
+    return this.#run(repo, ctx, { dryRun: true });
+  }
+
+  /** `sync --json`: اجرای واقعی. */
+  start(repo, ctx) {
+    return this.#run(repo, ctx, { dryRun: false });
+  }
+
+  #reject(repo, ctx, action, message) {
+    this.audit.reject({ user: ctx.user, action, repoId: repo.id, cwd: repo.path }, message);
+    throw Object.assign(new GitOpError(message, 409), { audited: true });
+  }
+
+  #run(repo, ctx, { dryRun }) {
+    const action = dryRun ? 'manager.sync-preview' : 'manager.update';
+    const caps = this.config.managerInfo?.[repo.id]?.capabilities;
+    if (caps && !caps.sync) this.#reject(repo, ctx, action, 'Manager قدیمی است: زیرفرمان sync (TOOLING-040) را ندارد؛ یک بار دستی به‌روزش کن.');
+    // صف خود کانبان را فقط خود کانبان می‌داند (Manager تا شروع واقعی run قفلی نمی‌بیند)؛ بقیه‌ی پیش‌شرط‌ها (main، درخت
+    // تمیز، قفل زنده) را Manager می‌سنجد و با exit 50 رد می‌کند.
+    if (!dryRun) {
+      const active = this.registry.list(repo).filter(run => run.queued || run.running);
+      if (active.length) this.#reject(repo, ctx, action, `اجرا در جریان/صف است: ${active.map(r => `#${r.taskId}`).join('، ')}`);
     }
-    return out;
-  }
 
-  /** فقط `git fetch origin` — برای تازه کردن عدد «چند commit عقب‌تر». */
-  check(repo, ctx) {
-    return this.runner.start({
-      user: ctx.user, action: 'manager.fetch', repoId: repo.id, cwd: repo.path,
-      program: 'git', args: ['fetch', 'origin'], env: { ...gitEnv(buildAgentEnv(this.config)) }
-    });
-  }
-
-  async start(repo, ctx) {
-    const reject = message => {
-      this.audit.reject({ user: ctx.user, action: 'manager.update', repoId: repo.id, cwd: repo.path }, message);
-      throw Object.assign(new GitOpError(message, 409), { audited: true });
-    };
-    const busy = await this.idleCheck(repo);
-    if (busy) reject(busy);
-    const info = await this.info(repo).catch(error => reject(`وضعیت git خوانده نشد: ${error.message}`));
-    if (!info.clean) reject('git status تمیز نیست؛ به‌روزرسانی فقط روی درخت تمیز.');
-    if (info.branch !== 'main') reject(`مخزن روی "${info.branch || 'detached HEAD'}" است؛ به‌روزرسانی فقط روی main.`);
-
+    const script = path.resolve(repo.path, repo.managerScript);
+    const args = [script, 'sync', ...(dryRun ? ['--dry-run'] : []), '--json'];
+    const label = `node ${repo.managerScript} sync${dryRun ? ' --dry-run' : ''} --json`;
+    // env ِ git/npm ِ داخل Manager همین است: پروکسی run.proxy برای fetch/push، و رازهای .env.local حذف.
     const env = gitEnv(buildAgentEnv(this.config));
-    const before = info.head;
-    const lockChanged = async () => {
-      const changed = await git(repo.path, ['diff', '--name-only', before, 'HEAD', '--', 'package-lock.json']);
-      return changed.trim() !== '';
+
+    const syncStep = {
+      label,
+      run: async (push, adopt) => {
+        const sub = this.runner.start({
+          user: ctx.user, action: `${action}.step`, repoId: repo.id, cwd: repo.path,
+          program: process.execPath, args, env, display: label
+        });
+        adopt?.(sub);
+        // stdout = JSON ِ نهایی (فقط برای تحلیل)؛ stderr = پیشرفت زنده‌ی git/npm → مستقیم در لاگ اجرا (npm ci تا
+        // ۲۰ دقیقه و hook ِ pre-push تا ۳۰ دقیقه).
+        const stdout = [];
+        const handle = item => (item.stream === 'stderr' ? push('stderr', item.text) : stdout.push(item.text));
+        for (const item of sub.lines) handle(item); // خطوط همزمان (مثلاً خطای spawn) پیش از شنونده
+        sub.events.on('line', handle);
+        const { code } = await sub.done;
+        sub.events.off('line', handle);
+        const result = parseSyncJson(stdout.join('\n'));
+        for (const line of formatSyncReport(result, code)) push('system', line);
+        if (code !== 0) {
+          const message = exitMessage(code) ?? `sync با exit code ${code} تمام شد (کد ناشناخته برای کانبان).`;
+          throw Object.assign(new Error(`${message} [exit ${code}]`), { exitCode: code });
+        }
+        if (!result) throw new Error('sync موفق بود ولی خروجی --json ِ آن خوانده نشد.');
+        push('system', dryRun ? 'پیش‌نمایش تمام شد؛ چیزی تغییر نکرد.' : 'sync موفق.');
+      }
     };
-    const steps = [
-      { label: 'git fetch origin', program: 'git', args: ['fetch', 'origin'], env },
-      { label: 'git merge --ff-only origin/main', program: 'git', args: ['merge', '--ff-only', 'origin/main'], env }
-    ];
-    if (this.npmCli) {
-      steps.push({ label: 'npm ci (فقط اگر package-lock.json عوض شده)', program: process.execPath, args: [this.npmCli, 'ci'], env, when: lockChanged });
-    } else {
+
+    const steps = [syncStep];
+    if (!dryRun) {
       steps.push({
-        label: 'npm ci (فقط اگر package-lock.json عوض شده)',
+        label: 'manager.js --help (تازه‌سازی فهرست زیرفرمان‌های کنسول)',
         run: async push => {
-          if (await lockChanged()) throw new Error('package-lock.json عوض شده ولی npm-cli.js کنار node پیدا نشد؛ npm ci را دستی/از راه دیگر اجرا کن.');
-          push('system', 'package-lock.json عوض نشده؛ npm ci لازم نیست.');
+          const result = await this.help.refresh(repo);
+          if (result.error) throw new Error(`manager.js --help بعد از به‌روزرسانی خوانده نشد: ${result.error}`);
+          push('system', `زیرفرمان‌های مجاز: ${result.subcommands.join('، ')}`);
+        }
+      }, {
+        label: 'manager.js capabilities (تازه‌سازی قابلیت‌ها و نسخه‌ی Manager)',
+        run: async push => {
+          const info = await this.inspect(repo);
+          if (!this.config.managerInfo) this.config.managerInfo = {};
+          this.config.managerInfo[repo.id] = info;
+          if (!info.ok) throw new Error(`Manager بعد از به‌روزرسانی با کانبان سازگار نیست: ${(info.errors || []).join(' | ')}`);
+          push('system', `Manager ${info.managerVersion || 'unknown'} · Contract v${info.contractVersion}`);
         }
       });
     }
-    steps.push({
-      label: 'manager.js --help (تازه‌سازی فهرست زیرفرمان‌های کنسول)',
-      run: async push => {
-        const result = await this.help.refresh(repo);
-        if (result.error) throw new Error(`manager.js --help بعد از به‌روزرسانی خوانده نشد: ${result.error}`);
-        push('system', `زیرفرمان‌های مجاز: ${result.subcommands.join('، ')}`);
-      }
-    });
     return this.runner.sequence({
-      user: ctx.user, action: 'manager.update', repoId: repo.id, cwd: repo.path, steps,
-      display: 'به‌روزرسانی Manager از origin'
+      user: ctx.user, action, repoId: repo.id, cwd: repo.path, steps,
+      display: dryRun ? 'پیش‌نمایش sync ِ Manager با origin' : 'همگام‌سازی Manager با origin (sync)'
     });
   }
 }

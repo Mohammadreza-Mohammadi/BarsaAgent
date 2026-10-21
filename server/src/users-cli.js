@@ -40,7 +40,8 @@ function promptHidden(label) {
 }
 
 const [command, name] = process.argv.slice(2);
-const store = new UserStore(resolveDataDir(loadConfig()));
+// فقط dataDir لازم است: «${BARSA_ISSUE_USER_ID}» ِ تنظیم‌نشده نباید جلوی ساختن حساب را بگیرد.
+const store = new UserStore(resolveDataDir(loadConfig(undefined, process.env, { strictEnvRefs: false })));
 
 try {
   if (command === 'add') {

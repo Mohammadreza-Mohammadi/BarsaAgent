@@ -40,22 +40,23 @@ const BRANCH_PATTERN = /^(fix|feat|chore)\/[a-z0-9-]+$/;
       }
 
       <div class="detail-section">
-        <div class="section-head"><div><h3>به‌روزرسانی Manager از origin</h3>
-          <p>پیش‌شرط: هیچ task ای در حال اجرا نباشد، درخت تمیز، روی main، و فقط fast-forward.</p></div></div>
+        <div class="section-head"><div><h3>همگام‌سازی Manager با origin (sync)</h3>
+          <p>منطقش در خود Manager است: ff / push / merge ِ واقعی (هرگز rebase) و <code>npm ci</code> فقط با تغییر package-lock. با اجرا خاموش هم کار می‌کند.</p></div></div>
         @if (managerInfo(); as m) {
-          <div class="facts">
-            <div><small>commit فعلی</small><b dir="ltr">{{ m.head.slice(0, 10) }}</b></div>
-            <div><small>شاخه</small><b dir="ltr">{{ m.branch || 'detached' }}</b></div>
-            <div><small>عقب‌تر از origin/main</small><b>{{ m.behind ?? '—' }}</b></div>
-            <div><small>درخت</small><b>{{ m.clean ? 'تمیز' : 'کثیف' }}</b></div>
+          <div class="facts sync-facts">
+            <div><small>commit فعلی</small><b dir="ltr">{{ m.head ? m.head.slice(0, 10) : '—' }}</b></div>
+            <div><small>شاخه ← upstream</small><b dir="ltr">{{ m.branch || '—' }} ← {{ m.upstream || '—' }}</b></div>
+            <div><small>جلوتر / عقب‌تر از origin</small><b dir="ltr">{{ m.ahead ?? '—' }} / {{ m.behind ?? '—' }}</b></div>
+            <div><small>آخرین fetch</small><b dir="ltr">{{ m.lastFetchAt ? m.lastFetchAt.slice(0, 19).replace('T', ' ') : 'هنوز نشده' }}</b></div>
           </div>
-          <small dir="ltr">{{ m.subject }}</small>
+          <small class="sync-note">این اعداد از <code>repository.sync</code> ِ status --json ِ Manager و از آخرین fetch‌اند؛ برای تازه شدن «پیش‌نمایش» را بزن.</small>
           @if (m.remoteError) { <div class="disabled-gate-warning">{{ m.remoteError }}</div> }
         }
         <div class="danger-actions">
-          <button class="secondary" [disabled]="busy()" (click)="askCheck()">بررسی (fetch)</button>
-          <button class="primary" [disabled]="busy()" (click)="askUpdate()">به‌روزرسانی از origin</button>
+          <button class="secondary" [disabled]="busy() || syncRunning()" (click)="askPreview()">پیش‌نمایش (sync --dry-run)</button>
+          <button class="primary" [disabled]="busy() || syncRunning()" (click)="askUpdate()">همگام‌سازی با origin (sync)</button>
         </div>
+        <small class="sync-note">⏱ <code>npm ci</code> تا ۲۰ دقیقه و hook ِ <code>pre-push</code> ِ سنگین (<code>ng lint</code> و <code>ng build</code>) روی push ِ main تا ۳۰ دقیقه طول می‌کشد؛ خروجی زنده‌ی فرمان پایین صفحه نمایش داده می‌شود. بستن این صفحه اجرا را قطع نمی‌کند.</small>
       </div>
 
       <div class="detail-section">
@@ -129,6 +130,8 @@ export class MaintenanceComponent implements OnInit {
   readonly managerInfo = signal<ManagerInfoView | null>(null);
   readonly confirm = signal<Confirm | null>(null);
   readonly busy = signal(false);
+  /** تا پایان خروجی زنده‌ی sync (ممکن است دقایق طول بکشد) دکمه‌های sync غیرفعال می‌مانند. */
+  readonly syncRunning = signal(false);
   readonly error = signal('');
   readonly streamUrl = signal<string | null>(null);
   newBranch = '';
@@ -155,16 +158,25 @@ export class MaintenanceComponent implements OnInit {
 
   private git(name: GitAction, body: Record<string, string>): Confirm['run'] { return () => firstValueFrom(this.api.gitAction(this.repoId(), name, body)); }
 
-  askCheck(): void {
-    this.ask({ title: 'بررسی نسخه‌ی تازه', command: 'git fetch origin', run: () => firstValueFrom(this.api.managerCheck(this.repoId())) });
+  askPreview(): void {
+    this.ask({
+      title: 'پیش‌نمایش sync (چیزی تغییر نمی‌کند)', command: 'node scripts/manager.js sync --dry-run --json',
+      run: () => this.sync(this.api.managerSyncPreview(this.repoId()))
+    });
   }
 
   askUpdate(): void {
     this.ask({
-      title: 'به‌روزرسانی Manager',
-      command: 'git fetch origin  →  git merge --ff-only origin/main  →  (اگر package-lock.json عوض شد) npm ci  →  manager.js --help',
-      run: () => firstValueFrom(this.api.managerUpdate(this.repoId()))
+      title: 'همگام‌سازی Manager با origin',
+      command: 'node scripts/manager.js sync --json  →  (بعد از موفقیت) manager.js --help و capabilities دوباره خوانده می‌شود',
+      run: () => this.sync(this.api.managerUpdate(this.repoId()))
     });
+  }
+
+  private async sync(request: ReturnType<ApiService['managerUpdate']>): Promise<{ execId: string }> {
+    const started = await firstValueFrom(request);
+    this.syncRunning.set(true);
+    return started;
   }
 
   askAdd(): void {
@@ -207,5 +219,8 @@ export class MaintenanceComponent implements OnInit {
     } finally { this.busy.set(false); }
   }
 
-  onEnded(): void { setTimeout(() => void this.reload(), 800); }
+  onEnded(): void {
+    this.syncRunning.set(false);
+    setTimeout(() => void this.reload(), 800);
+  }
 }

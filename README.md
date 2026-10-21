@@ -20,8 +20,21 @@
 - **کارت task:** توقف (فقط درخت فرآیند اجرای خود کانبان)، لاگ هر اجرا + دانلود، zip ِ پوشه‌ی task، abandon، unblock،
   raise-limit، close-orphan، و برای `rebase-conflict` فقط «دوباره امتحان کن» و «کنار بگذار».
 - **نگهداری مخزن ابزار:** ساخت worktree، آزمون جداسازی، ادغام (فقط با PROVEN ِ همان commit و درخت تمیز)، حذف worktree و
-  شاخه (`-d`)؛ به‌روزرسانی Manager از origin (`--ff-only`، با پیش‌شرط بیکار بودن).
-- **سلامت محیط:** node، git، claude و احراز هویتش، پروکسی (با درخواست آزمایشی)، pwsh، مسیرها، دیسک، حساب‌ها.
+  شاخه (`-d`)؛ **همگام‌سازی Manager با origin فقط با `manager.js sync`** (TOOLING-040): ff / push / merge ِ واقعی، هرگز rebase،
+  و `npm ci` فقط با تغییر `package-lock.json`. کانبان هیچ منطق git یا `npm ci` ِ خودش برای مخزن Manager ندارد؛ فقط
+  `sync --dry-run --json` (پیش‌نمایش) یا `sync --json` را اجرا می‌کند، stderr ِ زنده را در لاگ نشان می‌دهد (`npm ci` تا ۲۰ دقیقه،
+  hook ِ `pre-push` ِ سنگین روی push ِ main تا ۳۰ دقیقه)، و برای هر exit code ِ Manager (`50` پیش‌شرط، `51` fetch،
+  `52` برخورد + فهرست فایل‌ها، `53`/`54` push، `55`/`56` `npm ci`، `57` merge، `41` اجرا خاموش) پیام فارسی روشن می‌دهد.
+  بعد از sync ِ موفق `--help` و `capabilities` دوباره خوانده می‌شود. ahead/behind و زمان آخرین fetch در «سلامت محیط» از
+  `repository.sync` ِ `status --json` می‌آید، نه از محاسبه‌ی کانبان.
+- **سلامت محیط:** node، git، claude و احراز هویتش، پروکسی (با درخواست آزمایشی)، pwsh، مسیرها، دیسک، حساب‌ها، و برای هر Manager:
+  نسخه/sync (`repository.sync`)، «config ِ محلی Manager» (`repository.localConfig`: هست؟ اعمال شده؟ کلیدها)، «اجرا» (روشن/خاموش) و
+  قرارداد `actionsVersion`.
+- **قفل اجرا (TOOLING-040):** وقتی `repository.execution.enabled` برابر `false` است (مثلاً روی سیستم انسان) یک نوار ثابت بالای صفحه
+  می‌گوید «اجرای تسک روی این دستگاه خاموش است (execution.enabled=false)». دکمه‌های کارت از `actions` می‌آیند و Manager همه را `false`
+  می‌دهد؛ دکمه‌های بیرون از `actions` که task می‌سازند یا اجرا می‌کنند (task دستی، import ِ issue، «اجرا / ادامه»، rebase دستی، auto-start)
+  هم غیرفعال می‌شوند و سرور همان مسیرها را با پیام خود Manager رد می‌کند. `sync` فعال می‌ماند. فرمانی که با exit `41` رد شود همان
+  پیام Manager را نشان می‌دهد.
 
 پیکربندی نمونه (بخش‌های تازه؛ همه اختیاری‌اند):
 
@@ -55,10 +68,18 @@ repos:
 
 «این اکشن الان مجاز است؟» را خود Manager می‌گوید (`status --json` ← `task.actions`، همان تابعی که handlerها پیش از اجرا می‌پرسند).
 کانبان هیچ نسخه‌ی دومی از این منطق ندارد: نه از روی state، نه `blocker`، نه `awaitingHuman`. منطق خالص در
-`client/src/app/task-actions.ts` است (`can`، `allowed`). دکمه‌ها: approve/reject/clarify، note، unblock، raise-limit (هفت فیلد)،
+`client/src/app/task-actions.ts` است (`can`، `allowed`). دکمه‌ها: approve/reject/clarify، note، unblock، raise-limit (فهرست فیلدها، پایین)،
 close-orphan (از آرایه)، allow-path، allow-shared-knowledge-file، external-access و reset-external (منبع از آرایه؛ `--to` اختیاری)،
 void، unlock، cancel، abandon. کنار `--clarify` اگر `actions.externalAccess` غیرخالی باشد یک انتخاب اختیاری `--external-access` هست.
-`actions` غایب (Manager قدیمی) = هیچ دکمه‌ای. کارت `rebase-conflict` فایل‌ها را از `blocker.conflictFiles` نشان می‌دهد و zip ِ پوشه‌ی task
+`actions` غایب (Manager قدیمی) = هیچ دکمه‌ای.
+
+**`actions.raiseLimit` (TOOLING-038، `actionsVersion: 2`)** آرایه‌ای از نام فیلدهاست و فیلد سدکننده اول می‌آید. دکمه فقط وقتی دیده
+می‌شود که مقدار آرایه باشد و دست‌کم یک عضو داشته باشد (`[]` یعنی پنهان). اگر `capabilities.status.actionsVersion` کمتر از ۲ یا نباشد،
+دکمه پنهان است و اخطار «Manager قدیمی است» می‌آید. فرم: فهرست کشویی همان فیلدها (عضو اول از پیش انتخاب)، مصرف‌شده و سقف فعلی از
+`budget` ِ status، فیلد «سقف تازه (کل)» (نه مقدار افزوده؛ باید از سقف فعلی بزرگ‌تر باشد — فرم می‌سنجد و خطای Manager هم عیناً نشان
+داده می‌شود) و متن دلیل با `--reason-file`. بعد از موفقیت `run` خودکار اجرا نمی‌شود.
+
+کارت `rebase-conflict` فایل‌ها را از `blocker.conflictFiles` نشان می‌دهد و zip ِ پوشه‌ی task
 فقط از `task.dir` ساخته می‌شود (حدس از id/slug نیست). `status --json` در اولین اجرا تا ~۱۵ ثانیه طول می‌کشد: poll ِ بعدی تا تمام
 شدن قبلی شروع نمی‌شود و سرور درخواست‌های هم‌زمان را به یک اجرای Manager تبدیل می‌کند.
 
@@ -133,6 +154,12 @@ BarsaAgent `.agent-work` را فقط برای **خواندن** (دانلود zip
 - پشتیبانی از پاسخ double-serialized BarsaWebService
 - جلوگیری از artifact path traversal
 - Multi-repo
+
+## خواندن config
+
+`barsa-agent.config.yml` با پارسر YAML واقعی (بسته‌ی `yaml`) خوانده می‌شود؛ توضیح بعد از مقدار (`proxy: ""   # x`) درست جدا می‌شود
+(قبلاً `"" # x` به‌عنوان `HTTPS_PROXY` به `claude` می‌رسید). نوع کلیدهای شناخته‌شده سنجیده می‌شود: رشته در جای بولی یا عدد
+(`autoStartOnCreate: "no"`) خطای config است و سرور شروع نمی‌شود، نه «درست». کلیدهای ناشناخته دست‌نخورده می‌مانند.
 
 ## تنظیم فعلی
 
@@ -244,11 +271,20 @@ Content-Type: application/json
 
 `UserId` دیگر در `barsa-agent.config.yml` خام نیست — از `${BARSA_ISSUE_USER_ID}` جایگزین می‌شود (همان قاعده‌ی توکن‌ها، بازبینی فاز ۲):
 
-مقدار در فایل محلی `.env.local` کنار `barsa-agent.config.yml` قرار دارد و هنگام خواندن تنظیمات خودکار بارگذاری می‌شود. این فایل در Git ثبت نمی‌شود. قالب آن:
+مقدار در فایل محلی `.env.local` قرار دارد و هنگام خواندن تنظیمات (`loadConfig`) خودکار بارگذاری می‌شود. این فایل در Git ثبت نمی‌شود. قالب آن:
 
 ```dotenv
 BARSA_ISSUE_USER_ID=<your-user-id>
 ```
+
+**`.env.local` از کجا و با چه اولویتی بار می‌شود** (هر دو ورودی — سرور `node server/src/index.js` و `npm run user:*` — از همان `loadConfig` می‌گذرند):
+
+1. متغیر محیطی از پیش تنظیم‌شده (مثلاً `AppEnvironmentExtra` ِ NSSM) — هیچ فایلی آن را عوض نمی‌کند؛
+2. `.env.local` **کنار فایل config** (`BARSA_AGENT_CONFIG`)؛
+3. `.env.local` **کنار برنامه** (ریشه‌ی کانبان، کنار `package.json`) — لازم برای سرور که config عمداً بیرون از مخزن است.
+
+`npm run user:add` فقط `dataDir` را لازم دارد و `"${BARSA_ISSUE_USER_ID}"` ِ تنظیم‌نشده جلویش را نمی‌گیرد. هنگام شروع، سرور مسیر فایل‌های بارگذاری‌شده و
+**نام** کلیدها (نه مقدارشان) را چاپ می‌کند.
 
 کلیدهای این فایل (فهرست از خود فایل خوانده می‌شود، در `config.localEnvKeys`) از env ِ فرزندان حذف می‌شوند: `buildAgentEnv` (run و به‌روزرسانی) و اجرای Manager از اکشن‌های کارت و کنسول. agent و Manager به آن‌ها نیازی ندارند.
 
@@ -272,6 +308,16 @@ npm run dev:server
 npm run dev:client
 ```
 
+### قدم راه‌اندازی: یک بار روی هر دستگاهی که `ng build` می‌زند
+
+اولین `ng build` اگر analytics تصمیم‌گرفته‌نشده باشد، `cli.analytics: false` را در `angular.json` می‌نویسد و مخزن کثیف می‌شود.
+پیش از اولین build (با همان حساب ویندوزی که build می‌زند):
+
+```powershell
+npx ng analytics disable --global
+```
+
+این تنظیم در پروفایل کاربر ذخیره می‌شود، نه در مخزن.
 Server:
 
 ```text
