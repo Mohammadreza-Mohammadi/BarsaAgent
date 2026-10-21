@@ -4,6 +4,7 @@ import { assertManagersCompatible } from './protocol-contract.js';
 import { UserStore } from './auth.js';
 
 const config = loadConfig();
+if (config.localEnvFiles.length) console.log(`.env.local: ${config.localEnvFiles.join('، ')} (فقط نام کلیدها: ${config.localEnvKeys.join(', ') || '—'}؛ متغیر محیطی از پیش تنظیم‌شده مقدم است)`);
 const port = Number(config.server?.port || 4310);
 // کانبان فاز ۱: پیش‌فرض فقط localhost. دسترسی از شبکه فقط وقتی config صریحاً
 // server.host بدهد؛ در آن حالت حتماً پشت TLS (reverse proxy) و با auth.secureCookie.

@@ -1,65 +1,76 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
+import YAML from 'yaml';
 
-function splitInline(value) {
-  const parts = [];
-  let quote = null; let depth = 0; let start = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    const ch = value[i];
-    if (quote) { if (ch === quote && value[i - 1] !== '\\') quote = null; continue; }
-    if (ch === '"' || ch === "'") { quote = ch; continue; }
-    if (ch === '[' || ch === '{') depth += 1;
-    else if (ch === ']' || ch === '}') depth -= 1;
-    else if (ch === ',' && depth === 0) { parts.push(value.slice(start, i).trim()); start = i + 1; }
-  }
-  parts.push(value.slice(start).trim());
-  return parts.filter(Boolean);
-}
-
-function scalar(value) {
-  const v = value.trim();
-  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) return v.slice(1, -1);
-  if (/^-?\d+(?:\.\d+)?$/.test(v)) return Number(v);
-  if (v === 'true' || v === 'false') return v === 'true';
-  if (v === 'null' || v === '~') return null;
-  if (v.startsWith('[') && v.endsWith(']')) return splitInline(v.slice(1, -1)).map(scalar);
-  if (v.startsWith('{') && v.endsWith('}')) {
-    const result = {};
-    for (const item of splitInline(v.slice(1, -1))) {
-      const index = item.indexOf(':');
-      if (index < 1) throw new Error(`inline map نامعتبر: ${v}`);
-      const key = item.slice(0, index).trim().replace(/^['"]|['"]$/g, '');
-      result[key] = scalar(item.slice(index + 1));
-    }
-    return result;
-  }
-  return v;
-}
-
-// Parser کوچک و محدود برای ساختار config خود برنامه؛ فایل دادهٔ عمومی YAML نیست.
+// خواندن config با یک پارسر YAML واقعی (کتابخانه‌ی `yaml`). پارسر دست‌ساز قبلی توضیح بعد از مقدار را جدا
+// نمی‌کرد: `proxy: ""   # x` به‌صورت رشته‌ی `"" # x` خوانده می‌شد و به‌عنوان HTTPS_PROXY به claude می‌رسید، و
+// `autoStartOnCreate: false   # x` یک رشته‌ی غیرخالی یعنی «روشن» می‌شد.
 export function parseConfigYaml(text) {
-  const out = {}; const stack = [{ indent: -1, value: out }];
-  const lines = text.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i]; if (!raw.trim() || raw.trimStart().startsWith('#')) continue;
-    const indent = raw.match(/^ */)[0].length; const line = raw.trim();
-    while (stack.at(-1).indent >= indent) stack.pop();
-    const parent = stack.at(-1).value;
-    if (line.startsWith('- ')) {
-      if (!Array.isArray(parent)) throw new Error(`آرایهٔ نامعتبر در خط ${i + 1}`);
-      const pair = line.slice(2).match(/^([^:]+):\s*(.*)$/); if (!pair) { parent.push(scalar(line.slice(2))); continue; }
-      const obj = {}; obj[pair[1].trim()] = scalar(pair[2]); parent.push(obj); stack.push({ indent, value: obj }); continue;
-    }
-    const pair = line.match(/^([^:]+):\s*(.*)$/); if (!pair) throw new Error(`کانفیگ نامعتبر در خط ${i + 1}`);
-    const key = pair[1].trim(); const value = pair[2];
-    if (value) { parent[key] = scalar(value); continue; }
-    const next = lines.slice(i + 1).find(x => x.trim() && !x.trimStart().startsWith('#'));
-    parent[key] = next?.trimStart().startsWith('- ') ? [] : {};
-    stack.push({ indent, value: parent[key] });
+  const doc = YAML.parseDocument(String(text), { uniqueKeys: true, prettyErrors: true });
+  if (doc.errors.length) {
+    const first = doc.errors[0];
+    const where = first.linePos?.[0] ? ` (خط ${first.linePos[0].line}، ستون ${first.linePos[0].col})` : '';
+    throw new Error(`کانفیگ YAML نامعتبر است${where}: ${first.message.split(/\r?\n/)[0]}`);
   }
-  return out;
+  const value = doc.toJS();
+  if (value == null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('کانفیگ باید یک map (کلید: مقدار) باشد.');
+  return value;
+}
+
+// نوع کلیدهای شناخته‌شده. «رشته در جای بولی» یا «رشته در جای عدد» خطای config است، نه «درست»:
+// `autoStartOnCreate: "no"` نباید بی‌صدا روشن بماند. کلیدهای ناشناخته دست‌نخورده می‌مانند.
+const bool = value => typeof value === 'boolean';
+const num = (min, max = Infinity) => value => typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+const int = (min, max = Infinity) => value => Number.isInteger(value) && value >= min && value <= max;
+const str = value => typeof value === 'string';
+const nonEmptyStr = value => typeof value === 'string' && value.trim() !== '';
+const strOrNull = value => value === null || typeof value === 'string';
+const strList = value => Array.isArray(value) && value.every(str);
+
+const SCHEMA = [
+  ['server.port', int(1, 65535), 'عدد صحیح بین ۱ تا ۶۵۵۳۵'],
+  ['server.host', nonEmptyStr, 'رشته‌ی غیرخالی'],
+  ['server.staticDir', nonEmptyStr, 'رشته‌ی غیرخالی'],
+  ['run.maxConcurrent', int(1), 'عدد صحیح ≥ ۱'],
+  ['run.autoStartOnCreate', bool, 'true یا false (بدون گیومه)'],
+  ['run.autoResumeAfterAnswer', bool, 'true یا false (بدون گیومه)'],
+  ['run.proxy', strOrNull, 'رشته (آدرس پروکسی) یا "" برای «بدون پروکسی»'],
+  ['run.stopGraceMs', num(0), 'عدد ≥ ۰ (میلی‌ثانیه)'],
+  ['board.doneDays', num(0), 'عدد ≥ ۰'],
+  ['auth.secureCookie', bool, 'true یا false (بدون گیومه)'],
+  ['auth.sessionTtlMinutes', num(1), 'عدد > ۰ (دقیقه)'],
+  ['auth.allowedOrigins', strList, 'فهرستی از رشته‌ها'],
+  ['dataDir', nonEmptyStr, 'رشته‌ی غیرخالی (مسیر)'],
+  ['editor.command', str, 'رشته (مسیر executable)'],
+  ['health.proxyTestUrl', nonEmptyStr, 'رشته‌ی غیرخالی (URL)']
+];
+
+function describe(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'آرایه';
+  if (typeof value === 'string') return `رشته‌ی ${JSON.stringify(value)}`;
+  return `${typeof value === 'number' ? 'عدد' : typeof value} ${String(value)}`;
+}
+
+export function validateConfig(config) {
+  const problems = [];
+  for (const [dotted, ok, expected] of SCHEMA) {
+    let value = config;
+    for (const part of dotted.split('.')) value = value != null && typeof value === 'object' ? value[part] : undefined;
+    if (value === undefined) continue;
+    if (!ok(value)) problems.push(`  - ${dotted}: مقدار ${describe(value)} است؛ باید ${expected} باشد.`);
+  }
+  repos: for (const [index, repo] of (Array.isArray(config.repos) ? config.repos : []).entries()) {
+    if (repo == null || typeof repo !== 'object') { problems.push(`  - repos[${index}]: باید یک map باشد.`); continue repos; }
+    for (const key of ['id', 'path']) if (!nonEmptyStr(repo[key])) problems.push(`  - repos[${index}].${key}: رشته‌ی غیرخالی لازم است.`);
+    if (repo.managerScript !== undefined && !nonEmptyStr(repo.managerScript)) problems.push(`  - repos[${index}].managerScript: رشته‌ی غیرخالی لازم است.`);
+  }
+  if (problems.length) throw new Error(`خطای config — نوع مقدار این کلیدها درست نیست:\n${problems.join('\n')}`);
+  return config;
 }
 
 // مقادیر حساس/شناسه‌ی حساب (مثل UserId) نباید عدد خام در فایل کانفیگِ داخل
@@ -83,19 +94,41 @@ function resolveEnvRefs(value, env, pathLabel) {
   return value;
 }
 
-export function loadConfig(file = process.env.BARSA_AGENT_CONFIG || path.resolve('barsa-agent.config.yml'), env = process.env) {
+// `.env.local` (رازهای محلی مثل BARSA_ISSUE_USER_ID؛ gitignored) از **دو جا** خوانده می‌شود، به این ترتیب اولویت:
+//   ۱) متغیر محیطی از پیش تنظیم‌شده (مثلاً AppEnvironmentExtra ِ NSSM) — هیچ فایلی آن را عوض نمی‌کند
+//   ۲) `.env.local` کنار فایل config
+//   ۳) `.env.local` کنار برنامه (ریشه‌ی کانبان، کنار package.json)
+// (۳) لازم است چون روی سرور config عمداً بیرون از مخزن است (BARSA_AGENT_CONFIG=D:arsa-agent-data\...) و فقط
+// (۲) فایل کنار برنامه را هیچ‌وقت نمی‌دید. سرور (`index.js`) و `users-cli.js` هر دو از همین `loadConfig` می‌گذرند.
+export const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+export function envLocalCandidates(configFile) {
+  const files = [path.join(path.dirname(path.resolve(configFile)), '.env.local'), path.join(APP_ROOT, '.env.local')];
+  const seen = new Set();
+  return files.filter(file => { const key = path.resolve(file).toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
+}
+
+/**
+ * @param options.strictEnvRefs  false → `"${NAME}"` ِ تنظیم‌نشده خطا نمی‌دهد و همان‌طور می‌ماند (برای
+ *   `users-cli.js` که فقط dataDir لازم دارد و نباید برای ساختن یک حساب به BARSA_ISSUE_USER_ID نیاز داشته باشد).
+ */
+export function loadConfig(file = process.env.BARSA_AGENT_CONFIG || path.resolve('barsa-agent.config.yml'), env = process.env, options = {}) {
   // کلیدهایی که از .env.local آمده‌اند را نگه می‌داریم تا buildAgentEnv آن‌ها را از env ِ
   // فرزندان (agent/Manager) حذف کند: این‌ها رازهای محلی خود کانبان‌اند (مثل BARSA_ISSUE_USER_ID).
-  let localEnvKeys = [];
+  const localEnvKeys = new Set();
+  const localEnvFiles = [];
   if (env === process.env) {
-    const localEnvFile = path.join(path.dirname(path.resolve(file)), '.env.local');
-    if (fs.existsSync(localEnvFile)) {
-      localEnvKeys = Object.keys(parseEnv(fs.readFileSync(localEnvFile, 'utf8')));
-      process.loadEnvFile(localEnvFile);
+    for (const localEnvFile of envLocalCandidates(file)) {
+      if (!fs.existsSync(localEnvFile)) continue;
+      for (const key of Object.keys(parseEnv(fs.readFileSync(localEnvFile, 'utf8')))) localEnvKeys.add(key);
+      process.loadEnvFile(localEnvFile); // متغیرِ از پیش تنظیم‌شده را عوض نمی‌کند (محیط بر فایل مقدم است)
+      localEnvFiles.push(localEnvFile);
     }
   }
-  const config = resolveEnvRefs(parseConfigYaml(fs.readFileSync(file, 'utf8')), env, 'config');
-  config.localEnvKeys = localEnvKeys;
+  const parsed = validateConfig(parseConfigYaml(fs.readFileSync(file, 'utf8')));
+  const config = options.strictEnvRefs === false ? parsed : resolveEnvRefs(parsed, env, 'config');
+  config.localEnvKeys = [...localEnvKeys];
+  config.localEnvFiles = localEnvFiles;
   if (!Array.isArray(config.repos) || !config.repos.length) throw new Error('حداقل یک repo در کانفیگ لازم است.');
   for (const repo of config.repos) {
     repo.path = path.resolve(repo.path); repo.managerScript = repo.managerScript || 'scripts/manager.js';
