@@ -53,8 +53,8 @@ test('tokenizer: کوتیشن بسته‌نشده و NUL رد می‌شود', ()
 
 test('فهرست زیرفرمان‌ها از همان قالب ِ واقعی manager.js --help ساخته می‌شود (fixture = خروجی واقعی)', () => {
   assert.deepEqual(ALLOWED.sort(), [
-    'abandon', 'answer', 'artifact', 'cancel', 'capabilities', 'events', 'external-init',
-    'import-issue', 'rebase', 'run', 'status', 'unlock', 'void'
+    'abandon', 'answer', 'artifact', 'cancel', 'capabilities', 'config', 'events', 'external-init',
+    'import-issue', 'rebase', 'run', 'status', 'sync', 'unlock', 'void'
   ]);
 });
 

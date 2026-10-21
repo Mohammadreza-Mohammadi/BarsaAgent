@@ -7,10 +7,22 @@ import path from 'node:path';
 
 export const HELP_FIXTURE = fs.readFileSync(new URL('./fixtures/manager-help.txt', import.meta.url), 'utf8');
 
-export function makeFakeManagerRepo(t, { status, run, extra = '', statusDelayMs = 0 } = {}) {
+/** خروجی --json ِ sync وقتی main برابر origin است (شکل واقعی: runner-sync.js ِ Manager). */
+export const DEFAULT_SYNC = {
+  code: 0,
+  stderr: [],
+  result: {
+    ok: true, command: 'sync', dryRun: false, action: 'none', branch: 'main', upstream: 'origin/main', aheadBefore: 0, behindBefore: 0,
+    merged: false, mergeCommit: null, pushed: false, retried: false, conflicts: [], wouldConflict: null,
+    npmCi: { required: false, ran: false, ok: null, timedOut: false }, staleLocks: [], failure: null, exitCode: 0
+  }
+};
+
+export function makeFakeManagerRepo(t, { status, run, extra = '', statusDelayMs = 0, sync } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-fake-mgr-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, 'help.txt'), HELP_FIXTURE, 'utf8');
+  fs.writeFileSync(path.join(root, 'sync.json'), JSON.stringify(sync || DEFAULT_SYNC), 'utf8');
   fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify(status || { schemaVersion: 1, repo: {}, tasks: [] }), 'utf8');
   fs.writeFileSync(path.join(root, 'manager.cjs'), String.raw`
 const fs = require('node:fs');
@@ -38,6 +50,13 @@ else if (cmd === 'import-issue') {
   const issue = JSON.parse(fs.readFileSync(f, 'utf8'));
   process.stdout.write(JSON.stringify({ ok: true, taskId: String(issue.source?.externalId || '9001') }));
 }
+else if (cmd === 'sync') {
+  // رفتار sync از sync.json (تست‌ها با setSync عوضش می‌کنند): stderr زنده، JSON روی stdout، exit code دلخواه.
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'sync.json'), 'utf8'));
+  for (const line of cfg.stderr || []) process.stderr.write(line + '\n');
+  process.stdout.write(JSON.stringify(cfg.result));
+  process.exitCode = cfg.code;
+}
 else if (cmd === 'fail') { process.stderr.write('رد شد توسط manager'); process.exit(3); }
 else {
   // answer/abandon/void/...: محتوای فایل‌های --file/--reason-file/... را برای تست ثبت می‌کند
@@ -61,7 +80,8 @@ ${extra}
     /** فراخوانی‌ها به‌جز --help/status/capabilities که خود کانبان پولینگ می‌کند. */
     mutations: () => read('calls.jsonl').filter(c => !['--help', 'status', 'capabilities', 'events', 'artifact'].includes(c.args[0])),
     files: () => read('files.jsonl'),
-    setStatus: value => fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify(value), 'utf8')
+    setStatus: value => fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify(value), 'utf8'),
+    setSync: value => fs.writeFileSync(path.join(root, 'sync.json'), JSON.stringify(value), 'utf8')
   };
 }
 
@@ -83,7 +103,7 @@ export function configureGit(dir) {
 
 /** فایل‌های ساختگی manager داخل .git/info/exclude تا git status تمیز بماند. */
 export function excludeFakeManagerFiles(dir) {
-  fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'calls.jsonl\nfiles.jsonl\nhelp.txt\nstatus.json\nmanager.cjs\ngrandchild-*.pid\n');
+  fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'calls.jsonl\nfiles.jsonl\nhelp.txt\nstatus.json\nsync.json\nmanager.cjs\ngrandchild-*.pid\n');
 }
 
 export function initGitRepo(root, { files = { 'README.md': '# test\n' } } = {}) {

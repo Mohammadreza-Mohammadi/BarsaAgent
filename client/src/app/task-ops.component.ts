@@ -4,7 +4,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
 import { HealthStatus, RunRecord, RunningTask, Task } from './models';
-import { CardButton, RAISE_LIMIT_FIELDS, allowed, can, conflictFiles, hasActions, opsButtons, unknownActionKeys } from './task-actions';
+import { CardButton, allowed, can, conflictFiles, hasActions, opsButtons, raiseLimitFields, supportsRaiseLimitList, unknownActionKeys } from './task-actions';
 
 type Pending =
   | 'abandon' | 'cancel' | 'void' | 'unlock' | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan'
@@ -66,6 +66,10 @@ const HINTS: Partial<Record<Pending, string>> = {
         </div>
       }
 
+      @if (!raiseLimitSupported()) {
+        <div class="disabled-gate-warning">Manager قدیمی است (<code>actionsVersion</code> کمتر از ۲ یا نامشخص): دکمه‌ی «بالا بردن سقف» پنهان است، چون در این نسخه <code>actions.raiseLimit</code> فهرست فیلدها نیست. Manager را از «نگهداری مخزن ابزار ← sync» به‌روز کن، یا از «کنسول» انجام بده.</div>
+      }
+
       @if (!hasActions()) {
         <div class="disabled-gate-warning">این Manager بلوک <code>actions</code> را در <code>status --json</code> نمی‌دهد (قدیمی‌تر از TOOLING-037)؛ هیچ دکمه‌ی اکشنی نمایش داده نمی‌شود — از «کنسول» انجام بده.</div>
       }
@@ -103,8 +107,10 @@ const HINTS: Partial<Record<Pending, string>> = {
           <small class="resume-note">{{ resumeNote(p) }}</small>
 
           @if (p === 'raise-limit') {
-            <label><span>سقف</span><select name="limitField" [ngModel]="limitField" (ngModelChange)="pickLimitField($event)">@for (f of limitFields; track f) { <option [value]="f">{{ f }}</option> }</select></label>
-            <label><span>مقدار جدید (فعلی: {{ currentLimit() ?? '؟' }})</span><input type="number" min="1" max="1000" name="limitValue" [(ngModel)]="limitValue"></label>
+            <label><span>فیلد سقف (فیلد سدکننده اول است)</span><select dir="ltr" name="limitField" [ngModel]="limitField" (ngModelChange)="pickLimitField($event)">@for (f of limitFields(); track f) { <option [value]="f">{{ f }}</option> }</select></label>
+            <small class="limit-facts">مصرف‌شده: <b>{{ usedLimit() ?? '؟' }}</b> · سقف فعلی: <b>{{ currentLimit() ?? '؟' }}</b></small>
+            <label><span>سقف تازه (کل) — نه مقدار افزوده</span><input type="number" min="1" name="limitValue" [(ngModel)]="limitValue"></label>
+            @if (limitTooLow()) { <small class="bad">سقف تازه باید از سقف فعلی ({{ currentLimit() }}) بزرگ‌تر باشد.</small> }
           }
           @if (p === 'allow-path' || p === 'allow-shared-knowledge-file') {
             <label><span>مسیر یا الگو (نسبت به ریشه‌ی مخزن)</span><input dir="ltr" name="path" [(ngModel)]="path" placeholder="projects/…/file.ts"></label>
@@ -154,7 +160,8 @@ export class TaskOpsComponent {
   readonly task = input.required<Task>();
   readonly running = input<RunningTask | undefined>(undefined);
   readonly changed = output<void>();
-  readonly limitFields = RAISE_LIMIT_FIELDS;
+  /** `capabilities.status.actionsVersion` ِ Manager همین مخزن؛ نبودن = قدیمی (raise-limit پنهان). */
+  readonly actionsVersion = input<number | null>(null);
 
   readonly runs = signal<RunRecord[]>([]);
   readonly pending = signal<Pending | null>(null);
@@ -163,7 +170,7 @@ export class TaskOpsComponent {
   readonly info = signal('');
   readonly afterStop = signal<HealthStatus | null>(null);
   reason = '';
-  limitField = 'maxAttempts';
+  limitField = '';
   limitValue = 1;
   path = '';
   sourceId = '';
@@ -186,7 +193,10 @@ export class TaskOpsComponent {
   active(): boolean { const r = this.running(); return r?.running === true || r?.queued === true; }
 
   // --- فقط از actions ---------------------------------------------------------------
-  buttons(): CardButton[] { return opsButtons(this.task(), { rebaseConflict: this.rebaseConflict() }); }
+  buttons(): CardButton[] { return opsButtons(this.task(), { rebaseConflict: this.rebaseConflict(), raiseLimitSupported: this.raiseLimitSupported() }); }
+  raiseLimitSupported(): boolean { return supportsRaiseLimitList(this.actionsVersion()); }
+  /** فهرست فیلدهای raise-limit از `actions.raiseLimit` (فیلد سدکننده اول). */
+  limitFields(): string[] { return raiseLimitFields(this.task()); }
   unknownKeys(): string[] { return unknownActionKeys(this.task()); }
   label(b: CardButton): string {
     return b.id === 'close-orphan' ? `📁 بستن attempt یتیم ${b.target}` : (BUTTON_LABELS[b.id] ?? b.id);
@@ -211,13 +221,26 @@ export class TaskOpsComponent {
   hint(p: Pending): string { return HINTS[p] ?? ''; }
   dangerous(p: string): boolean { return DANGEROUS.has(p as Pending); }
 
-  /** مقدار پیش‌فرض فقط برای راحتی فرم؛ مجاز بودن raise-limit از actions آمده. */
+  /**
+   * سقف فعلی فیلد انتخاب‌شده برای نمایش و سنجش فرم: `budget[field].max` ِ status (فیلدهای *Runs)، یا مقدار همان فیلد
+   * در blocker (maxAttempts/maxSpecRevisions). مجاز بودن raise-limit از actions آمده؛ این‌ها فقط نمایش‌اند.
+   */
   currentLimit(): number | null {
     const t = this.task();
     const budget = t.budget?.[this.limitField]?.max;
     if (typeof budget === 'number') return budget;
     const fromBlocker = (t.blocker as Record<string, unknown> | null | undefined)?.[this.limitField];
     return typeof fromBlocker === 'number' ? fromBlocker : null;
+  }
+  usedLimit(): number | null {
+    const used = this.task().budget?.[this.limitField]?.used;
+    return typeof used === 'number' ? used : null;
+  }
+  /** `<n>` سقف تازه‌ی **کل** است و باید از سقف فعلی بزرگ‌تر باشد (Manager هم همین را می‌سنجد و پیامش عیناً نشان داده می‌شود). */
+  limitTooLow(): boolean {
+    const current = this.currentLimit();
+    const value = Number(this.limitValue);
+    return current !== null && Number.isInteger(value) && value <= current;
   }
   pickLimitField(field: string): void { this.limitField = field; this.limitValue = (this.currentLimit() ?? 0) + 5; }
 
@@ -230,12 +253,7 @@ export class TaskOpsComponent {
     this.attempt = attempt;
     this.access = 'write';
     this.sourceId = (p === 'reset-external' ? this.resetSources() : this.externalAccessSources())[0] ?? '';
-    if (p === 'raise-limit') {
-      const named = this.task().blocker?.field;
-      const field = typeof named === 'string' && RAISE_LIMIT_FIELDS.includes(named) ? named
-        : typeof this.task().blocker?.maxSpecRevisions === 'number' ? 'maxSpecRevisions' : 'maxAttempts';
-      this.pickLimitField(field);
-    }
+    if (p === 'raise-limit') this.pickLimitField(this.limitFields()[0] ?? ''); // Manager فیلد سدکننده را اول می‌گذارد
     this.pending.set(p);
   }
 
@@ -243,7 +261,7 @@ export class TaskOpsComponent {
   valid(p: Pending): boolean {
     if (p !== 'retry-rebase' && !this.reason.trim()) return false;
     switch (p) {
-      case 'raise-limit': return Number.isInteger(Number(this.limitValue)) && Number(this.limitValue) >= 1;
+      case 'raise-limit': return !!this.limitField && Number.isInteger(Number(this.limitValue)) && Number(this.limitValue) >= 1 && !this.limitTooLow();
       case 'allow-path': case 'allow-shared-knowledge-file': return !!this.path.trim();
       case 'external-access': return !!this.sourceId;
       case 'reset-external': return !!this.sourceId && (!this.toSha.trim() || /^[0-9a-f]{7,40}$/i.test(this.toSha.trim()));

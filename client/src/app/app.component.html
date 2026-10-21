@@ -1,6 +1,11 @@
 <ba-login *ngIf="auth.ready() && !auth.user()"></ba-login>
 <ng-container *ngIf="auth.user()">
-<header class="topbar">
+<!-- قفل اجرا (TOOLING-040): نوار ثابت در همه‌ی نماها؛ منبع فقط repository.execution ِ status --json -->
+<div class="execution-bar" role="alert" *ngIf="executionDisabled()" [title]="executionDetail()">
+  <b>⛔ اجرای تسک روی این دستگاه خاموش است (execution.enabled=false)</b>
+  <small>ساخت/اجرای task و دکمه‌های اکشن غیرفعال‌اند؛ «sync» کار می‌کند.</small>
+</div>
+<header class="topbar" [style.top.px]="executionDisabled() ? 34 : 0">
   <div class="brand">
     <span class="mark">B</span>
     <div><strong>BarsaAgent</strong><small>کنسول مدیریت پروتکل Agent</small></div>
@@ -9,7 +14,7 @@
     <span class="manager-version" [title]="currentRepo()?.path || ''">{{managerLabel()}}</span>
     <label class="repo-select"><span>مخزن</span><select [ngModel]="repoId()" (ngModelChange)="chooseRepo($event)"><option *ngFor="let r of repos()" [value]="r.id">{{r.id}}</option></select></label>
     <button class="ghost notify" [disabled]="notificationPermission() === 'denied' || notificationPermission() === 'unsupported'" (click)="enableNotifications()">{{notificationLabel()}}</button>
-    <button class="ghost" (click)="openManualTask()">＋ task دستی</button>
+    <button class="ghost" [disabled]="executionDisabled()" [title]="executionDisabled() ? executionOffTitle : ''" (click)="openManualTask()">＋ task دستی</button>
     <button class="ghost" (click)="showIssues(false)">صندوق issue</button>
     <button class="icon" (click)="refresh()" title="به‌روزرسانی">↻</button>
     <span class="who" [title]="'وارد شده با این حساب؛ همه‌ی اکشن‌ها با این نام در دفتر ممیزی ثبت می‌شوند'">{{auth.user()}}</span>
@@ -154,17 +159,17 @@
       <div class="section-head"><div><h3>Issueهای وب‌سرویس</h3><p>انتخاب کن؛ قبل از هر نوشتنی draft هر task را تأیید می‌کنی.</p></div><button class="secondary" [disabled]="busy()" (click)="showIssues(true)">↻ Fetch</button></div>
       <label class="issue" *ngFor="let i of issues()" [class.imported]="i.importedTaskId">
         <input type="checkbox" [disabled]="!!i.importedTaskId" [checked]="issueSelection.has(i.externalId)" (change)="toggleIssue(i.externalId)">
-        <span class="issue-text"><b>#{{i.externalId}} · {{i.title}}</b><small>{{i.status || '—'}} <span *ngIf="i.labels?.length">· {{i.labels?.join('، ')}}</span></small></span>
+        <span class="issue-text"><b>#{{i.externalId}} · {{i.title}}</b><small>{{i.status || '—'}} <span *ngIf="i.labels?.length">· {{i.labels.join('، ')}}</span></small></span>
         <button type="button" class="link-button" *ngIf="i.importedTaskId" (click)="$event.preventDefault(); openImportedIssue(i)">Task #{{i.importedTaskId}} ←</button>
       </label>
     </div>
-    <footer><span class="footer-note">{{issueSelection.size}} مورد انتخاب شده</span><button class="primary" [disabled]="busy() || !issueSelection.size" (click)="prepareSelectedIssues()">ادامه و ساخت {{issueSelection.size}} task</button></footer>
+    <footer><span class="footer-note">{{issueSelection.size}} مورد انتخاب شده</span><button class="primary" [disabled]="busy() || !issueSelection.size || executionDisabled()" [title]="executionDisabled() ? executionOffTitle : ''" (click)="prepareSelectedIssues()">ادامه و ساخت {{issueSelection.size}} task</button></footer>
   </ng-container>
 
   <ng-container *ngIf="panel() === 'create'">
     <div class="drawer-body">
       <ng-container *ngIf="currentDraft() as d">
-        <div class="create-step"><b>{{createStepLabel()}}</b><span>{{d.source?.externalId ? 'از issue #' + d.source?.externalId : 'task دستی'}}</span></div>
+        <div class="create-step"><b>{{createStepLabel()}}</b><span>{{d.source?.externalId ? 'از issue #' + d.source.externalId : 'task دستی'}}</span></div>
         <div class="create-grid" [class.skipped]="d.skipped">
           <label><span>مخزن مقصد</span><select [ngModel]="d.repo" (ngModelChange)="updateDraft('repo',$event)"><option *ngFor="let r of repos()" [value]="r.id">{{r.id}}</option></select></label>
           <label><span>شناسه task</span><input [value]="d.source?.externalId || 'توسط Manager'" readonly></label>
@@ -181,14 +186,14 @@
           <button class="secondary" *ngIf="createIndex() < createDrafts().length - 1" (click)="nextDraft()">بعدی</button>
           <button class="danger-outline" *ngIf="createIndex() < createDrafts().length - 1 && !d.skipped" (click)="skipDraft()">رد کردن این issue</button>
         </div>
-        <label class="auto-start"><input type="checkbox" [(ngModel)]="createStart"><span>بعد از ساخت، taskها خودکار وارد صف Manager شوند</span></label>
+        <label class="auto-start"><input type="checkbox" [(ngModel)]="createStart" [disabled]="executionDisabled()"><span>بعد از ساخت، taskها خودکار وارد صف Manager شوند</span></label>
       </ng-container>
       <div class="import-results" *ngIf="createResults().length">
         <h4>نتیجه ساخت</h4>
         <div *ngFor="let r of createResults()" [class.failed]="!r.ok"><b>{{r.taskId ? '#' + r.taskId : r.key}}</b><span>{{r.ok ? (r.queued ? 'ساخته شد و در صف است' : r.started ? 'ساخته شد و اجرا شد' : 'ساخته شد') : (r.message || 'ناموفق')}}</span></div>
       </div>
     </div>
-    <footer><span class="footer-note">{{createActiveCount()}} task ساخته می‌شود · importها ترتیبی‌اند</span><button class="secondary" (click)="closePanel()">انصراف</button><button class="primary" [disabled]="busy() || !createActiveCount()" (click)="createTasks()">{{createStart ? 'ساخت و شروع' : 'ساخت'}}</button></footer>
+    <footer><span class="footer-note">{{createActiveCount()}} task ساخته می‌شود · importها ترتیبی‌اند</span><button class="secondary" (click)="closePanel()">انصراف</button><button class="primary" [disabled]="busy() || !createActiveCount() || executionDisabled()" [title]="executionDisabled() ? executionOffTitle : ''" (click)="createTasks()">{{createStart ? 'ساخت و شروع' : 'ساخت'}}</button></footer>
   </ng-container>
 
   <ng-container *ngIf="panel() === 'action' && selected() as t">
@@ -199,7 +204,7 @@
            commit‌نشده state را عوض نشان می‌دهد ولی transition شکست خورده. تأیید/رد
            اینجا تا حل این وضعیت غیرفعال‌اند. -->
       <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
-        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>. تأیید/رد تا حل این وضعیت از پنل بازیابی غیرفعال است.
+        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health.recovery.reason}}</span>. تأیید/رد تا حل این وضعیت از پنل بازیابی غیرفعال است.
       </div>
 
       <section class="release-note-card" *ngIf="gateKind(t) === 'spec-approval' || gateKind(t) === 'merge-approval'">
@@ -332,7 +337,7 @@
     <div class="drawer-body">
       <div class="gate"><span>ثبت در تی‌اف‌اس</span><h3>تسک #{{t.id}}</h3><small>این فقط اعلام انسانی است؛ Manager خودش چیزی را در TFVC چک‌این نمی‌کند.</small></div>
       <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
-        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>. اول آن را از پنل بازیابی حل کن.
+        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health.recovery.reason}}</span>. اول آن را از پنل بازیابی حل کن.
       </div>
       <!-- الحاقیه‌ی ۱، بند ب: منبع از checkinableSources می‌آید، نه متن آزاد — یکی خودکار، چندتا با انتخاب -->
       <label class="answer-box" *ngIf="checkinableSources(t).length === 1"><span>منبع بیرونی</span><input [value]="checkinableSources(t)[0].id" readonly></label>
@@ -356,7 +361,7 @@
     <div class="drawer-body">
       <div class="gate"><span>انتقال به وب‌تری واقعی</span><h3>تسک #{{t.id}}</h3><small>این فایل‌های واقعی وب‌تری را تغییر می‌دهد.</small></div>
       <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
-        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>. اول آن را از پنل بازیابی حل کن.
+        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health.recovery.reason}}</span>. اول آن را از پنل بازیابی حل کن.
       </div>
       <div class="disabled-gate-warning">⚠ این کار فایل‌های واقعی وب‌تری را تغییر می‌دهد — برگشت‌پذیر است (رد یا تأیید نهایی گیت merge-approval)، ولی تا آن لحظه، UI واقعی روی دیسک تغییر کرده است.</div>
       <label class="answer-box" *ngIf="stageableSources(t).length === 1"><span>منبع بیرونی</span><input [value]="stageableSources(t)[0].id" readonly></label>
@@ -377,7 +382,7 @@
     <div class="drawer-body">
       <div class="gate"><span>یادداشت برای اجرای بعدی</span><h3>تسک #{{t.id}}</h3><small>این یک gate نیست؛ همین که یک agent بعدی اجرا شود، خوانده و مصرف می‌شود.</small></div>
       <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
-        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health?.recovery?.reason}}</span>.
+        🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health.recovery.reason}}</span>.
       </div>
       <div class="disabled-gate-warning" *ngIf="t.artifacts?.includes('human-note.md')">ℹ یک یادداشت مصرف‌نشده از قبل روی دیسک است — اگر الان ثبت کنی، Manager رد می‌کند تا آن یکی مصرف شود.</div>
       <label class="answer-box"><span>متن یادداشت</span><textarea [(ngModel)]="noteText" placeholder="یادداشت برای اجرای بعدی…"></textarea></label>
@@ -396,7 +401,7 @@
         <div><small>Worktree</small><b>{{t.worktree?.status || '—'}}</b></div>
         <div><small>آخرین اجرا</small><b>{{isQueued(t) ? 'در صف · ' + (queuePosition(t) || '—') : isRunning(t) ? 'در حال اجرا' : exitLabel(exitCodeFor(t))}}</b></div>
       </div>
-      <div class="source-box" *ngIf="t.source?.externalId"><span>منبع</span><b>{{t.source?.system || 'internal'}} #{{t.source?.externalId}}</b><a *ngIf="t.source?.url" [href]="t.source?.url || ''" target="_blank" rel="noopener">باز کردن issue ↗</a></div>
+      <div class="source-box" *ngIf="t.source?.externalId"><span>منبع</span><b>{{t.source.system || 'internal'}} #{{t.source.externalId}}</b><a *ngIf="t.source.url" [href]="t.source.url || ''" target="_blank" rel="noopener">باز کردن issue ↗</a></div>
       <div class="task-tools">
         <span class="editor-wrap" [title]="editorTitle(t)"><button class="secondary" [disabled]="busy() || !worktreeLive(t)" (click)="openEditor(t, $event)">⌁ باز کردن در VSCode</button></span>
         <span class="editor-wrap" *ngIf="can(t, 'note')"><button class="secondary" [disabled]="busy()" (click)="openNote(t, $event)">📝 یادداشت برای اجرای بعدی</button></span>
@@ -427,7 +432,7 @@
 
       <ng-container *ngIf="taskTab() === 'overview'">
 
-      <ba-task-ops [repoId]="repoId()" [task]="t" [running]="running()[t.id]" (changed)="refresh(true)"></ba-task-ops>
+      <ba-task-ops [repoId]="repoId()" [task]="t" [running]="running()[t.id]" [actionsVersion]="actionsVersion()" (changed)="refresh(true)"></ba-task-ops>
 
       <section class="detail-section"><div class="section-head"><div><h3>Timeline</h3><p>رویدادها از Manager</p></div><span class="count">{{events().length}}</span></div><div class="timeline"><div *ngFor="let e of events()"><i></i><div><b>{{eventLabel(e)}}</b><small>{{formatDate(e.at)}}</small><p *ngIf="eventDetails(e)">{{eventDetails(e)}}</p></div></div><div class="timeline-empty" *ngIf="!events().length">رویدادی ثبت نشده است.</div></div></section>
 
@@ -444,15 +449,15 @@
     <footer class="task-footer">
       <span class="footer-note">{{isQueued(t) ? 'در صف اجرا' : isRunning(t) ? 'فرآیند فعال است' : exitLabel(exitCodeFor(t))}}</span>
       <!-- task پایان‌یافته هیچ دکمه‌ی اکشنی ندارد: نمایش اکشن‌ها از actions ِ status --json است و Manager برای state پایانی هیچ‌کدام را نمی‌دهد -->
-      <button class="secondary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t)" (click)="rebaseTask()" title="معمولاً لازم نیست — حلقه خودش این کار را می‌کند">rebase دستی</button>
-      <button class="primary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.error" (click)="runTask()">▶ اجرا / ادامه</button>
+      <button class="secondary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || executionDisabled()" [title]="executionDisabled() ? executionOffTitle : 'معمولاً لازم نیست — حلقه خودش این کار را می‌کند'" (click)="rebaseTask()">rebase دستی</button>
+      <button class="primary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.error || executionDisabled()" [title]="executionDisabled() ? executionOffTitle : ''" (click)="runTask()">▶ اجرا / ادامه</button>
     </footer>
   </ng-container>
 
   <ng-container *ngIf="panel() === 'recovery' && selected() as t">
     <div class="drawer-body recovery-panel">
       <p class="recovery-explain">{{ t.health?.stuck ? ('🔒 ' + stuckReasonsLabel(t)) : '؟ وضعیت قفل این task نامشخص است' }}</p>
-      <p class="recovery-hint" *ngIf="t.health?.recovery?.reason">{{ t.health?.recovery?.reason }}</p>
+      <p class="recovery-hint" *ngIf="t.health?.recovery?.reason">{{ t.health.recovery.reason }}</p>
 
       <section class="detail-section" *ngIf="t.health?.transitionLock as lock">
         <div class="section-head"><div><h3>قفل transition</h3></div></div>
@@ -465,9 +470,9 @@
       </section>
 
       <section class="detail-section" *ngIf="t.health?.dirtyPaths?.length">
-        <div class="section-head"><div><h3>مسیرهای commit‌نشده</h3></div><span class="count">{{ t.health?.dirtyPaths?.length }}</span></div>
+        <div class="section-head"><div><h3>مسیرهای commit‌نشده</h3></div><span class="count">{{ t.health.dirtyPaths.length }}</span></div>
         <ul class="dirty-list">
-          <li *ngFor="let p of t.health?.dirtyPaths">
+          <li *ngFor="let p of t.health.dirtyPaths">
             <span class="dirty-origin" [class.worktree]="p.startsWith('worktree:')">{{ p.startsWith('worktree:') ? 'worktree' : 'bookkeeping' }}</span>
             <code>{{ p.startsWith('worktree:') ? p.slice(9) : p }}</code>
           </li>
@@ -478,15 +483,15 @@
         <div class="section-head"><div><h3>قدم بعدی</h3><p>Manager حساب می‌کند، نه UI</p></div></div>
         <small *ngIf="!t.health?.recovery?.commands?.length">Manager هیچ پیشنهاد خودکاری برای این وضعیت ندارد — بررسی دستی لازم است.</small>
         <div class="danger-actions" *ngIf="t.health?.recovery?.commands?.length">
-          <ng-container *ngFor="let cmd of t.health?.recovery?.commands">
+          <ng-container *ngFor="let cmd of t.health.recovery.commands">
           <button
             *ngIf="cmd === 'run' || can(t, 'unlock')"
             class="danger-outline"
-            [class.recovery-suggested]="cmd === t.health?.recovery?.suggested"
-            [disabled]="busy() || isRunning(t) || isQueued(t)"
+            [class.recovery-suggested]="cmd === t.health.recovery.suggested"
+            [disabled]="busy() || isRunning(t) || isQueued(t) || (cmd === 'run' && executionDisabled())"
             (click)="cmd === 'run' ? runTask() : openDanger('unlock')">
             {{ cmd === 'run' ? '▶ دوباره اجرا کن' : '🔓 آزاد کردن قفل' }}
-            <em *ngIf="cmd === t.health?.recovery?.suggested"> — پیشنهاد Manager</em>
+            <em *ngIf="cmd === t.health.recovery.suggested"> — پیشنهاد Manager</em>
           </button>
           </ng-container>
         </div>

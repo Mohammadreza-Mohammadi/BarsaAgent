@@ -91,7 +91,9 @@ export class ApiService {
   gitAction = (repo: string, name: 'worktree-add' | 'prove' | 'merge' | 'worktree-remove' | 'branch-delete', body: Record<string, string>) =>
     this.http.post<{ execId: string }>(`${this.repoPath(repo)}/git/${name}`, body);
   managerInfo = (repo: string) => this.http.get<ManagerInfoView>(`${this.repoPath(repo)}/manager/info`);
-  managerCheck = (repo: string) => this.http.post<{ execId: string }>(`${this.repoPath(repo)}/manager/check`, {});
+  /** `manager.js sync --dry-run --json` — فقط می‌سنجد. */
+  managerSyncPreview = (repo: string) => this.http.post<{ execId: string }>(`${this.repoPath(repo)}/manager/sync-preview`, {});
+  /** `manager.js sync --json` — ff / push / merge ِ واقعی + npm ci ِ مشروط (منطقش در Manager است). */
   managerUpdate = (repo: string) => this.http.post<{ execId: string }>(`${this.repoPath(repo)}/manager/update`, {});
   envHealth = () => this.http.get<EnvHealthReport>('/api/env-health');
   audit = (limit = 100) => this.http.get<AuditItem[]>('/api/audit', { params: { limit } });

@@ -6,6 +6,7 @@
                                  پاسخ انسانی به یک گیت awaitingHuman (برای شکل کامل: node scripts/manager.js answer)
   capabilities                   چاپ Contract capabilities (JSON)
   status [--task <id>]           وضعیت یک/همه‌ی Taskها (JSON)
+  config --effective [--json]    config نهایی (repository.yaml + repository.local.yaml) و منبع هر کلید
   events <id>                    رویدادهای یک Task (JSON)
   artifact <id> --path <rel>      محتوای یک فایل artifact از Task (JSON)
   run <id>                       اجرای حلقه‌ی یک Task تا توقف/گیت بعدی
@@ -15,8 +16,12 @@
   rebase <id>                     rebase دستی worktree روی base تازه
   external-init <sourceId> [--changeset Cxxxx]
                                  ساخت یک‌بارهٔ مخزن سایه برای یک منبع بیرونی
+  sync [--dry-run] [--json]       همگام‌سازی main با origin (ff / push / merge ِ واقعی؛ هرگز rebase) + npm ci در صورت تغییر package-lock
+                                 [--fetch-timeout-minutes n] [--push-timeout-minutes n] [--npm-timeout-minutes n]
   void <id>                       پاک‌سازی worktree/قفل‌های یک Task بدون تغییر state
   unlock                         آزادسازی قفل سراسری .manager.lock کهنه
 
+با execution.enabled=false در repository.local.yaml همه‌ی فرمان‌های نوشتنی (run/answer/import-issue/cancel/abandon/void/unlock/rebase) با exit 41 رد می‌شوند؛
+status/events/artifact/config/capabilities، external-init و sync همچنان کار می‌کنند.
 هر زیرفرمان بدون آرگومان الزامی‌اش، شکل کامل usage خودش را چاپ می‌کند.
 --help / -h همین راهنما را چاپ می‌کند؛ بدون هیچ آرگومانی هم همین است.

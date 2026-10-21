@@ -179,7 +179,8 @@ export function createApp(config, deps = {}) {
   const readStatus = repo => collectJson(repo, ['status', '--json']);
   const idleCheck = repo => idleReason(repo, { registry, readStatus });
   const gitOps = deps.gitOps ?? new GitOps({ runner, audit, registry, dataDir, config, idleCheck, powershell: deps.powershell });
-  const updater = deps.updater ?? new ManagerUpdater({ runner, audit, idleCheck, help, config, npmCli: deps.npmCli });
+  // وضعیت sync از status ِ Manager (repository.sync)، نه از git ِ خود کانبان؛ با board مشترک (یک اجرای در جریان).
+  const updater = deps.updater ?? new ManagerUpdater({ runner, audit, registry, help, config, readStatus: repo => boardFor(repo), inspect: deps.inspectManager });
 
   const repoFor = id => {
     const repo = repos.get(id);
@@ -189,16 +190,35 @@ export function createApp(config, deps = {}) {
   // status --json در اولین اجرا (cache سرد Manager) حدود ۱۵ ثانیه طول می‌کشد. تا تمام نشده هر درخواست
   // دیگر (poll ِ تب دیگر، /api/issues) همان اجرا را می‌گیرد، نه یک فرآیند Manager تازه.
   const boardInflight = new Map();
+  const lastBoard = new Map();
   const boardFor = repo => {
     const running = boardInflight.get(repo.id);
     if (running) return running;
     const promise = (async () => {
       const board = await collectJson(repo, ['status', '--json']);
       board.repo = { ...(board.repo || {}), id: repo.id, path: repo.path };
+      lastBoard.set(repo.id, { at: Date.now(), board });
       return board;
     })().finally(() => boardInflight.delete(repo.id));
     boardInflight.set(repo.id, promise);
     return promise;
+  };
+  // قفل اجرا (TOOLING-040، repository.execution): با enabled=false هر مسیر کانبان که task می‌سازد یا اجرا می‌کند
+  // پیش از هر کاری با پیام خود Manager رد می‌شود (Manager هم همین‌ها را با exit 41 رد می‌کند؛ این فقط زودتر و بدون
+  // صف/فایل ناقص است). نخواندنِ status (خطا) هرگز مانع نیست: تصمیم نهایی با خود Manager است.
+  const executionOf = async repo => {
+    const cached = lastBoard.get(repo.id);
+    let board = cached && Date.now() - cached.at < 5_000 ? cached.board : null;
+    if (!board) {
+      try { board = await boardFor(repo); } catch { return null; }
+    }
+    return board?.repository?.execution ?? null;
+  };
+  const assertExecution = async repo => {
+    const execution = await executionOf(repo);
+    if (execution?.enabled === false) {
+      throw Object.assign(new Error(execution.reason || 'اجرای تسک روی این دستگاه خاموش است (execution.enabled=false).'), { status: 409 });
+    }
   };
   const refreshIssues = async force => {
     if (force || Date.now() - issueCache.at > 15_000) {
@@ -315,7 +335,7 @@ export function createApp(config, deps = {}) {
 
   const opsRoutes = createOpsRoutes({
     audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor,
-    managerAudited: collectAction, pipeStream, users: auth.users
+    managerAudited: collectAction, pipeStream, users: auth.users, assertExecution
   });
 
   const server = http.createServer(async (req, res) => {
@@ -435,6 +455,7 @@ export function createApp(config, deps = {}) {
       }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/run', pathname))) {
         const repo = repoFor(p.repo);
+        await assertExecution(repo);
         const run = registry.enqueue(repo, p.id, { user: session.user });
         if (!run) return send(res, 409, { error: 'این task هم‌اکنون در حال اجرا یا در صف است.' });
         const current = registry.list(repo).find(x => x.taskId === String(p.id));
@@ -629,6 +650,7 @@ export function createApp(config, deps = {}) {
         const input = await readBody(req);
         const items = Array.isArray(input.items) ? input.items : [];
         if (!items.length) return send(res, 400, { error: 'حداقل یک draft برای ساخت لازم است.' });
+        for (const repoId of new Set(items.map(item => item?.repo || config.repos[0].id))) await assertExecution(repoFor(repoId));
         const results = [];
         for (let index = 0; index < items.length; index += 1) {
           const draft = items[index];
@@ -649,6 +671,7 @@ export function createApp(config, deps = {}) {
         const input = await readBody(req);
         const ids = Array.isArray(input.ids) ? input.ids.map(String) : [];
         if (!ids.length) return send(res, 400, { error: 'حداقل یک issue انتخاب کنید.' });
+        await assertExecution(repoFor(input.repo || config.repos[0].id));
         const sourceIssues = await refreshIssues(false);
         const byId = new Map(sourceIssues.map(issue => [String(issue.externalId), issue]));
         const results = [];

@@ -109,3 +109,9 @@
 .conflict-files{margin:6px 0;padding:8px 10px;background:#fff;border:1px solid #efc5c2;border-radius:7px;max-height:180px;overflow:auto;list-style:none;font-size:11px}
 .conflict-files li{padding:2px 0}
 .link-btn.disabled{opacity:.5;cursor:not-allowed}
+.execution-bar{position:sticky;top:0;z-index:7;min-height:34px;background:#8a2f2a;color:#fff;display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;padding:6px 16px;font-size:12px;box-shadow:0 2px 8px #3a121133}
+.execution-bar small{color:#ffd9d5;font-size:10px}
+.limit-facts{display:block;color:#526076;font-size:11px;margin:2px 0 4px}
+.limit-facts b{color:#182235}
+.sync-facts{margin-top:8px}
+.sync-note{display:block;margin:8px 0 0;color:#6a778b;font-size:10px;line-height:1.8}

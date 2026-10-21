@@ -8,10 +8,11 @@
 import type { Task } from './models';
 
 export type BooleanAction =
-  | 'approve' | 'reject' | 'clarify' | 'note' | 'unblock' | 'raiseLimit'
+  | 'approve' | 'reject' | 'clarify' | 'note' | 'unblock'
   | 'allowPath' | 'allowSharedKnowledgeFile' | 'cancel' | 'abandon' | 'void' | 'unlock';
 
-export type ListAction = 'closeOrphan' | 'externalAccess' | 'resetExternal';
+/** اکشن‌های «فهرستی»: آرایه‌ی غیرخالی = مجاز (عنصرها: attempt، منبع یا فیلد سقف). */
+export type ListAction = 'closeOrphan' | 'externalAccess' | 'resetExternal' | 'raiseLimit';
 
 export function can(task: Pick<Task, 'actions'> | null | undefined, action: BooleanAction): boolean {
   return task?.actions?.[action] === true;
@@ -37,6 +38,27 @@ export function anyAction(task: Pick<Task, 'actions'> | null | undefined): boole
   const a = task?.actions;
   if (!a) return false;
   return Object.values(a).some(v => v === true || (Array.isArray(v) && v.length > 0));
+}
+
+/**
+ * `actions.raiseLimit` (TOOLING-038، `actionsVersion: 2`) آرایه‌ای از نام فیلدهاست و فیلد سدکننده اول می‌آید.
+ * دکمه فقط وقتی دیده می‌شود که مقدار **آرایه** باشد و دست‌کم یک عضو داشته باشد: `[]` در JS «مقدار دارد» حساب می‌شود،
+ * پس «truthy» نسنج. boolean ِ قدیمی (actionsVersion: 1) هرگز دکمه نمی‌دهد.
+ */
+export function raiseLimitFields(task: Pick<Task, 'actions'> | null | undefined): string[] {
+  return allowed(task, 'raiseLimit');
+}
+
+/** `capabilities.status.actionsVersion` ≥ ۲؟ کمتر یا نبودن = Manager قدیمی (raiseLimit بولین/نامعتبر). */
+export function supportsRaiseLimitList(actionsVersion: unknown): boolean {
+  return typeof actionsVersion === 'number' && Number.isFinite(actionsVersion) && actionsVersion >= 2;
+}
+
+/** actionsVersion از `capabilities` ِ Manager (ساختار: capabilities.status.actionsVersion)؛ نبودن = null. */
+export function actionsVersionOf(capabilities: Record<string, unknown> | null | undefined): number | null {
+  const status = capabilities?.['status'];
+  const version = status && typeof status === 'object' ? (status as Record<string, unknown>)['actionsVersion'] : undefined;
+  return typeof version === 'number' ? version : null;
 }
 
 /** فیلدهای --raise-limit که Manager می‌پذیرد (منبع: usage ِ answer در manager.js). */
@@ -87,11 +109,16 @@ const OPS_ORDER: ReadonlyArray<{ key: BooleanAction | ListAction; id: ButtonId }
  * دکمه‌های بخش «اکشن‌ها»ی کارت، به ترتیب. `rebaseConflict` فقط شکل نمایش `unblock` را عوض می‌کند
  * (کارت rebase-conflict: «دوباره امتحان کن» = unblock + run) و هیچ‌وقت چیزی را مجاز یا ممنوع نمی‌کند.
  */
-export function opsButtons(task: Pick<Task, 'actions'> | null | undefined, opts: { rebaseConflict?: boolean } = {}): CardButton[] {
+export function opsButtons(
+  task: Pick<Task, 'actions'> | null | undefined,
+  opts: { rebaseConflict?: boolean; /** false = Manager قدیمی (actionsVersion < 2): دکمه‌ی raise-limit پنهان. پیش‌فرض true. */ raiseLimitSupported?: boolean } = {}
+): CardButton[] {
   const out: CardButton[] = [];
   for (const { key, id } of OPS_ORDER) {
     if (key === 'closeOrphan') {
       for (const attempt of allowed(task, 'closeOrphan')) out.push({ id, action: key, target: attempt });
+    } else if (key === 'raiseLimit') {
+      if (opts.raiseLimitSupported !== false && raiseLimitFields(task).length) out.push({ id, action: key });
     } else if (key === 'externalAccess' || key === 'resetExternal') {
       if (allowed(task, key).length) out.push({ id, action: key });
     } else if (can(task, key as BooleanAction)) {
@@ -114,7 +141,7 @@ export function unknownActionKeys(task: Pick<Task, 'actions'> | null | undefined
 }
 
 /** کدام کلیدهای فعال در کدام بخش (ops/gate/tools) دکمه دارند — برای تست «هیچ کلید فعالی بی‌دکمه نمی‌ماند». */
-export function renderedActionKeys(task: Pick<Task, 'actions'> | null | undefined, opts: { rebaseConflict?: boolean } = {}): string[] {
+export function renderedActionKeys(task: Pick<Task, 'actions'> | null | undefined, opts: { rebaseConflict?: boolean; raiseLimitSupported?: boolean } = {}): string[] {
   const ops = opsButtons(task, opts).map(b => b.action as string);
   const others = activeActionKeys(task).filter(k => (ACTION_PLACEMENT as Record<string, string>)[k] === 'gate' || (ACTION_PLACEMENT as Record<string, string>)[k] === 'tools');
   return [...new Set([...ops, ...others])];

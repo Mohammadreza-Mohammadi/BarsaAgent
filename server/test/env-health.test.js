@@ -142,18 +142,50 @@ test('probeUrl: مستقیم و از طریق پروکسی HTTP (CONNECT) پاس
   await assert.rejects(() => probeUrl(targetUrl, `http://127.0.0.1:${closedPort}`, 2000));
 });
 
-test('نسخه‌ی Manager: commit فعلی و تعداد commit عقب‌تر از origin/main در گزارش سلامت می‌آید', async t => {
-  const make = info => ({ info: async () => info });
+test('نسخه‌ی Manager و sync: ahead/behind و آخرین fetch از repository.sync ِ status می‌آید (نه محاسبه‌ی کانبان)', async t => {
   const head = 'a'.repeat(40);
-  let { report } = await run(t, { updater: make({ head, branch: 'main', behind: 3, ahead: 0 }) });
+  const base = { head, branch: 'main', upstream: 'origin/main', ahead: 0, behind: 0, lastFetchAt: '2026-10-20T16:54:42.276Z', execution: { enabled: true }, localConfig: null };
+  const make = info => ({ info: async () => ({ ...base, ...info }) });
+  let { report } = await run(t, { updater: make({ behind: 3 }) });
   assert.equal(byId(report, 'manager-version-fake').status, 'warn');
-  assert.match(byId(report, 'manager-version-fake').detail, /aaaaaaaaaa.*3 commit عقب‌تر/);
-  ({ report } = await run(t, { updater: make({ head, branch: 'main', behind: 0, ahead: 0 }) }));
+  assert.match(byId(report, 'manager-version-fake').detail, /aaaaaaaaaa.*0 commit جلوتر · 3 commit عقب‌تر از origin\/main.*2026-10-20T16:54:42/);
+  assert.match(byId(report, 'manager-version-fake').hint, /sync/);
+  ({ report } = await run(t, { updater: make({ ahead: 2 }) }));
+  assert.equal(byId(report, 'manager-version-fake').status, 'warn', 'commit ِ push نشده هم نیاز به sync دارد');
+  ({ report } = await run(t, { updater: make({}) }));
   assert.equal(byId(report, 'manager-version-fake').status, 'ok');
-  ({ report } = await run(t, { updater: make({ head, branch: 'main', behind: null, ahead: null, remoteError: 'origin/main پیدا نشد' }) }));
+  ({ report } = await run(t, { updater: make({ lastFetchAt: null }) }));
   assert.equal(byId(report, 'manager-version-fake').status, 'warn');
-  ({ report } = await run(t, { updater: { info: async () => { throw new Error('not a git repo'); } } }));
-  assert.match(byId(report, 'manager-version-fake').detail, /not a git repo/);
+  assert.match(byId(report, 'manager-version-fake').detail, /هنوز fetch نشده/);
+  ({ report } = await run(t, { updater: make({ behind: null, ahead: null, remoteError: 'قدیمی' }) }));
+  assert.equal(byId(report, 'manager-version-fake').status, 'warn');
+  ({ report } = await run(t, { updater: { info: async () => { throw new Error('status خوانده نشد'); } } }));
+  assert.match(byId(report, 'manager-version-fake').detail, /status خوانده نشد/);
+  assert.equal(byId(report, 'manager-execution-fake').status, 'warn');
+});
+
+test('ردیف‌های «config ِ محلی Manager» و «اجرا» از repository.localConfig / execution', async t => {
+  const base = { head: 'b'.repeat(40), branch: 'main', upstream: 'origin/main', ahead: 0, behind: 0, lastFetchAt: '2026-10-20T00:00:00Z' };
+  const make = info => ({ info: async () => ({ ...base, ...info }) });
+  const local = { path: '.agent-work/config/repository.local.yaml', present: true, applied: true, keys: ['execution.enabled'] };
+  let { report } = await run(t, { updater: make({ localConfig: local, execution: { enabled: false, source: 'local', reason: 'اجرای تسک روی این دستگاه خاموش است' } }) });
+  assert.equal(byId(report, 'manager-localconfig-fake').status, 'ok');
+  assert.match(byId(report, 'manager-localconfig-fake').detail, /هست و اعمال شده.*execution\.enabled/);
+  assert.equal(byId(report, 'manager-execution-fake').status, 'warn');
+  assert.match(byId(report, 'manager-execution-fake').detail, /خاموش.*execution\.enabled=false.*local/);
+  assert.equal(report.ok, true, 'اجرای خاموش خطا نیست، هشدار است');
+
+  ({ report } = await run(t, { updater: make({ localConfig: { ...local, applied: false }, execution: { enabled: true, source: 'default' } }) }));
+  assert.equal(byId(report, 'manager-localconfig-fake').status, 'warn');
+  assert.match(byId(report, 'manager-localconfig-fake').detail, /هست ولی اعمال نشده/);
+  assert.equal(byId(report, 'manager-execution-fake').status, 'ok');
+
+  ({ report } = await run(t, { updater: make({ localConfig: { ...local, present: false, applied: false, keys: [] }, execution: { enabled: true } }) }));
+  assert.match(byId(report, 'manager-localconfig-fake').detail, /وجود ندارد/);
+
+  ({ report } = await run(t, { updater: make({ localConfig: null, execution: null }) }));
+  assert.equal(byId(report, 'manager-localconfig-fake').status, 'warn');
+  assert.equal(byId(report, 'manager-execution-fake').status, 'warn');
 });
 
 test('API /api/env-health پشت ورود است و گزارش ساختاریافته می‌دهد', async t => {

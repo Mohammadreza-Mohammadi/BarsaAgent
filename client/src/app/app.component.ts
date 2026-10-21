@@ -10,7 +10,7 @@ import { MaintenanceComponent } from './maintenance.component';
 import { AuditComponent, EnvHealthComponent } from './env-health.component';
 import { TaskOpsComponent } from './task-ops.component';
 import { ArchiveComponent } from './archive.component';
-import { allowed, can, canAnswerGate } from './task-actions';
+import { actionsVersionOf, allowed, can, canAnswerGate } from './task-actions';
 import { BOARD_DONE_STATES, archiveTasks, isFinished, isRecentlyDone, normalizeDoneDays } from './task-archive';
 import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, ExternalSource, HealthResult, Issue, Repo, RunningTask, Task } from './models';
 
@@ -43,6 +43,7 @@ const EXIT_LABELS: Record<number, string> = {
   20: 'متوقف',
   30: 'بدون پیشرفت — احتمالاً باگ',
   40: 'منتظر آزاد شدن scope (خطا نیست)',
+  41: 'اجرای تسک روی این دستگاه خاموش است (execution.enabled=false) — خطای ناشناخته نیست',
   42: 'ردِ تکراری — بررسی دستی لازم است',
   1: 'خطای اجرایی'
 };
@@ -441,6 +442,16 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   currentRepo(): Repo | undefined { return this.repos().find(r => r.id === this.repoId()); }
+
+  // --- قفل اجرا (TOOLING-040): فقط از repository.execution ِ status --json؛ غایب (Manager قدیمی) = روشن ---------
+  readonly executionOffTitle = 'اجرای تسک روی این دستگاه خاموش است (execution.enabled=false)';
+  executionDisabled(): boolean { return this.board()?.repository?.execution?.enabled === false; }
+  executionDetail(): string {
+    const execution = this.board()?.repository?.execution;
+    return [execution?.reason, execution?.source ? `منبع: ${execution.source}` : ''].filter(Boolean).join(' — ');
+  }
+  /** capabilities.status.actionsVersion ِ Manager مخزن فعلی (null = نامشخص/قدیمی). */
+  actionsVersion(): number | null { return actionsVersionOf(this.currentRepo()?.manager?.capabilities); }
   hasStatusCapability(key: 'verify' | 'review' | 'health'): boolean { return this.currentRepo()?.manager?.statusFields?.[key] === true; }
   managerLabel(): string {
     const manager = this.currentRepo()?.manager;

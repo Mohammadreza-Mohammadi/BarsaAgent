@@ -23,7 +23,7 @@ export const READ_ONLY_SUBCOMMANDS = Object.freeze(['capabilities', 'status', 'e
 // حذف/تغییر نام داد، همان لحظه معلوم می‌شود، نه وقتی کاربر دکمه را بزند.
 export const INTERNAL_SUBCOMMANDS = Object.freeze([
   'answer', 'run', 'cancel', 'abandon', 'rebase', 'void', 'unlock',
-  'import-issue', 'external-init', 'status', 'events', 'artifact', 'capabilities'
+  'import-issue', 'external-init', 'status', 'events', 'artifact', 'capabilities', 'sync'
 ]);
 
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;

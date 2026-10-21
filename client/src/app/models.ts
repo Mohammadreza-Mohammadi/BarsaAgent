@@ -93,9 +93,13 @@ export interface ExternalSource {
   actions?: { canStageExternal: boolean; canMarkCheckedIn: boolean };
 }
 
-/** TOOLING-037: «این اکشن الان مجاز است؟» از خود Manager (status.schema.json، taskActions). */
+/**
+ * TOOLING-037/038: «این اکشن الان مجاز است؟» از خود Manager (status.schema.json، taskActions).
+ * `raiseLimit` از `actionsVersion: 2` یک **فهرست** از نام فیلدهای قابل بالا بردن است (فیلد سدکننده اول)؛ در
+ * `actionsVersion: 1` یک boolean بود. `[]` یعنی مجاز نیست.
+ */
 export interface TaskActions {
-  approve: boolean; reject: boolean; clarify: boolean; note: boolean; unblock: boolean; raiseLimit: boolean;
+  approve: boolean; reject: boolean; clarify: boolean; note: boolean; unblock: boolean; raiseLimit: string[];
   closeOrphan: string[]; allowPath: boolean; allowSharedKnowledgeFile: boolean; externalAccess: string[]; resetExternal: string[];
   cancel: boolean; abandon: boolean; void: boolean; unlock: boolean;
 }
@@ -142,6 +146,10 @@ export interface Task {
   externalSources?: ExternalSource[];
 }
 
+export interface ExecutionState { enabled: boolean; source?: string | null; reason?: string | null }
+export interface LocalConfigState { path: string; present: boolean; applied: boolean; keys: string[] }
+export interface SyncState { branch: string | null; upstream: string | null; ahead: number | null; behind: number | null; lastFetchAt: string | null }
+
 export interface Board {
   // schemaVersion عمداً اینجا نیست (بازبینی فاز ۲، بند ج): هیچ‌جای UI آن را
   // نمی‌خواند/نمی‌سنجد — سازگاری واقعی از capability handshake
@@ -159,6 +167,12 @@ export interface Board {
       unownedDirtyFiles: string[];
       acceptsOperations: boolean;
     };
+    /** TOOLING-040: قفل اجرا. `enabled: false` ⇒ همه‌ی actions خاموش و فرمان‌های نوشتنی با exit 41 رد می‌شوند. */
+    execution?: ExecutionState;
+    /** TOOLING-040: `.agent-work/config/repository.local.yaml` (فقط محلی، git-ignored). */
+    localConfig?: LocalConfigState;
+    /** TOOLING-040: از آخرین fetch؛ status خودش به شبکه نمی‌رود. */
+    sync?: SyncState;
   };
   tasks: Task[];
   error?: string;
@@ -280,7 +294,11 @@ export interface GitWorktree {
   proof: { proven: boolean; commit: string; at: string; user?: string } | null;
 }
 export interface GitInventory { worktreesDir: string | null; proveIsolationScript: string; powershell: string | null; worktrees: GitWorktree[] }
-export interface ManagerInfoView { head: string; branch: string | null; subject: string; clean: boolean; ahead: number | null; behind: number | null; remoteError?: string }
+/** وضعیت sync از `status --json` ِ Manager (repository.sync/execution/localConfig)، نه از محاسبه‌ی کانبان. */
+export interface ManagerInfoView {
+  head: string | null; branch: string | null; upstream: string | null; ahead: number | null; behind: number | null; lastFetchAt: string | null;
+  execution: ExecutionState | null; localConfig: LocalConfigState | null; remoteError?: string;
+}
 export interface HealthCheckItem { id: string; group: string; label: string; status: 'ok' | 'warn' | 'fail'; detail: string; hint: string }
 export interface EnvHealthReport { checkedAt: string; ok: boolean; checks: HealthCheckItem[] }
 export interface AuditItem {

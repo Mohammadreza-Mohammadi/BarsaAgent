@@ -145,17 +145,56 @@ export async function runHealthChecks({ config, repos, dataDir, managerInfo, hel
       });
     }
     if (updater) {
-      // الحاقیه‌ی «ح»: commit ِ فعلی و تعداد commitهای عقب‌تر از origin/main (از ref های محلی؛ برای تازه‌سازی «بررسی (fetch)» در صفحه‌ی نگهداری)
-      await add(`manager-version-${repo.id}`, 'مسیرها', `نسخه‌ی Manager (${repo.id})`, async () => {
-        const label = `نسخه‌ی Manager (${repo.id})`;
-        const id = `manager-version-${repo.id}`;
-        let info;
-        try { info = await updater.info(repo); }
-        catch (error) { return check(id, 'مسیرها', label, 'warn', error.message, 'وضعیت git این مخزن خوانده نشد.'); }
-        const where = `commit ${info.head.slice(0, 10)} (${info.branch || 'detached'})`;
-        if (info.behind === null) return check(id, 'مسیرها', label, 'warn', where, info.remoteError || 'origin/main پیدا نشد.');
-        if (info.behind > 0) return check(id, 'مسیرها', label, 'warn', `${where} · ${info.behind} commit عقب‌تر از origin/main`, 'از صفحه‌ی «نگهداری مخزن ابزار» به‌روزرسانی کن.');
-        return check(id, 'مسیرها', label, 'ok', `${where} · هم‌سطح origin/main (تا آخرین fetch)`);
+      // ahead/behind و زمان آخرین fetch را خود Manager می‌گوید (status --json ← repository.sync، TOOLING-040)؛ کانبان
+      // هیچ git ای برای این مخزن اجرا نمی‌کند. همان یک خواندن status سه ردیف می‌سازد: نسخه/sync، config ِ محلی، اجرا.
+      const syncId = `manager-version-${repo.id}`;
+      const syncLabel = `نسخه‌ی Manager و sync (${repo.id})`;
+      let info = null;
+      let infoError = null;
+      try { info = await updater.info(repo); } catch (error) { infoError = error; }
+      await add(syncId, 'مسیرها', syncLabel, async () => {
+        if (infoError) return check(syncId, 'مسیرها', syncLabel, 'warn', infoError.message, 'status --json ِ Manager خوانده نشد.');
+        const where = `commit ${(info.head || '؟').slice(0, 10)} (${info.branch || 'شاخه نامعلوم'})`;
+        const fetched = info.lastFetchAt ? `آخرین fetch: ${info.lastFetchAt}` : 'هنوز fetch نشده';
+        if (info.remoteError) return check(syncId, 'مسیرها', syncLabel, 'warn', `${where} · ${fetched}`, info.remoteError);
+        const counts = `${info.ahead} commit جلوتر · ${info.behind} commit عقب‌تر از ${info.upstream || 'origin/main'}`;
+        const detail = `${where} · ${counts} · ${fetched}`;
+        if (info.behind > 0 || info.ahead > 0) {
+          return check(syncId, 'مسیرها', syncLabel, 'warn', detail, 'از صفحه‌ی «نگهداری مخزن ابزار» اکشن «sync» را اجرا کن (ff / push / merge ِ واقعی؛ هرگز rebase).');
+        }
+        return check(syncId, 'مسیرها', syncLabel, info.lastFetchAt ? 'ok' : 'warn', detail, info.lastFetchAt ? '' : 'ahead/behind از آخرین fetch است؛ با «پیش‌نمایش sync» تازه می‌شود.');
+      });
+
+      const localId = `manager-localconfig-${repo.id}`;
+      const localLabel = `config ِ محلی Manager (${repo.id})`;
+      await add(localId, 'مسیرها', localLabel, async () => {
+        if (infoError) return check(localId, 'مسیرها', localLabel, 'warn', infoError.message);
+        const local = info.localConfig;
+        if (!local) return check(localId, 'مسیرها', localLabel, 'warn', 'این Manager repository.localConfig را نمی‌دهد (قدیمی‌تر از TOOLING-040)');
+        const keys = Array.isArray(local.keys) && local.keys.length ? local.keys.join('، ') : '—';
+        if (!local.present) return check(localId, 'مسیرها', localLabel, 'ok', `وجود ندارد (${local.path}) — پیش‌فرض‌های repository.yaml`);
+        if (!local.applied) return check(localId, 'مسیرها', localLabel, 'warn', `هست ولی اعمال نشده · ${local.path} · کلیدها: ${keys}`, 'Manager فایل را خوانده ولی نپذیرفته؛ خروجی «config --effective» را ببین.');
+        return check(localId, 'مسیرها', localLabel, 'ok', `هست و اعمال شده · ${local.path} · کلیدها: ${keys}`);
+      });
+
+      const execId = `manager-execution-${repo.id}`;
+      const execLabel = `اجرا (${repo.id})`;
+      await add(execId, 'مسیرها', execLabel, async () => {
+        if (infoError) return check(execId, 'مسیرها', execLabel, 'warn', infoError.message);
+        const execution = info.execution;
+        if (!execution) return check(execId, 'مسیرها', execLabel, 'warn', 'این Manager repository.execution را نمی‌دهد (قدیمی‌تر از TOOLING-040)');
+        if (execution.enabled === false) {
+          return check(execId, 'مسیرها', execLabel, 'warn', `خاموش — execution.enabled=false (منبع: ${execution.source || '؟'})`, `${execution.reason || ''} فقط sync کار می‌کند. روی سرور باید روشن باشد: execution.enabled را در repository.local.yaml برگردان.`.trim());
+        }
+        return check(execId, 'مسیرها', execLabel, 'ok', `روشن (منبع: ${execution.source || 'پیش‌فرض'})`);
+      });
+
+      const actionsId = `manager-actions-${repo.id}`;
+      const actionsLabel = `قرارداد actions ِ Manager (${repo.id})`;
+      await add(actionsId, 'مسیرها', actionsLabel, async () => {
+        const version = managerInfo?.[repo.id]?.capabilities?.status?.actionsVersion;
+        if (typeof version === 'number' && version >= 2) return check(actionsId, 'مسیرها', actionsLabel, 'ok', `actionsVersion ${version}`);
+        return check(actionsId, 'مسیرها', actionsLabel, 'warn', `actionsVersion ${typeof version === 'number' ? version : 'نیست'} (کمتر از ۲)`, 'Manager قدیمی است: دکمه‌ی «بالا بردن سقف» پنهان می‌ماند. با sync ِ Manager را به‌روز کن.');
       });
     }
     for (const dir of [repo.path]) {
