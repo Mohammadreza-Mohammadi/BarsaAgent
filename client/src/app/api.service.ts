@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import {
   AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, EnvHealthReport,
-  ExecInfo, GitInventory, GitStatus, HealthResult, Issue, ManagerInfoView, Repo, RunRecord, RunningTask, StopResult, Task
+  ExecInfo, GitInventory, GitStatus, HealthResult, Issue, ManagerInfoView, Repo, RunRecord, RunningTask, RuntimeOptions, StopResult, Task
 } from './models';
 
 @Injectable({ providedIn: 'root' })
@@ -84,6 +84,15 @@ export class ApiService {
   allowSharedKnowledgeFile = (repo: string, id: string, path: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/allow-shared-knowledge-file`, { path, reason });
   externalAccess = (repo: string, id: string, sourceId: string, access: 'read' | 'write', reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/external-access`, { sourceId, access, reason });
   resetExternal = (repo: string, id: string, sourceId: string, to: string | null, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/reset-external`, { sourceId, to, reason });
+  // --- TOOLING-044/045/046 ----------------------------------------------------------------------------
+  /** `runtime --options --json` (فقط‌خواندنی): تنها منبع ِ گزینه‌های dialog و فرم ساخت. */
+  runtimeOptions = (repo: string, refresh = false) => this.http.get<RuntimeOptions>(`${this.repoPath(repo)}/runtime-options`, { params: refresh ? new HttpParams().set('refresh', '1') : undefined });
+  /** `answer <id> --runtime|--runtime-preset|--runtime-reset … --reason-file` (فقط attemptهای بعدی؛ وسط ِ attempt ِ زنده در صف می‌نشیند). */
+  setRuntime = (repo: string, id: string, body: Record<string, unknown>) => this.http.post<{ ok: boolean; queued: boolean; output: string[] }>(`${this.taskPath(repo, id)}/runtime`, body);
+  /** retryProvision (= answer --unblock + run، idempotent) برای stageهای install | build | worktree-baseline. */
+  retryProvision = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`/api/remote/tasks/${encodeURIComponent(id)}/retry-provision`, { reason }, { params: new HttpParams().set('repo', repo) });
+  /** recover (process-attempt | discard-residue؛ مورد ِ دوم دلیل می‌خواهد). */
+  recoverTask = (repo: string, id: string, body: { discardResidue?: boolean; reason?: string }) => this.http.post<{ ok: boolean; mode: string; output: string[] }>(`/api/remote/tasks/${encodeURIComponent(id)}/recover`, body, { params: new HttpParams().set('repo', repo) });
   retryRebase = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`${this.taskPath(repo, id)}/retry-rebase`, { reason });
 
   gitStatus = (repo: string) => this.http.get<GitStatus>(`${this.repoPath(repo)}/git/status`);

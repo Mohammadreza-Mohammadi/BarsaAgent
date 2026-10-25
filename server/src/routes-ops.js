@@ -10,6 +10,7 @@ import { parseConsoleLine, displayCommand, resolveArgs } from './console-parser.
 import { buildZip } from './zip.js';
 import { stripLocalEnv } from './agent-env.js';
 import { runHealthChecks } from './env-health.js';
+import { answerRuntimeArgs, structuredFailure } from './runtime-args.js';
 
 const MAX_ATTACHMENT = 1_000_000;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -277,6 +278,38 @@ export function createOpsRoutes(ctx) {
     }
   }
 
+  // --- runtime ِ هر مرحله (TOOLING-046) ------------------------------------------------------------
+  // گزینه‌ها **فقط** از `runtime --options --json` ِ Manager می‌آیند (نه فهرست ِ سخت‌کدشده). `ready` یک probe ِ گران است
+  // (نصب/احراز هویت ِ provider)، پس چند ثانیه cache می‌شود؛ با ?refresh=1 تازه می‌شود.
+  const optionsCache = new Map();
+  async function runtimeOptions(repo, refresh) {
+    const cached = optionsCache.get(repo.id);
+    if (!refresh && cached && Date.now() - cached.at < 30_000) return cached.value;
+    const value = await collectJson(repo, ['runtime', '--options', '--json']);
+    optionsCache.set(repo.id, { at: Date.now(), value });
+    return value;
+  }
+
+  /**
+   * تغییر ِ runtime بعد از ساخت: `answer <id> --runtime|--runtime-preset|--runtime-reset … --reason-file`.
+   * «مجاز است؟» با `actions.setRuntime` ِ status (UI/CLI پیش‌سنجی می‌کنند)؛ اعتبارسنجی ِ معنایی و صف‌شدن وسط ِ attempt ِ
+   * زنده با Manager است. خروجی ِ Manager (آخرین خط‌ها) برمی‌گردد تا UI بگوید «در صف نشست» یا «اعمال شد».
+   */
+  async function setRuntime(session, repo, id, input) {
+    const argv = answerRuntimeArgs(input);
+    const reason = needReason(input);
+    await assertExecution(repo);
+    try {
+      const out = await withReasonFile(reason, file => managerAudited(session, repo, ['answer', id, ...argv, '--reason-file', file], { action: 'runtime', taskId: id }));
+      const output = String(out.stdout || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(-6);
+      return { ok: true, taskId: id, queued: output.some(line => line.includes('در صف')), output };
+    } catch (error) {
+      const structured = structuredFailure(error);
+      if (structured) throw Object.assign(error, { structured, message: `runtime نامعتبر است${structured.explanation ? ` (${structured.explanation})` : ''}: ${structured.message}` });
+      throw error;
+    }
+  }
+
   // ط: «دوباره امتحان کن» برای rebase-conflict. blocked اجرا نمی‌شود
   // (RUN_STOPPED_STATES در manager.js)، پس اول unblock (برمی‌گرداند به
   // previousState) و بعد run که خودش دوباره rebase را امتحان می‌کند.
@@ -359,6 +392,14 @@ export function createOpsRoutes(ctx) {
     }
     if ((p = route('/api/repos/:repo/tasks/:id/retry-rebase', pathname)) && method === 'POST') {
       return send(res, 200, await retryRebase(session, repoFor(p.repo), p.id, await readBody(req))), true;
+    }
+
+    if ((p = route('/api/repos/:repo/runtime-options', pathname)) && method === 'GET') {
+      return send(res, 200, await runtimeOptions(repoFor(p.repo), url.searchParams.get('refresh') === '1')), true;
+    }
+    if ((p = route('/api/repos/:repo/tasks/:id/runtime', pathname)) && method === 'POST') {
+      if (!TASK_ID.test(p.id)) throw bad('شناسه‌ی task نامعتبر است.');
+      return send(res, 200, await setRuntime(session, repoFor(p.repo), p.id, await readBody(req))), true;
     }
 
     // git

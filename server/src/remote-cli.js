@@ -13,6 +13,7 @@ import { APP_ROOT, defaultDataDir, parseConfigYaml } from './config.js';
 import { environmentSecrets, redact } from './security.js';
 import { formatSystemDiag, formatTaskDiag } from './diag-format.js';
 import { buildWaiting, formatWaiting } from './remote-waiting.js';
+import { attemptModelCell, currentRole, liveAttempt, parseRuntimeSpec, runtimeRows, sourceLabel } from './runtime-view.js';
 import {
   ANSWER_MODES, DEFAULT_TOKEN_NAME, DEFAULT_URL, EXIT, NOT_REMOTE_ANSWER_FLAGS, NOT_REMOTE_COMMANDS, NOT_REMOTE_MESSAGE,
   READ_COMMANDS, WRITE_COMMANDS
@@ -43,6 +44,8 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa task <id>                           جزئیات یک تسک
   barsa log <id> [--tail N]                 انتهای لاگ آخرین اجرا (پیش‌فرض ۴۰ خط)
   barsa waiting [--since <ISO>]             تسک‌های منتظر تصمیم تو از آن زمان
+  barsa runtime <id>                        مدل و effort ِ مؤثر ِ هر نقش (با منبع)، attempt ِ زنده و تغییرهای در صف
+  barsa runtime-options                     provider، مدل، effort، presetها و آماده بودن ِ هر provider (از Manager)
   barsa artifact <id> [name] [--attempt N] [--tail N]   بدون name فهرست؛ با name متن (questions.md, proposed-task.md, review.md, …)
   barsa diag <id>                           تشخیص کامل یک تسک (وضعیت، health، رویدادها، لاگ، فرآیندها، git، worktree، صف)
   barsa diag --system                       تشخیص سرویس (فرآیندها، قفل‌ها، sync، git، دیسک، PATH، issue-portal، kanban.err.log)
@@ -51,8 +54,8 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa sync --status <execId>              نتیجه‌ی یک sync که هنوز در جریان بود
 
 نوشتنی (روی گوشی تأیید می‌خواهند):
-  barsa create-from-issue <externalId> [--run]
-  barsa create-task --title <عنوان> (--text-file <f> | --stdin)
+  barsa create-from-issue <externalId> [--run] [--runtime-preset <name>] [--runtime <role>=<p>:<m>:<e> ...] [--allow-duplicate (--reason "…" | --stdin)]
+  barsa create-task --title <عنوان> (--text-file <f> | --stdin) [--runtime-preset <name>] [--runtime <role>=<p>:<m>:<e> ...]
   barsa run <id>
   barsa stop <id>
   barsa answer <id> --approve [--text-file <f> | --stdin]
@@ -63,7 +66,11 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa answer <id> --unblock (--text-file <f> | --stdin)
   barsa answer <id> --allow-shared-knowledge-file <path> (--text-file <f> | --stdin)
   barsa recover <id> [--discard-residue (--text-file <f> | --stdin)]
-  barsa retry-install <id>                  unblock + run برای شکست نصب وابستگی (actions.retryInstall)
+  barsa set-runtime <id> <role> <provider>:<model>:<effort> (--reason "…" | --stdin)   قطعه‌ی خالی = دست نزن (مثلاً ::high)
+  barsa set-runtime <id> --preset <name> (--reason "…" | --stdin)
+  barsa set-runtime <id> <role|preset|all> --reset (--reason "…" | --stdin)
+  barsa retry-provision <id>                unblock + run برای شکست ِ نصب / build / baseline (actions.retryProvision)
+  barsa retry-install <id>                  همان retry-provision (alias ِ یک نسخه)
   barsa sync                                sync ِ واقعی Manager با origin (ff/push/merge؛ هرگز rebase)
   barsa kill-stuck-install <id> [--minutes N]   فقط lifecycle scriptهای گیرکرده‌ی همان npm ci ِ این تسک (پیش‌فرض ۵ دقیقه)
 
@@ -75,11 +82,11 @@ exit code: 0 موفق · 2 آرگومان بد · 3 اکشن مجاز نیست �
 
 const VALUE_FLAGS = new Set([
   '--tail', '--since', '--repo', '--token-file', '--url', '--title', '--text-file', '--route', '--raise-limit',
-  '--attempt', '--minutes', '--status', '--allow-shared-knowledge-file'
+  '--attempt', '--minutes', '--status', '--allow-shared-knowledge-file', '--runtime', '--runtime-preset', '--preset', '--reason'
 ]);
 const BOOL_FLAGS = new Set([
   '--json', '--all', '--waiting', '--running', '--blocked', '--run', '--stdin', '--help', '-h',
-  '--approve', '--reject', '--clarify', '--note', '--unblock', '--respec', '--system', '--discard-residue', '--dry-run'
+  '--approve', '--reject', '--clarify', '--note', '--unblock', '--respec', '--system', '--discard-residue', '--dry-run', '--reset', '--allow-duplicate'
 ]);
 
 export function parseArgs(argv) {
@@ -94,7 +101,8 @@ export function parseArgs(argv) {
     } else if (VALUE_FLAGS.has(arg)) {
       const value = argv[i + 1];
       if (value === undefined || (value.startsWith('--') && arg !== '--raise-limit')) throw usage(`${arg} مقدار می‌خواهد.`);
-      flags[arg] = value;
+      if (arg === '--runtime') (flags[arg] ??= []).push(value); // قابل تکرار: یکی برای هر نقش
+      else flags[arg] = value;
       i += 1;
     } else if (BOOL_FLAGS.has(arg)) {
       flags[arg] = true;
@@ -222,6 +230,34 @@ async function readText(flags, io, { required }) {
   return text || null;
 }
 
+/** reason برای set-runtime / allow-duplicate: `--reason "…"` (کوتاه، یک‌خطی) یا --stdin/--text-file (چندخطی)؛ نه هر دو. */
+async function reasonOf(flags, io, { required }) {
+  const inline = flags['--reason'];
+  if (inline !== undefined && (flags['--stdin'] || flags['--text-file'])) throw usage('--reason با --stdin/--text-file با هم معنا ندارند.');
+  if (inline !== undefined) {
+    const text = String(inline).trim();
+    if (!text || text.length > 500) throw usage('--reason باید غیرخالی و حداکثر ۵۰۰ نویسه باشد (برای متن بلند --stdin).');
+    return text;
+  }
+  return readText(flags, io, { required });
+}
+
+/** `--runtime role=p:m:e` (تکرارشونده) + `--runtime-preset` ← { preset, roles } برای بدنه‌ی ساخت، یا undefined. */
+function runtimeFromFlags(flags) {
+  const specs = flags['--runtime'] ?? [];
+  const preset = flags['--runtime-preset'];
+  if (!specs.length && preset === undefined) return undefined;
+  if (preset !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(preset)) throw usage('نام preset نامعتبر است.');
+  const roles = {};
+  for (const text of specs) {
+    const spec = parseRuntimeSpec(text);
+    if (!spec) throw usage(`--runtime «${text}»: قالب باید <role>=<provider>:<model>:<effort> باشد (قطعه‌ی خالی مجاز؛ نه هر سه خالی).`);
+    if (roles[spec.role]) throw usage(`نقش «${spec.role}» بیش از یک بار آمده است.`);
+    roles[spec.role] = { provider: spec.provider, model: spec.model, effort: spec.effort };
+  }
+  return { preset: preset ?? 'default', roles };
+}
+
 function activeActions(task) {
   const actions = task?.actions;
   if (!actions || typeof actions !== 'object') return [];
@@ -238,7 +274,9 @@ function assertAllowed(task, key, label, { field } = {}) {
   const actions = task?.actions;
   let ok = false;
   if (actions && typeof actions === 'object') {
-    ok = key === 'raiseLimit' ? Array.isArray(actions.raiseLimit) && actions.raiseLimit.includes(field) : actions[key] === true;
+    ok = key === 'raiseLimit' ? Array.isArray(actions.raiseLimit) && actions.raiseLimit.includes(field)
+      : key === 'retryProvision' ? actions.retryProvision === true || actions.retryInstall === true // retryInstall alias ِ یک نسخه
+        : actions[key] === true;
   }
   if (ok) return;
   const allowed = activeActions(task);
@@ -302,7 +340,7 @@ const commands = {
     lines.push(`${data.total} تسک (${{ waiting: 'منتظر تصمیم', running: 'در حال اجرا', blocked: 'blocked', all: 'همه', active: 'جاری' }[filter]}):`);
     for (const t of data.tasks) {
       const what = t.gate ? `منتظر ${t.gate.kind}` : t.blocker ? `blocked: ${t.blocker.kind}` : t.running ? 'در حال اجرا' : t.queued ? 'در صف' : t.state;
-      lines.push(`#${t.id} · ${what} · ${clip(t.title, 60)}`);
+      lines.push(`#${t.id} · ${what} · ${clip(t.title, 60)}${t.runtime ? ` · 🧠 ${clip(t.runtime, 50)}` : ''}`);
     }
     if (data.truncated) lines.push('… (فهرست کوتاه شد)');
     return lines.join('\n');
@@ -342,12 +380,20 @@ const commands = {
       diff: t.diff ? { headCommit: t.diff.headCommit ?? null, files: (t.diff.files || []).map(f => ({ path: f.path, added: f.added ?? 0, deleted: f.deleted ?? 0, status: f.status ?? null, inScope: f.inScope ?? null })) } : null,
       externalSources: (t.externalSources || []).map(s => (s.error ? { id: s.id, error: clip(s.error, 200) } : { id: s.id, access: s.access, delivery: s.delivery, staged: s.staged, checkedIn: s.checkedIn })),
       budget: t.budget ?? null,
+      // TOOLING-046: یک خط runtime (فقط اگر با پیش‌فرض فرق دارد) و ستون «مدل / effort» ِ attemptها
+      runtime: t.runtime ? { summary: t.runtime.summary ?? null, preset: t.runtime.stored?.preset ?? null, pending: (t.runtime.pending || []).length } : null,
+      attempts: (t.attempts || []).slice(-6).map(a => ({ n: a.n ?? null, id: a.id ?? null, role: a.role ?? null, outcome: a.outcome ?? null, ...attemptModelCell(a) })),
       waiting
     };
     if (json) return out;
     const lines = [`#${out.id} · ${out.title}`, `وضعیت: ${out.state}${out.gate ? ` · منتظر ${out.gate.kind} (از ${short(out.gate.since)})` : ''}${out.running.running ? ' · در حال اجرا' : out.running.queued ? ' · در صف' : ''}`];
     const active = activeActions(t);
     lines.push(`اکشن‌های مجاز: ${active.length ? active.join('، ') : (t.actions ? 'هیچ' : 'نامشخص (Manager قدیمی)')}`);
+    if (out.runtime?.summary) lines.push(`runtime: ${clip(out.runtime.summary, 200)}${out.runtime.pending ? ` · ${out.runtime.pending} تغییر در انتظار اعمال` : ''}`);
+    if (out.attempts.length) {
+      lines.push('attemptها (مدل / effort):');
+      for (const a of out.attempts) lines.push(`  #${a.id ?? a.n} ${a.role ?? '—'} → ${a.outcome ?? 'در جریان'} · ${clip(a.model, 70)} · ${a.effort}`);
+    }
     if (out.blocker) lines.push(`blocker: ${out.blocker.kind} — ${clip(out.blocker.detail, 240)}`);
     if (health?.stuck) lines.push(`گیرکرده: ${health.reasons.join('+')}${health.recovery ? ` — پیشنهاد Manager: ${health.recovery.suggested}${health.recovery.mode ? ` [${health.recovery.mode}]` : ''}` : ''} (جزئیات: barsa diag ${out.id})`);
     if (health?.install) lines.push(`نصب وابستگی‌ها: ${health.install.phase ?? '؟'}${health.install.alive === true ? ' (زنده)' : health.install.alive === false ? ' (مرده)' : ''} از ${short(health.install.startedAt)}`);
@@ -407,6 +453,15 @@ const commands = {
       const lines = [`artifactهای تسک #${id}:`, `  سطح تسک: ${data.artifacts.length ? data.artifacts.join('، ') : '—'}`];
       lines.push(`  هر attempt: ${data.perAttempt.join('، ')}${data.attempts.length ? ` — attemptها: ${data.attempts.map(a => `${a.n}${a.role ? `(${a.role}${a.outcome ? `→${a.outcome}` : ''})` : ''}`).join(' ')}` : ''}`);
       lines.push(`  رویدادها: ${data.extra.join('، ')} (فقط انتها)`);
+      if (data.blocker) {
+        lines.push(`blocker: ${data.blocker.kind ?? '؟'}${data.blocker.stage ? ` · stage ${data.blocker.stage}` : ''}${data.blocker.step ? ` · گام ${data.blocker.step}` : ''}${data.blocker.log ? ` · لاگ: ${data.blocker.log}` : ''}`);
+        if (data.blocker.outputTail?.length) lines.push('  outputTail (۴۰ خط ِ آخر):', ...data.blocker.outputTail.map(line => `    ${line}`));
+      }
+      if (data.commitFailure) {
+        lines.push(`commitFailure: ${data.commitFailure.message ?? '—'}`);
+        if (data.commitFailure.leftover?.length) lines.push(`  کثیف‌مانده: ${data.commitFailure.leftover.join(' | ')}`);
+        if (data.commitFailure.recoverCommand) lines.push(`  فرمان ِ بازیابی: ${data.commitFailure.recoverCommand}`);
+      }
       lines.push(`بخوان: barsa artifact ${id} <name> [--attempt N] [--tail N]`);
       return lines.join('\n');
     }
@@ -449,13 +504,97 @@ const commands = {
     return [`تسک #${id}: recover${discard ? ' --discard-residue' : ''} انجام شد.`, ...data.output.map(line => `  ${clip(line, 300)}`), `اجرا خودکار نیست؛ اگر خواستی «barsa run ${id}».`].join('\n');
   },
 
+  async 'retry-provision'({ client, positional, repo, json }) {
+    return retryProvision({ client, positional, repo, json }, 'retry-provision');
+  },
+
+  // alias ِ یک نسخه (TOOLING-045): actions.retryInstall همیشه هم‌مقدار retryProvision است.
   async 'retry-install'({ client, positional, repo, json }) {
+    return retryProvision({ client, positional, repo, json }, 'retry-install');
+  },
+
+  async runtime({ client, positional, repo, json }) {
     const id = needId(positional);
-    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
-    assertAllowed(task, 'retryInstall', 'retry-install');
-    const { data } = await need(client, 'POST', `/api/remote/tasks/${enc(id)}/retry-install`, { query: { repo }, body: {} });
+    const [{ data: t }, running] = await Promise.all([
+      need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`),
+      client.call('GET', `/api/repos/${enc(repo)}/running`)
+    ]);
+    if (!t.runtime) throw new CliError(EXIT.REJECTED, 'این Manager بلوک runtime را در status --json نمی‌دهد (قدیمی‌تر از TOOLING-046).');
+    if (t.runtime.error || !t.runtime.effective) throw new CliError(EXIT.REJECTED, `runtime ِ این تسک resolve نشد: ${clip(t.runtime.error ?? 'effective خالی است', 300)}`);
+    const run = Array.isArray(running.data) ? running.data.find(r => String(r.taskId) === String(id)) : null;
+    const rows = runtimeRows(t);
+    const live = liveAttempt(t);
+    const out = {
+      id: String(t.id), preset: t.runtime.stored?.preset ?? null, summary: t.runtime.summary ?? null,
+      canSet: t.actions?.setRuntime === true, current: currentRole(t),
+      rows: rows.map(r => ({
+        role: r.role, provider: r.provider, model: r.model, effort: r.effort, source: r.source, sourceText: sourceLabel(r.source), fieldSources: r.fieldSources,
+        current: r.isCurrent, error: r.error, pending: r.pending
+      })),
+      live: live ? { attempt: live.id ?? live.n ?? null, role: live.role ?? null, ...attemptModelCell(live), running: run?.running === true } : null,
+      queued: (t.runtime.pending || []).map(p => ({ decision: p.decision ?? null, queuedAt: p.queuedAt ?? null, reason: p.reason ? clip(p.reason, 200) : null }))
+    };
+    if (json) return out;
+    const lines = [`مدل‌های تسک #${out.id}${out.preset ? ` (preset: ${out.preset})` : ''}${out.current ? ` · نقش جاری: ${out.current}` : ''}`];
+    for (const r of out.rows) {
+      lines.push(r.error ? `  ✗ ${r.role} — ${clip(r.error, 160)}` : `  ${r.current ? '★' : '•'} ${r.role} — ${r.provider}:${r.model}:${r.effort} · ${r.sourceText}${r.current ? ' (جاری)' : ''}`);
+      if (r.pending) lines.push(`      ↳ در انتظار اعمال → ${r.pending.provider}:${r.pending.model}:${r.pending.effort}${r.pending.reason ? ` · reason: ${clip(r.pending.reason, 120)}` : ''}`);
+    }
+    if (out.live) lines.push(`attempt ِ زنده #${out.live.attempt ?? '؟'} (${out.live.role ?? '—'}): ${clip(out.live.model, 80)} · ${out.live.effort}`);
+    if (out.queued.length) lines.push(`تغییرهای در صف: ${out.queued.length} (فقط آخری روی هر نقش برنده است؛ در شروع ِ attempt ِ بعدی اعمال می‌شوند)`);
+    lines.push(out.canSet ? `تغییر: barsa set-runtime ${out.id} <role> <provider>:<model>:<effort> --reason "…"  (گزینه‌ها: barsa runtime-options)` : 'تغییر ِ runtime الان مجاز نیست (actions.setRuntime = false).');
+    return lines.join('\n');
+  },
+
+  async 'runtime-options'({ client, repo, json }) {
+    const { data } = await need(client, 'GET', `/api/repos/${enc(repo)}/runtime-options`);
     if (json) return data;
-    return `تسک #${id}: unblock شد و ${data.duplicate ? 'اجرا از قبل در جریان/صف بود' : data.queued ? 'در صف اجرا رفت' : 'اجرا شروع شد'}.\nبا «barsa log ${id}» ببین.`;
+    const lines = [`runtime-options (نسخه ${data.version}) · provider پیش‌فرض: ${data.defaultProvider} · نقش‌ها: ${(data.roles || []).join('، ')}`];
+    for (const [id, p] of Object.entries(data.providers || {})) {
+      const ready = p.ready ? (p.ready.installed === false ? 'نصب نیست ✗' : p.ready.authenticated === false ? 'احراز هویت نشده ✗' : `آماده ✓${p.ready.version ? ` (${clip(p.ready.version, 40)})` : ''}`) : 'آماده بودن نامعلوم';
+      lines.push(`${id}: ${p.enabled ? ready : 'غیرفعال'} · نقش‌ها: ${(p.roles || []).join('، ')}`);
+      for (const m of p.models || []) {
+        const efforts = (m.efforts || []).join('/');
+        lines.push(`    ${m.id}${m.aliases?.length ? ` (${m.aliases.join('، ')})` : ''} · effort: ${efforts === (p.efforts || []).join('/') ? 'همه' : efforts}`);
+      }
+      if (p.efforts?.length) lines.push(`    effortهای provider: ${p.efforts.join('، ')}`);
+    }
+    lines.push('پیش‌فرض‌ها:');
+    for (const [role, d] of Object.entries(data.defaults || {})) lines.push(`    ${role}: ${d.provider}:${d.model}:${d.effort}`);
+    lines.push('presetها:');
+    for (const [name, preset] of Object.entries(data.presets || {})) {
+      const parts = Object.entries(preset.roles || {}).map(([role, r]) => `${role}=${r.provider ?? ''}:${r.model ?? ''}:${r.effort ?? ''}`);
+      lines.push(`    ${name}: ${parts.length ? parts.join(' ') : 'بدون override'}`);
+    }
+    return lines.join('\n');
+  },
+
+  async 'set-runtime'({ client, flags, positional, io, repo, json }) {
+    const [id, ...rest] = positional;
+    needId(id ? [id] : []);
+    const preset = flags['--preset'];
+    const reset = flags['--reset'] === true;
+    let body;
+    let label;
+    if (preset !== undefined) {
+      if (reset || rest.length) throw usage('--preset تنها است: barsa set-runtime <id> --preset <name> --reason "…"');
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(preset)) throw usage('نام preset نامعتبر است.');
+      body = { mode: 'preset', preset }; label = `preset=${preset}`;
+    } else if (reset) {
+      if (rest.length !== 1 || !/^[a-z][a-z-]{0,31}$/.test(rest[0])) throw usage('استفاده: barsa set-runtime <id> <role|preset|all> --reset --reason "…"');
+      body = { mode: 'reset', target: rest[0] }; label = `reset ${rest[0]}`;
+    } else {
+      if (rest.length !== 2) throw usage('استفاده: barsa set-runtime <id> <role> <provider>:<model>:<effort> --reason "…"');
+      const spec = parseRuntimeSpec(`${rest[0]}=${rest[1]}`);
+      if (!spec) throw usage('قالب باید <role> <provider>:<model>:<effort> باشد (قطعه‌ی خالی مجاز؛ نه هر سه خالی؛ نویسه‌ها فقط حرف/عدد/نقطه/خط).');
+      body = { mode: 'set', ...spec }; label = `${spec.role}=${rest[1]}`;
+    }
+    const reason = await reasonOf(flags, io, { required: true });
+    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    assertAllowed(task, 'setRuntime', 'set-runtime');
+    const { data } = await need(client, 'POST', `/api/repos/${enc(repo)}/tasks/${enc(id)}/runtime`, { body: { ...body, reason } });
+    if (json) return { ok: true, taskId: String(id), change: label, queued: data.queued === true };
+    return `تسک #${id}: runtime (${label}) ${data.queued ? 'در صف نشست؛ در شروع ِ attempt ِ بعدی اعمال می‌شود' : 'ثبت شد؛ از attempt ِ بعدی اعمال می‌شود (نه اجرای در جریان)'}.\nبرای دیدن: barsa runtime ${id}`;
   },
 
   async sync({ client, flags, positional, repo, json, env }) {
@@ -506,18 +645,23 @@ const commands = {
     return lines.join('\n');
   },
 
-  async 'create-from-issue'({ client, flags, positional, repo, json }) {
+  async 'create-from-issue'({ client, flags, positional, io, repo, json }) {
     const externalId = positional[0];
-    if (!externalId || positional.length > 1) throw usage('استفاده: barsa create-from-issue <externalId> [--run]');
-    const { data } = await need(client, 'POST', '/api/issues/import', { body: { ids: [externalId], repo, start: flags['--run'] === true } });
-    return created(data.results?.[0], json, { hintId: true });
+    if (!externalId || positional.length > 1) throw usage('استفاده: barsa create-from-issue <externalId> [--run] [--runtime-preset <name>] [--runtime <role>=<p>:<m>:<e> ...] [--allow-duplicate (--reason "…" | --stdin)]');
+    const runtime = runtimeFromFlags(flags);
+    let allowDuplicate;
+    if (flags['--allow-duplicate']) allowDuplicate = { reason: await reasonOf(flags, io, { required: true }) };
+    else if (flags['--reason'] !== undefined) throw usage('--reason فقط کنار --allow-duplicate معنا دارد.');
+    const { data } = await need(client, 'POST', '/api/issues/import', { body: { ids: [externalId], repo, start: flags['--run'] === true, ...(runtime ? { runtime } : {}), ...(allowDuplicate ? { allowDuplicate } : {}) } });
+    return created(data.results?.[0], json, { hintId: true, externalId });
   },
 
   async 'create-task'({ client, flags, io, repo, json }) {
     const title = String(flags['--title'] ?? '').trim();
     if (!title) throw usage('استفاده: barsa create-task --title <عنوان> (--text-file <f> | --stdin)');
     const text = await readText(flags, io, { required: true });
-    const { data } = await need(client, 'POST', '/api/tasks/create', { body: { items: [{ repo, type: 'task', slug: title, requestText: `${title}\n\n${text}` }], start: false } });
+    const runtime = runtimeFromFlags(flags);
+    const { data } = await need(client, 'POST', '/api/tasks/create', { body: { items: [{ repo, type: 'task', slug: title, requestText: `${title}\n\n${text}`, ...(runtime ? { runtime } : {}) }], start: false } });
     return created(data.results?.[0], json, { hintId: true });
   },
 
@@ -594,10 +738,28 @@ function needId(positional) {
   return id;
 }
 
-function created(result, json, { hintId }) {
+/** retry-provision / retry-install: unblock + run (فرمان ِ ثبت‌شده‌ی Manager)؛ پیش‌سنجی از actions (retryInstall alias). */
+async function retryProvision({ client, positional, repo, json }, label) {
+  const id = needId(positional);
+  const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+  assertAllowed(task, 'retryProvision', label);
+  const stage = task.blocker?.stage ?? null;
+  const { data } = await need(client, 'POST', `/api/remote/tasks/${enc(id)}/${label}`, { query: { repo }, body: {} });
+  if (json) return { ...data, stage };
+  return `تسک #${id}${stage ? ` (stage: ${stage})` : ''}: unblock شد و ${data.duplicate ? 'اجرا از قبل در جریان/صف بود' : data.queued ? 'در صف اجرا رفت' : 'اجرا شروع شد'}.\nبا «barsa log ${id}» ببین.`;
+}
+
+function created(result, json, { hintId, externalId }) {
   if (!result) throw new CliError(EXIT.REJECTED, 'پاسخ سرور نتیجه‌ای نداشت.');
   if (!result.ok) {
     if (result.managerExit === EXIT.EXECUTION_OFF) throw new CliError(EXIT.EXECUTION_OFF, result.message);
+    const s = result.structured;
+    if (s?.kind === 'duplicate') {
+      throw new CliError(EXIT.REJECTED, `این issue قبلاً تسک #${s.taskId ?? '؟'} دارد (state: ${s.state ?? '—'}).${externalId ? ` اگر عمداً دوباره می‌خواهی: barsa create-from-issue ${externalId} --allow-duplicate --stdin (reason انگلیسی در heredoc)` : ''}`, { duplicateOf: s.taskId, state: s.state });
+    }
+    if (s?.kind === 'runtime-invalid') {
+      throw new CliError(EXIT.REJECTED, `runtime نامعتبر است${s.role ? ` (نقش ${s.role})` : ''}${s.explanation ? ` — ${s.explanation}` : ''}: ${clip(s.message, 300)}. هیچ تسکی ساخته نشد.`, { runtimeInvalid: { code: s.code, role: s.role } });
+    }
     throw new CliError(EXIT.REJECTED, result.message || 'ساخت تسک شکست خورد.', result.managerExit !== undefined ? { managerExit: result.managerExit } : {});
   }
   if (json) return { ok: true, taskId: String(result.taskId), repoId: result.repoId ?? null, queued: result.queued === true, started: result.started === true };

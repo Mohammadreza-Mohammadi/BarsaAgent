@@ -42,6 +42,18 @@ export function formatTaskDiag(d) {
   out.push(`═══ diag تسک #${d.taskId} · مخزن ${d.repo} · ${when(d.generatedAt)} ═══`);
   out.push(`وضعیت: ${d.state ?? '؟'} از ${when(d.stateSince)}${d.gate ? ` · منتظر ${d.gate.kind}` : ''}${d.blocker ? ` · blocker ${d.blocker.kind}: ${d.blocker.detail}` : ''}${d.waitingFor ? ` · منتظر تسک ${d.waitingFor.task ?? JSON.stringify(d.waitingFor)}` : ''}`);
   out.push(`اکشن‌های مجاز: ${d.actions?.length ? d.actions.join('، ') : 'هیچ'}`);
+  if (d.runtime?.summary) out.push(`runtime: ${d.runtime.summary}${d.runtime.pending ? ` · ${d.runtime.pending} تغییر در انتظار اعمال` : ''}`);
+  if (d.blocker && (d.blocker.stage || d.blocker.step || d.blocker.log || d.blocker.outputTail?.length)) {
+    out.push('', `── blocker: ${d.blocker.kind ?? '؟'}${d.blocker.stage ? ` · stage ${d.blocker.stage}` : ''}${d.blocker.step ? ` · گام ${d.blocker.step}` : ''}`);
+    if (d.blocker.log) out.push(`  لاگ کامل: ${d.blocker.log}`);
+    if (d.blocker.outputTail?.length) out.push(`  ۴۰ خط ِ آخر ِ خروجی (outputTail):`, ...d.blocker.outputTail.map(line => `    ${line}`));
+  }
+  if (d.commitFailure) {
+    out.push('', `── commit شکست خورد و چیزی کثیف مانده (commitFailure) · ${when(d.commitFailure.at)}`);
+    if (d.commitFailure.message) out.push(`  ${d.commitFailure.message}`);
+    if (d.commitFailure.leftover.length) out.push(`  کثیف‌مانده (${d.commitFailure.leftover.length}):`, ...d.commitFailure.leftover.map(file => `    ${file}`));
+    if (d.commitFailure.recoverCommand) out.push(`  فرمان ِ بازیابی: ${d.commitFailure.recoverCommand}`);
+  }
 
   out.push('', '── خلاصه‌ی Manager (status --summary)');
   if (typeof d.summary === 'string') out.push(...d.summary.split(/\r?\n/).slice(0, 7).map(l => `  ${l}`)); else out.push(err(d.summary) || '  —');

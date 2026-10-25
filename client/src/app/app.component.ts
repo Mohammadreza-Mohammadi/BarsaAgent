@@ -10,10 +10,13 @@ import { MaintenanceComponent } from './maintenance.component';
 import { BundlesComponent } from './bundles.component';
 import { AuditComponent, EnvHealthComponent } from './env-health.component';
 import { TaskOpsComponent } from './task-ops.component';
+import { TaskRuntimeComponent } from './task-runtime.component';
+import { RuntimePickerComponent } from './runtime-picker.component';
+import { attemptModelCell, createRuntimePayload, duplicateText, runtimeEventText, runtimeInvalidText } from './runtime';
 import { ArchiveComponent } from './archive.component';
 import { actionsVersionOf, allowed, can, canAnswerGate } from './task-actions';
 import { BOARD_DONE_STATES, archiveTasks, isFinished, isRecentlyDone, normalizeDoneDays } from './task-archive';
-import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, ExternalSource, HealthResult, Issue, Repo, RunningTask, Task } from './models';
+import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, ExternalSource, HealthResult, Issue, Repo, RunningTask, RuntimeOptions, StructuredFailure, Task } from './models';
 
 const LANES = [
   { title: 'ورودی', states: ['new'] },
@@ -73,7 +76,7 @@ type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 
 @Component({
   selector: 'ba-root',
   standalone: true,
-  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, BundlesComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, ArchiveComponent],
+  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, BundlesComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, TaskRuntimeComponent, RuntimePickerComponent, ArchiveComponent],
   templateUrl: './app.component.html'
 })
 export class AppComponent implements OnInit, OnDestroy {
@@ -117,6 +120,10 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly createDrafts = signal<CreateTaskDraft[]>([]);
   readonly createIndex = signal(0);
   readonly createResults = signal<CreateTaskResult[]>([]);
+  /** گزینه‌های `runtime --options` برای فرم ساخت (فقط از Manager). */
+  readonly runtimeOptions = signal<RuntimeOptions | null>(null);
+  /** دلیل ِ «ساخت تسک تکراری» به‌تفکیک ِ کلید ِ نتیجه. */
+  readonly dupReasons = signal<Record<string, string>>({});
   readonly busy = signal(false);
   readonly lanes = LANES;
   readonly issueSelection = new Set<string>();
@@ -865,6 +872,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
   eventLabel(e: AgentEvent): string {
     if (e.error) return 'رویداد خراب';
+    const runtime = runtimeEventText(e);
+    if (runtime) return runtime.label;
     if (e.event === 'state.changed') return `${String(e.from ?? '—')} ← ${String(e.to ?? '—')}`;
     const labels: Record<string, string> = {
       'human.answered': 'پاسخ انسان ثبت شد', 'human.decision': 'تصمیم انسان ثبت شد',
@@ -875,6 +884,8 @@ export class AppComponent implements OnInit, OnDestroy {
     return labels[String(e.event ?? '')] ?? String(e.event ?? 'رویداد');
   }
   eventDetails(e: AgentEvent): string {
+    const runtime = runtimeEventText(e);
+    if (runtime) return runtime.details;
     const ignored = new Set(['event', 'at']);
     return Object.entries(e).filter(([key]) => !ignored.has(key)).map(([key, value]) => `${key}: ${this.compact(value)}`).join(' · ');
   }
@@ -934,7 +945,15 @@ export class AppComponent implements OnInit, OnDestroy {
     this.createIndex.set(0);
     this.createResults.set([]);
     this.createStart = this.currentRepo()?.run?.autoStartOnCreate !== false;
+    this.dupReasons.set({});
     this.panel.set('create');
+    void this.loadRuntimeOptions();
+  }
+
+  /** گزینه‌های مدل از Manager (cache در سرور)؛ خطا فقط یعنی picker نیست و تسک با پیش‌فرض ساخته می‌شود. */
+  private async loadRuntimeOptions(): Promise<void> {
+    try { this.runtimeOptions.set(await firstValueFrom(this.api.runtimeOptions(this.repoId()))); }
+    catch { this.runtimeOptions.set(null); }
   }
 
   currentDraft(): CreateTaskDraft | null { return this.createDrafts()[this.createIndex()] ?? null; }
@@ -963,8 +982,13 @@ export class AppComponent implements OnInit, OnDestroy {
     if (invalid) { this.error.set('برای همه taskها slug و متن request الزامی است.'); return; }
     this.busy.set(true); this.error.set('');
     try {
-      const response = await firstValueFrom(this.api.createTasks(items, this.createStart));
+      // فقط ردیف‌های runtime ِ عوض‌شده (تفاوت با preset) به Manager می‌رود؛ اعتبارسنجی ِ نهایی با Manager است.
+      const payload = items.map(item => ({ ...item, runtime: createRuntimePayload(this.runtimeOptions(), item.runtime) }));
+      const response = await firstValueFrom(this.api.createTasks(payload, this.createStart));
       this.createResults.set(response.results);
+      // پیش‌نویس‌هایی که ساخته شدند دوباره فرستاده نشوند (فرم برای اصلاح ِ بقیه باز می‌ماند).
+      const done = new Set(items.filter((_, i) => response.results[i]?.ok));
+      this.createDrafts.update(list => list.map(d => (done.has(d) ? { ...d, skipped: true } : d)));
       const failed = response.failed;
       this.info.set(failed ? `${response.succeeded} task ساخته شد؛ ${failed} مورد ناموفق بود.` : `${response.succeeded} task ساخته شد${this.createStart ? ' و وارد صف اجرا شد' : ''}.`);
       this.issueSelection.clear();
@@ -972,6 +996,63 @@ export class AppComponent implements OnInit, OnDestroy {
       await this.refresh(true);
     } catch (e) { this.fail(e); }
     finally { this.busy.set(false); }
+  }
+
+  // --- نتیجه‌ی ساخت: import ِ تکراری (exit 44) و runtime ِ نامعتبر (exit 45) -------------------------------
+  /** کلید ِ نتیجه برای یک پیش‌نویس: شناسه‌ی issue، یا manual-N (N = جایگاه بین پیش‌نویس‌های فعال). */
+  draftKeyOf(d: CreateTaskDraft): string {
+    if (d.source?.externalId != null) return String(d.source.externalId);
+    return `manual-${this.createDrafts().filter(x => !x.skipped || x === d).indexOf(d) + 1}`;
+  }
+  private failureOf(d: CreateTaskDraft): StructuredFailure | null {
+    return this.createResults().find(r => !r.ok && r.key === this.draftKeyOf(d))?.structured ?? null;
+  }
+  /** خطای Manager کنار همان ردیف ِ نقش (کلید = نام نقش). */
+  runtimeErrorsFor(d: CreateTaskDraft): Record<string, string> {
+    const failure = this.failureOf(d);
+    const text = runtimeInvalidText(failure);
+    return text?.role ? { [text.role]: text.text } : {};
+  }
+  presetErrorFor(d: CreateTaskDraft): string {
+    const text = runtimeInvalidText(this.failureOf(d));
+    return text && !text.role ? text.text : '';
+  }
+  dup(r: CreateTaskResult): Extract<StructuredFailure, { kind: 'duplicate' }> | null { return r.structured?.kind === 'duplicate' ? r.structured : null; }
+  duplicateText = duplicateText;
+  failText(r: CreateTaskResult): string { return runtimeInvalidText(r.structured)?.text ?? (r.message || 'ناموفق'); }
+  attemptCell = attemptModelCell;
+  setDupReason(key: string, value: string): void { this.dupReasons.update(m => ({ ...m, [key]: value })); }
+
+  async openTaskById(id: string | null): Promise<void> {
+    if (!id) return;
+    const known = this.board()?.tasks.find(t => t.id === id);
+    try { await this.openTask(known ?? await firstValueFrom(this.api.task(this.repoId(), id))); }
+    catch (e) { this.fail(e); }
+  }
+
+  /** «ساخت تسک تکراری»: صریح، با reason ِ اجباری (--allow-duplicate --reason). */
+  async createDuplicate(r: CreateTaskResult): Promise<void> {
+    const reason = (this.dupReasons()[r.key] ?? '').trim();
+    const draft = this.createDrafts().find(d => !d.skipped && this.draftKeyOf(d) === r.key);
+    if (!draft || !reason) return;
+    this.busy.set(true); this.error.set('');
+    try {
+      const payload = [{ ...draft, runtime: createRuntimePayload(this.runtimeOptions(), draft.runtime), allowDuplicate: { reason } }];
+      const response = await firstValueFrom(this.api.createTasks(payload, this.createStart));
+      const result = response.results[0];
+      this.createResults.update(list => list.map(x => (x.key === r.key ? { ...result, key: r.key } : x)));
+      if (result?.ok) this.createDrafts.update(list => list.map(d => (d === draft ? { ...d, skipped: true } : d)));
+      await this.refresh(true);
+    } catch (e) { this.fail(e); }
+    finally { this.busy.set(false); }
+  }
+
+  /** بعد از تغییر ِ runtime: وضعیت و Timeline (رویداد runtime.changed) تازه شود. */
+  async onRuntimeChanged(): Promise<void> {
+    await this.refresh(true);
+    const t = this.selected();
+    if (!t) return;
+    try { this.events.set(await firstValueFrom(this.api.events(this.repoId(), t.id))); } catch { /* Timeline اختیاری است */ }
   }
 
   closePanel(): void { this.panel.set(null); this.closeStream(); }

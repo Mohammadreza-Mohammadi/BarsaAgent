@@ -13,13 +13,16 @@
 
 خواندنی (بدون تأیید): `barsa health` · `barsa issues [--all]` · `barsa tasks [--waiting|--running|--blocked|--all]` ·
 `barsa task <id>` (با بخش «⏳ منتظر تو»: متن کامل سؤال‌ها / خلاصه‌ی AC / تصمیم Reviewer + release note + diff) ·
-`barsa log <id> [--tail N]` · `barsa waiting --since <ISO>` · `barsa artifact <id> [name] [--attempt N] [--tail N]` ·
+`barsa log <id> [--tail N]` · `barsa waiting --since <ISO>` · `barsa runtime <id>` · `barsa runtime-options` ·
+`barsa artifact <id> [name] [--attempt N] [--tail N]` ·
 `barsa diag <id>` · `barsa diag --system` · `barsa bundle <id>` · `barsa sync --dry-run` · `barsa sync --status <execId>`
 
-نوشتنی (روی گوشی تأیید می‌خواهند): `barsa create-from-issue <externalId> [--run]` ·
-`barsa create-task --title <t> (--text-file <f>|--stdin)` · `barsa run <id>` · `barsa stop <id>` ·
+نوشتنی (روی گوشی تأیید می‌خواهند): `barsa create-from-issue <externalId> [--run] [--runtime-preset <name>] [--runtime <role>=<p>:<m>:<e> ...] [--allow-duplicate (--reason "…"|--stdin)]` ·
+`barsa create-task --title <t> (--text-file <f>|--stdin) [--runtime-preset <name>] [--runtime <role>=<p>:<m>:<e> ...]` · `barsa run <id>` · `barsa stop <id>` ·
+`barsa set-runtime <id> <role> <provider>:<model>:<effort> --reason "…"` · `barsa set-runtime <id> --preset <name> --reason "…"` ·
+`barsa set-runtime <id> <role|preset|all> --reset --reason "…"` · `barsa retry-provision <id>` (و alias ِ `barsa retry-install <id>`) ·
 `barsa answer <id> --approve | --reject [--route implementer|architect] | --clarify [--respec] | --note | --raise-limit <field>=<n> | --unblock | --allow-shared-knowledge-file <path>`
-(متن از `--text-file <f>` یا `--stdin`) · `barsa recover <id> [--discard-residue]` · `barsa retry-install <id>` · `barsa sync` ·
+(متن از `--text-file <f>` یا `--stdin`) · `barsa recover <id> [--discard-residue]` · `barsa sync` ·
 `barsa kill-stuck-install <id> [--minutes N]`.
 
 ### «بدون RDP»: دیدن، تشخیص، رفع گیر
@@ -34,7 +37,12 @@
 | `diag --system` | `GET /api/remote/diag/system` | زمان شروع سرویس، فرآیندهای node/npm/claude/git با سن و CPU، قفل‌ها و slotها، `repository.sync` و `execution`، `git status --short` و `git worktree list` مخزن Manager، دیسک، ۳۰ خط آخر `kanban.err.log` (`logs.errFile` در config؛ پیش‌فرض `<APP_ROOT>-logs\kanban.err.log`)، **جایی که** node/npm/git/claude/TF.exe روی PATH ِ سرویس پیدا می‌شوند (خود PATH چاپ نمی‌شود)، و تعداد issue برگشتی از پورتال (فقط تعداد) |
 | `bundle <id>` | `POST /api/remote/tasks/:id/bundle` | zip ِ **پوشانده‌شده** از پوشه‌ی تسک + `diag.txt` + لاگ آخرین اجرا در `<dataDir>\bundles\<id>-<زمان>.zip`؛ مسیر و حجم چاپ می‌شود. در رابط کاربری: «bundleهای تشخیصی» (دانلود با نام ساده؛ `..`/مسیر مطلق رد می‌شود) |
 | `recover <id>` | `POST /api/remote/tasks/:id/recover` | `manager.js recover` (attempt ِ کامل ولی تفسیرنشده را پردازش می‌کند). `--discard-residue` با دلیل: کثیفی بدون قفل را با نسخه‌ی پشتیبان برمی‌گرداند. پیش‌سنجی از `actions.recover` |
-| `retry-install <id>` | `POST /api/remote/tasks/:id/retry-install` | `--unblock` و بعد `run` (فقط وقتی `actions.retryInstall`) |
+| `retry-provision <id>` | `POST /api/remote/tasks/:id/retry-provision` | `--unblock` و بعد `run` (idempotent) برای شکست ِ provisioning: `blocker.stage` = install (`npm ci` از نو) · build (buildDependencies + کتابخانه‌های بی‌dist + Baseline) · worktree-baseline (کتابخانه‌های بی‌dist + verify.build/lint). پیش‌سنجی از `actions.retryProvision` (یا alias ِ `retryInstall`) |
+| `retry-install <id>` | `POST /api/remote/tasks/:id/retry-install` | alias ِ یک نسخه‌ی `retry-provision` (همیشه هم‌مقدار) |
+| `runtime <id>` | `GET /api/repos/:repo/tasks/:id` + `GET …/running` | جدول ِ مؤثر ِ هر نقش (از کلیدهای `runtime.effective`) با منبع، نقش ِ جاری (attempt ِ زنده، وگرنه lastAttempt)، attempt ِ زنده، و تغییرهای در صف («در انتظار اعمال») |
+| `runtime-options` | `GET /api/repos/:repo/runtime-options` | `manager.js runtime --options --json`: providerها (آماده بودن)، مدل‌ها + effort ِ مجاز ِ هر مدل، پیش‌فرض‌ها و presetها |
+| `set-runtime` | `POST /api/repos/:repo/tasks/:id/runtime` | `answer --runtime` / `--runtime-preset` / `--runtime-reset` با `--reason-file`؛ فقط attemptهای بعدی (با attempt ِ زنده در صف می‌نشیند). پیش‌سنجی از `actions.setRuntime`؛ اعتبارسنجی ِ معنایی با Manager |
+| `create-* --runtime…` | `POST /api/tasks/create` · `POST /api/issues/import` | flagهای `import-issue` ِ Manager: `--runtime-preset`، `--runtime <role>=<p>:<m>:<e>`، و `--allow-duplicate --reason` (exit 44 ← «این issue قبلاً تسک #N دارد»؛ exit 45 ← runtime نامعتبر، تسکی ساخته نمی‌شود) |
 | `sync` / `sync --dry-run` | `POST /api/remote/sync` + `GET /api/remote/execs/:id` | همان `manager.js sync` ِ کانبان (ff/push/merge، هرگز rebase) با پیام روشن برای exit code ۵۰ تا ۵۷؛ تا ~۱۰۰ ثانیه صبر می‌کند وگرنه `sync --status <execId>` |
 | `kill-stuck-install <id>` | `POST /api/remote/tasks/:id/kill-stuck-install` | فقط فرزندان مستقیم ِ یک `npm ci` (lifecycle scriptها) در **درخت ِ فرآیند ِ ثبت‌شده در registry ِ کانبان** برای همین تسک، که بیش از N دقیقه (پیش‌فرض ۵) عمر دارند. هیچ جست‌وجوی متنی روی کل سیستم، هیچ pid ِ دلخواه، هیچ ری‌استارت سرویس |
 | `answer --allow-shared-knowledge-file <path>` | `POST /api/repos/:repo/tasks/:id/allow-shared-knowledge-file` | همان endpoint ِ دکمه‌ی رابط کاربری؛ پیش‌سنجی از `actions.allowSharedKnowledgeFile` |

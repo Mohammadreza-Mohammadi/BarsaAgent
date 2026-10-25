@@ -1,6 +1,6 @@
 // endpointهای «عملیات از راه دور» برای CLI ِ `barsa` — هر کدام یک کار **نام‌دار** و بسته (نه شل):
 //   خواندنی:  GET  /api/remote/tasks/:id/artifact · GET /api/remote/tasks/:id/diag · GET /api/remote/diag/system · GET /api/remote/execs/:id
-//   نوشتنی:   POST /api/remote/tasks/:id/{bundle,recover,retry-install,kill-stuck-install} · POST /api/remote/sync
+//   نوشتنی:   POST /api/remote/tasks/:id/{bundle,recover,retry-provision,retry-install,kill-stuck-install} · POST /api/remote/sync
 // همه در REMOTE_ENDPOINTS (remote-cli-spec.js) هستند و هرکدام که چیزی را تغییر می‌دهد یک ردیف ممیزی با actor
 // `remote:<name>` می‌گذارد. هیچ مسیر/فرمان/pid ِ دلخواهی از ورودی نمی‌آید: مسیرها از status ِ Manager، pidها از رجیستری
 // کانبان، و فرمان‌ها ثابت‌اند. UI (نشست کوکی) همان bundle را می‌سازد و از /api/bundles می‌گیرد.
@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BundleStore } from './bundles.js';
-import { collectSystemDiag, collectTaskDiag, safe } from './diag.js';
+import { collectSystemDiag, collectTaskDiag, commitFailureOf, safe } from './diag.js';
 import { formatTaskDiag } from './diag-format.js';
 import { listProcesses as defaultListProcesses, descendantsOf, isNpmCi, ageMs } from './process-list.js';
 import { killProcessTree } from './process-tools.js';
@@ -62,7 +62,13 @@ export function createRemoteOpsRoutes(ctx) {
       const present = new Set(task.artifacts || []);
       return {
         taskId: String(task.id), artifacts: TASK_ARTIFACTS.filter(item => present.has(item)), attempts,
-        perAttempt: ATTEMPT_ARTIFACTS, extra: [EVENTS_NAME], lastAttempt: task.lastAttempt?.n ?? attempts.at(-1)?.n ?? null
+        perAttempt: ATTEMPT_ARTIFACTS, extra: [EVENTS_NAME], lastAttempt: task.lastAttempt?.n ?? attempts.at(-1)?.n ?? null,
+        // TOOLING-044/045: آنچه status درباره‌ی شکست می‌دهد (۴۰ خط ِ آخر ِ دستور ِ شکست‌خورده، و commit ِ ناقص) کنار فهرست
+        blocker: task.blocker && (task.blocker.stage || task.blocker.step || task.blocker.log || task.blocker.outputTail?.length)
+          ? { kind: task.blocker.kind ?? null, stage: task.blocker.stage ?? null, step: task.blocker.step ?? null, log: task.blocker.log ? safe(task.blocker.log, 300) : null,
+            outputTail: Array.isArray(task.blocker.outputTail) ? task.blocker.outputTail.slice(-40).map(line => safe(line, 300)) : null }
+          : null,
+        commitFailure: commitFailureOf(task)
       };
     }
     const checked = validateName(name);
@@ -155,14 +161,18 @@ export function createRemoteOpsRoutes(ctx) {
     return { ok: true, taskId: id, mode: discard ? 'discard-residue' : 'recover', output };
   }
 
-  async function retryInstall(session, repo, id, input) {
+  // TOOLING-045: retryProvision (= answer --unblock + run، idempotent) برای stageهای install | build | worktree-baseline. نام ِ قبلی
+  // retryInstall alias ِ یک نسخه است و همیشه هم‌مقدار؛ هر دو را می‌پذیریم. `label` فقط نام ِ فرمان در ممیزی/پیام است.
+  async function retryProvision(session, repo, id, input, label = 'retry-provision') {
     await assertExecution(repo);
     const task = await taskOf(repo, id);
-    if (task.actions?.retryInstall !== true) throw bad('«دوباره نصب کن» برای این تسک الان مجاز نیست (actions.retryInstall = false؛ blocker از نوع شکست نصب نیست).', 409);
-    const reason = String(input?.reason ?? '').trim() || 'تلاش دوباره‌ی نصب وابستگی‌ها (از راه دور)';
+    if (task.actions?.retryProvision !== true && task.actions?.retryInstall !== true) {
+      throw bad('«دوباره امتحان کن» (provisioning) برای این تسک الان مجاز نیست (actions.retryProvision = false؛ blocker از نوع شکست نصب/build/baseline نیست).', 409);
+    }
+    const reason = String(input?.reason ?? '').trim() || 'تلاش دوباره‌ی provisioning (نصب/build/baseline) (از راه دور)';
     await withTmpFile('reason', reason, file => collectAction(session, repo, ['answer', id, '--unblock', '--reason-file', file], { action: 'unblock', taskId: id }));
     const run = registry.enqueue(repo, id, { user: session.user });
-    audit.note({ user: session.user, action: 'retry-install', repoId: repo.id, taskId: id, note: run ? (run.queued ? 'unblock + run در صف' : 'unblock + run شروع شد') : 'unblock؛ اجرا از قبل در جریان/صف' });
+    audit.note({ user: session.user, action: label, repoId: repo.id, taskId: id, note: run ? (run.queued ? 'unblock + run در صف' : 'unblock + run شروع شد') : 'unblock؛ اجرا از قبل در جریان/صف' });
     return { ok: true, taskId: id, queued: !!run && run.queued, started: !!run && !run.queued, duplicate: !run };
   }
 
@@ -248,9 +258,13 @@ export function createRemoteOpsRoutes(ctx) {
       if (!TASK_ID.test(p.id)) throw bad('شناسه‌ی تسک نامعتبر است.');
       return send(res, 200, await recover(session, repoOf(url), p.id, await readBody(req))), true;
     }
-    if (method === 'POST' && (p = route('/api/remote/tasks/:id/retry-install', pathname))) {
+    if (method === 'POST' && (p = route('/api/remote/tasks/:id/retry-provision', pathname))) {
       if (!TASK_ID.test(p.id)) throw bad('شناسه‌ی تسک نامعتبر است.');
-      return send(res, 200, await retryInstall(session, repoOf(url), p.id, await readBody(req))), true;
+      return send(res, 200, await retryProvision(session, repoOf(url), p.id, await readBody(req))), true;
+    }
+    if (method === 'POST' && (p = route('/api/remote/tasks/:id/retry-install', pathname))) { // alias ِ یک نسخه
+      if (!TASK_ID.test(p.id)) throw bad('شناسه‌ی تسک نامعتبر است.');
+      return send(res, 200, await retryProvision(session, repoOf(url), p.id, await readBody(req), 'retry-install')), true;
     }
     if (method === 'POST' && (p = route('/api/remote/tasks/:id/kill-stuck-install', pathname))) {
       if (!TASK_ID.test(p.id)) throw bad('شناسه‌ی تسک نامعتبر است.');

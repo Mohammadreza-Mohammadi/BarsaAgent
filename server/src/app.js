@@ -21,6 +21,7 @@ import { validArtifactPath } from './security.js';
 import { RemoteTokenStore, bearerOf, isLoopbackAddress, proxiedHeaders, REMOTE_ACTOR_PREFIX } from './remote-tokens.js';
 import { isRemoteAllowed } from './remote-cli-spec.js';
 import { createRemoteRoutes } from './remote-routes.js';
+import { createRuntimeFlags, structuredFailure } from './runtime-args.js';
 import { createRemoteOpsRoutes } from './remote-ops-routes.js';
 
 // علت ریشه‌ای «بازیابی از داخل ابزار» بند ۴ — یک شنونده‌ی SIGINT/SIGTERM
@@ -143,6 +144,16 @@ function slugify(value, fallback = 'task') {
 function managerExitOf(error) {
   if (Number.isInteger(error?.managerExit)) return error.managerExit;
   return Number.isInteger(error?.code) ? error.code : undefined;
+}
+/** ردیف ناموفق ِ نتیجه‌ی ساخت: پیام، کد Manager، و شکل ساختاریافته‌ی تکراری (44) / runtime نامعتبر (45). */
+function failureEntry(error, fallback) {
+  const managerExit = managerExitOf(error);
+  return {
+    ok: false,
+    message: error.message || fallback,
+    ...(managerExit !== undefined ? { managerExit } : {}),
+    ...(error.structured ? { structured: error.structured } : {})
+  };
 }
 function parseTaskId(stdout) {
   // strict: بازبینی فاز ۲ — یک fallback با regex یعنی قراردادی که شکستنِ خودش
@@ -313,7 +324,28 @@ export function createApp(config, deps = {}) {
       fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
       importArgs.push(tmp);
       for (const entry of access) importArgs.push('--external-access', `${entry.sourceId}=${entry.access}`);
-      const output = await collectAction(session, repo, importArgs, { action: 'import-issue' });
+      // TOOLING-046: provider/مدل/effort ِ هر مرحله هنگام ساخت. فقط ردیف‌های عوض‌شده می‌آیند؛ اعتبارسنجی با Manager (نامعتبر ⇒ exit 45
+      // و هیچ تسکی ساخته نمی‌شود).
+      importArgs.push(...createRuntimeFlags(draft.runtime));
+      // TOOLING-044: import ِ تکراری فقط عمدی و با دلیل (exit 44 در حالت عادی).
+      let duplicateReasonFile = null;
+      if (draft.allowDuplicate != null) {
+        const reason = String(draft.allowDuplicate?.reason ?? '').trim();
+        if (!reason) throw Object.assign(new Error('ساخت تسک تکراری دلیل می‌خواهد.'), { status: 400 });
+        duplicateReasonFile = path.join(os.tmpdir(), `barsa-dup-${process.pid}-${randomUUID()}.txt`);
+        fs.writeFileSync(duplicateReasonFile, reason, { encoding: 'utf8', mode: 0o600 });
+        importArgs.push('--allow-duplicate', '--reason-file', duplicateReasonFile);
+      }
+      let output;
+      try {
+        output = await collectAction(session, repo, importArgs, { action: 'import-issue' });
+      } catch (error) {
+        const structured = structuredFailure(error);
+        if (structured) throw Object.assign(error, { structured, message: structured.message || error.message });
+        throw error;
+      } finally {
+        if (duplicateReasonFile) fs.rmSync(duplicateReasonFile, { force: true });
+      }
       const taskId = parseTaskId(output.stdout);
       const shouldStart = startOverride ?? runConfig.autoStartOnCreate;
       const queue = shouldStart ? queueTask(session, repo, taskId) : { queued: false, started: false };
@@ -707,7 +739,7 @@ export function createApp(config, deps = {}) {
             const result = await createOne(session, draft, input.start == null ? undefined : !!input.start);
             results.push({ key, ...result });
           } catch (error) {
-            results.push({ key, ok: false, message: error.message || 'ساخت task شکست خورد.', ...(managerExitOf(error) !== undefined ? { managerExit: managerExitOf(error) } : {}) });
+            results.push({ key, ...failureEntry(error, 'ساخت task شکست خورد.') });
           }
         }
         const succeeded = results.filter(x => x.ok).length;
@@ -732,11 +764,13 @@ export function createApp(config, deps = {}) {
               type: 'task',
               slug: slugify(issue.title, `task-${id}`),
               requestText: [issue.title, issue.body].filter(Boolean).join('\n\n'),
-              source: { system: issue.system || 'internal', externalId: issue.externalId, url: issue.url || '', fetchedAt: issue.fetchedAt }
+              source: { system: issue.system || 'internal', externalId: issue.externalId, url: issue.url || '', fetchedAt: issue.fetchedAt },
+              runtime: input.runtime,
+              allowDuplicate: input.allowDuplicate
             }, input.start == null ? undefined : !!input.start);
             results.push({ id, ...result });
           } catch (error) {
-            results.push({ id, ok: false, message: error.message || 'import شکست خورد.', ...(managerExitOf(error) !== undefined ? { managerExit: managerExitOf(error) } : {}) });
+            results.push({ id, ...failureEntry(error, 'import شکست خورد.') });
           }
         }
         return send(res, 207, { results });
@@ -755,7 +789,7 @@ export function createApp(config, deps = {}) {
         console.warn('[BarsaAgent][Server]', req.method, pathname, '→', error.status || 500, error?.message || error);
       }
       const managerExit = managerExitOf(error);
-      return send(res, error.status || 500, { error: error.message || 'خطای داخلی', ...(managerExit !== undefined ? { managerExit } : {}) });
+      return send(res, error.status || 500, { error: error.message || 'خطای داخلی', ...(managerExit !== undefined ? { managerExit } : {}), ...(error.structured ? { structured: error.structured } : {}) });
     }
   });
 

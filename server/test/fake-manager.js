@@ -22,6 +22,7 @@ export function makeFakeManagerRepo(t, { status, run, extra = '', statusDelayMs 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-fake-mgr-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, 'help.txt'), HELP_FIXTURE, 'utf8');
+  fs.writeFileSync(path.join(root, 'runtime-options.json'), fs.readFileSync(new URL('./fixtures/runtime-options.json', import.meta.url), 'utf8'), 'utf8');
   fs.writeFileSync(path.join(root, 'sync.json'), JSON.stringify(sync || DEFAULT_SYNC), 'utf8');
   fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify(status || { schemaVersion: 1, repo: {}, tasks: [] }), 'utf8');
   fs.writeFileSync(path.join(root, 'manager.cjs'), String.raw`
@@ -34,7 +35,7 @@ const cmd = args[0];
 // fail.json: { "<زیرفرمان>": { code, stderr } } — آن زیرفرمان با همین کد و پیام رد می‌شود (رد مشروع Manager).
 try {
   const fail = JSON.parse(fs.readFileSync(path.join(dir, 'fail.json'), 'utf8'))[cmd];
-  if (fail) { process.stderr.write(fail.stderr || ''); process.exit(fail.code); }
+  if (fail) { if (fail.stdout) process.stdout.write(fail.stdout); process.stderr.write(fail.stderr || ''); process.exit(fail.code); }
 } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
 const fileArg = flag => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
 if (cmd === '--help' || cmd === '-h' || !cmd) { process.stdout.write(fs.readFileSync(path.join(dir, 'help.txt'), 'utf8')); }
@@ -69,8 +70,10 @@ else if (cmd === 'run') {
 else if (cmd === 'import-issue') {
   const f = fileArg('--file');
   const issue = JSON.parse(fs.readFileSync(f, 'utf8'));
+  fs.appendFileSync(path.join(dir, 'imports.jsonl'), JSON.stringify({ args, payload: issue, reasonFile: (() => { const i = args.indexOf('--reason-file'); return i >= 0 && fs.existsSync(args[i + 1]) ? fs.readFileSync(args[i + 1], 'utf8') : null; })() }) + '\n');
   process.stdout.write(JSON.stringify({ ok: true, taskId: String(issue.source?.externalId || '9001') }));
 }
+else if (cmd === 'runtime') { process.stdout.write(fs.readFileSync(path.join(dir, 'runtime-options.json'), 'utf8')); }
 else if (cmd === 'sync') {
   // رفتار sync از sync.json (تست‌ها با setSync عوضش می‌کنند): stderr زنده، JSON روی stdout، exit code دلخواه.
   const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'sync.json'), 'utf8'));
@@ -99,9 +102,10 @@ ${extra}
     root,
     calls: () => read('calls.jsonl'),
     /** فراخوانی‌ها به‌جز --help/status/capabilities که خود کانبان پولینگ می‌کند. */
-    mutations: () => read('calls.jsonl').filter(c => !['--help', 'status', 'capabilities', 'events', 'artifact'].includes(c.args[0])),
+    mutations: () => read('calls.jsonl').filter(c => !['--help', 'status', 'capabilities', 'events', 'artifact', 'runtime'].includes(c.args[0])),
     files: () => read('files.jsonl'),
     setStatus: value => fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify(value), 'utf8'),
+    imports: () => read('imports.jsonl'),
     setFail: value => fs.writeFileSync(path.join(root, 'fail.json'), JSON.stringify(value), 'utf8'),
     setSync: value => fs.writeFileSync(path.join(root, 'sync.json'), JSON.stringify(value), 'utf8'),
     setArtifacts: value => fs.writeFileSync(path.join(root, 'artifacts.json'), JSON.stringify(value), 'utf8'),
@@ -127,7 +131,7 @@ export function configureGit(dir) {
 
 /** فایل‌های ساختگی manager داخل .git/info/exclude تا git status تمیز بماند. */
 export function excludeFakeManagerFiles(dir) {
-  fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'calls.jsonl\nfiles.jsonl\nhelp.txt\nstatus.json\nsync.json\nfail.json\nmanager.cjs\nartifacts.json\nevents.json\ngrandchild-*.pid\n');
+  fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'calls.jsonl\nfiles.jsonl\nhelp.txt\nstatus.json\nsync.json\nfail.json\nimports.jsonl\nruntime-options.json\nmanager.cjs\nartifacts.json\nevents.json\ngrandchild-*.pid\n');
 }
 
 export function initGitRepo(root, { files = { 'README.md': '# test\n' } } = {}) {

@@ -6,10 +6,24 @@ export interface HumanGate {
 
 export interface BudgetItem { used: number; max: number }
 
+/** runtime ِ یک attempt (TOOLING-046): آنچه درخواست شد و آنچه واقعاً اجرا شد. attempt ِ قدیمی: null/غایب. */
+export interface AttemptRuntime {
+  provider?: string | null;
+  model?: string | null;
+  requestedModel?: string | null;
+  actualModels?: string[] | null;
+  outerModel?: string | null;
+  requestedEffort?: string | null;
+  effectiveEffort?: string | null;
+  source?: string | null;
+  preset?: string | null;
+}
+
 export interface Attempt {
   n: number;
   id: string;
   role?: string | null;
+  runtime?: AttemptRuntime | null;
   outcome?: string | null;
   requestedTransition?: string | null;
   startedAt?: string | null;
@@ -62,7 +76,15 @@ export interface HealthStatus {
   // Manager حسابش می‌کند (computeRecovery در manager.js)، نه UI — تا منطق
   // بازیابی دو نسخه‌ی drift-کننده نداشته باشد. «reset» عمداً در enum نیست:
   // رد شد (0004: run خودش قفل کهنه‌ی pid-مرده را بی‌کمک انسان پس می‌گیرد).
-  recovery: { suggested: 'unlock' | 'run' | null; reason: string | null; commands: ('unlock' | 'run')[] } | null;
+  recovery: {
+    suggested: 'unlock' | 'run' | 'recover' | null; reason: string | null; commands: ('unlock' | 'run' | 'recover')[];
+    /** TOOLING-044: recover ِ process-attempt یا discard-residue. */
+    mode?: 'process-attempt' | 'discard-residue' | null; attempt?: string | null;
+    /** TOOLING-044: commit شکست خورد و چیزی کثیف ماند: چه چیزی، و فرمان ِ دقیق ِ بازیابی. */
+    commitFailure?: { at: string | null; message: string | null; leftover: string[]; recoverCommand: string | null };
+  } | null;
+  /** TOOLING-043: نصب ِ وابستگی در جریان (npm ci). */
+  install?: { phase: string | null; startedAt: string | null; pid: number | null; alive: boolean | null; command?: string | null; deadlineAt?: string | null } | null;
 }
 
 // release-note-at-merge.md، بند د/ه: متن کاربرپسندِ جدا از ai-context/changelog/<id>.md
@@ -102,7 +124,70 @@ export interface TaskActions {
   approve: boolean; reject: boolean; clarify: boolean; note: boolean; unblock: boolean; raiseLimit: string[];
   closeOrphan: string[]; allowPath: boolean; allowSharedKnowledgeFile: boolean; externalAccess: string[]; resetExternal: string[];
   cancel: boolean; abandon: boolean; void: boolean; unlock: boolean;
+  /** TOOLING-044: recover (process-attempt | discard-residue؛ mode از health.recovery.mode). */
+  recover?: boolean;
+  /** TOOLING-045: شکست ِ provisioning (install | build | worktree-baseline) ← unblock + run. */
+  retryProvision?: boolean;
+  /** alias ِ نام ِ قبلی ِ retryProvision (یک نسخه)؛ همیشه هم‌مقدار. */
+  retryInstall?: boolean;
+  /** TOOLING-046: تغییر ِ runtime (در همه‌ی stateهای غیرپایانی؛ وسط ِ attempt ِ زنده در صف می‌نشیند). */
+  setRuntime?: boolean;
 }
+
+// --- TOOLING-046: provider / مدل / effort برای هر نقش ---------------------------------------------------
+
+export type RuntimeSource = 'cli' | 'task-role' | 'task-preset' | 'env' | 'default';
+
+export interface RuntimeSelection { provider?: string; model?: string; effort?: string }
+
+/** runtime ِ مؤثر ِ یک نقش، یا `{error, code}` اگر resolve نشد. */
+export interface EffectiveRoleRuntime {
+  provider?: string;
+  model?: string | null;
+  requestedModel?: string | null;
+  effort?: string;
+  source?: RuntimeSource | string;
+  fieldSources?: { provider?: string; model?: string; effort?: string };
+  error?: string;
+  code?: string;
+}
+
+/** یک تغییر ِ در صف (وسط ِ attempt ِ زنده ثبت شده، هنوز اعمال نشده). `change.reset` و `change.roles` و `change.preset` از Manager. */
+export interface QueuedRuntimeChange {
+  decision: number;
+  queuedAt?: string | null;
+  reason?: string | null;
+  state?: string | null;
+  change?: { roles?: Record<string, RuntimeSelection>; preset?: string | null; reset?: string[] };
+}
+
+export interface TaskRuntime {
+  stored: { preset: string | null; roles: Record<string, RuntimeSelection> };
+  effective: Record<string, EffectiveRoleRuntime> | null;
+  /** یک خط، یا null وقتی با پیش‌فرض فرقی ندارد. */
+  summary: string | null;
+  pending: QueuedRuntimeChange[];
+  effectiveAfterPending: Record<string, EffectiveRoleRuntime> | null;
+  error: string | null;
+}
+
+/** `runtime --options --json` (فقط‌خواندنی): تنها منبع ِ گزینه‌های dialog و فرم ساخت. */
+export interface RuntimeModelOption { id: string; aliases: string[]; efforts: string[] }
+export interface RuntimeProviderReady { checked?: boolean; installed?: boolean; version?: string | null; authenticated?: boolean | null; detail?: string | null; via?: string | null }
+export interface RuntimeProviderOption { enabled: boolean; roles: string[]; efforts: string[]; models: RuntimeModelOption[]; ready?: RuntimeProviderReady }
+export interface RuntimeOptions {
+  version: number;
+  defaultProvider: string;
+  roles: string[];
+  providers: Record<string, RuntimeProviderOption>;
+  defaults: Record<string, { provider: string; model: string; effort: string }>;
+  presets: Record<string, { roles: Record<string, RuntimeSelection> }>;
+}
+
+/** رد ِ ساختاریافته‌ی Manager هنگام ساخت: import ِ تکراری (exit 44) یا runtime ِ نامعتبر (exit 45). */
+export type StructuredFailure =
+  | { kind: 'duplicate'; taskId: string | null; state: string | null; externalId: string | null; message: string; hint: string | null }
+  | { kind: 'runtime-invalid'; code: string; role: string | null; message: string; details: Record<string, unknown>; explanation: string | null };
 
 export interface Task {
   id: string;
@@ -119,7 +204,13 @@ export interface Task {
   awaitingHuman?: HumanGate | null;
   // فیلدهای اضافه از blocker ِ واقعی Manager (کلید به کلید، بدون تفسیر): base/source برای
   // rebase-conflict، field/role برای budget-exhausted، maxAttempts/maxSpecRevisions برای attempts-exhausted/spec-churn.
-  blocker?: { kind?: string | null; reason?: string | null; base?: string | null; source?: string | null; field?: string | null; role?: string | null; maxAttempts?: number | null; maxSpecRevisions?: number | null; conflictFiles?: string[] | null; [key: string]: unknown } | null;
+  blocker?: {
+    kind?: string | null; reason?: string | null; base?: string | null; source?: string | null; field?: string | null; role?: string | null; maxAttempts?: number | null; maxSpecRevisions?: number | null; conflictFiles?: string[] | null;
+    /** TOOLING-043/045: کدام stage شکست خورد (install | build | worktree-baseline | …) و جزئیاتش. */
+    stage?: string | null; detail?: string | null; recoverable?: 'retryable' | 'needs-fix' | null; retryAfter?: string | null;
+    step?: string | null; log?: string | null; outputTail?: string[] | null;
+    [key: string]: unknown
+  } | null;
   source?: SourceRef | null;
   budget?: Record<string, BudgetItem>;
   scope?: { allow?: string[]; deny?: string[]; exception?: unknown };
@@ -132,7 +223,9 @@ export interface Task {
   } | null;
   worktree?: { status?: string | null; path?: string | null } | null;
   git?: { base?: string | null; baseCommit?: string | null; headCommit?: string | null; mergeCommit?: string | null; branch?: string | null } | null;
-  lastAttempt?: { n?: number; role?: string | null; outcome?: string | null; at?: string | null } | null;
+  lastAttempt?: { n?: number; role?: string | null; outcome?: string | null; at?: string | null; runtime?: AttemptRuntime | null } | null;
+  /** TOOLING-046: runtime ِ ذخیره‌شده، مؤثر (با منبع)، تغییرهای در صف. غایب = Manager قدیمی‌تر از ۰۴۶. */
+  runtime?: TaskRuntime | null;
   attempts?: Attempt[];
   artifacts?: string[];
   error?: string;
@@ -232,6 +325,10 @@ export interface CreateTaskDraft {
   source?: SourceRef;
   displayId?: string;
   skipped?: boolean;
+  /** TOOLING-046: preset و ردیف‌های عوض‌شده‌ی نقش‌ها. فقط تفاوت با preset به Manager می‌رود. */
+  runtime?: { preset: string; roles: Record<string, RuntimeSelection> };
+  /** TOOLING-044: import ِ تکراری ِ عمدی (دلیل اجباری). */
+  allowDuplicate?: { reason: string };
 }
 
 export interface CreateTaskResult {
@@ -244,6 +341,8 @@ export interface CreateTaskResult {
   started?: boolean;
   duplicate?: boolean;
   message?: string;
+  managerExit?: number;
+  structured?: StructuredFailure;
 }
 
 export interface CreateTasksResponse {

@@ -135,11 +135,31 @@ export async function collectTaskDiag(ctx) {
     taskId, repo: repo.id, generatedAt: new Date(now).toISOString(),
     state: task.state ?? null, stateSince: task.stateSince ?? null,
     gate: task.awaitingHuman ? { kind: task.awaitingHuman.kind ?? null, since: task.awaitingHuman.since ?? null } : null,
-    blocker: task.blocker ? { kind: task.blocker.kind ?? null, detail: safe(task.blocker.detail ?? task.blocker.reason ?? '', 300) } : null,
+    // TOOLING-045: stage/step/log/outputTail ِ blocker (۴۰ خط ِ آخر ِ دستور ِ شکست‌خورده)
+    blocker: task.blocker ? {
+      kind: task.blocker.kind ?? null, detail: safe(task.blocker.detail ?? task.blocker.reason ?? '', 300),
+      stage: task.blocker.stage ?? null, step: task.blocker.step ?? null, log: task.blocker.log ? safe(task.blocker.log, 300) : null,
+      outputTail: Array.isArray(task.blocker.outputTail) ? task.blocker.outputTail.slice(-40).map(line => safe(line, 300)) : null
+    } : null,
+    // TOOLING-044: commit شکست خورد و چیزی کثیف مانده؛ چه چیزی و فرمان ِ دقیق ِ بازیابی
+    commitFailure: commitFailureOf(task),
+    // TOOLING-046: خلاصه‌ی یک‌خطی ِ runtime (فقط وقتی با پیش‌فرض فرق دارد) و تعداد تغییر ِ در صف
+    runtime: task.runtime ? { summary: task.runtime.summary ?? null, pending: (task.runtime.pending || []).length } : null,
     waitingFor: task.waitingFor ?? null,
     health: task.health ?? null,
     actions: Object.keys(task.actions || {}).filter(key => task.actions[key] === true || (Array.isArray(task.actions[key]) && task.actions[key].length)),
     summary, events, log, processes, taskDirGit, worktree, queue
+  };
+}
+
+/** `health.recovery.commitFailure` ِ Manager (TOOLING-044) با متن‌های محدود؛ نبودن ⇒ null. */
+export function commitFailureOf(task) {
+  const cf = task?.health?.recovery?.commitFailure;
+  if (!cf) return null;
+  return {
+    at: cf.at ?? null, message: cf.message ? safe(cf.message, 400) : null,
+    leftover: (Array.isArray(cf.leftover) ? cf.leftover : []).slice(0, 30).map(file => safe(file, 200)),
+    recoverCommand: cf.recoverCommand ? safe(cf.recoverCommand, 300) : null
   };
 }
 
