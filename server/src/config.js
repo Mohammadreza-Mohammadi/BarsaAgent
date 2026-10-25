@@ -46,6 +46,7 @@ const SCHEMA = [
   ['auth.allowedOrigins', strList, 'فهرستی از رشته‌ها'],
   ['dataDir', nonEmptyStr, 'رشته‌ی غیرخالی (مسیر)'],
   ['editor.command', str, 'رشته (مسیر executable)'],
+  ['logs.errFile', nonEmptyStr, 'رشته‌ی غیرخالی (مسیر kanban.err.log برای barsa diag --system)'],
   ['health.proxyTestUrl', nonEmptyStr, 'رشته‌ی غیرخالی (URL)']
 ];
 

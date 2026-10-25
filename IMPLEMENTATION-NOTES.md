@@ -60,3 +60,20 @@ gated on the user confirming TOOLING-035 is merged into Manager. See README «ک
 - Health validator با `node scripts/validate-agent-work.js` اجرا می‌شود، نه `npm.cmd`.
 - warning/known-exception با exit code صفر سالم محسوب می‌شود.
 - تست integration برای warning روی stdout/stderr با exit code 0 اضافه شد.
+
+## Remote Control کامل (بدون RDP): دیدن، تشخیص، رفع گیر
+
+اصل ثابت: Claude ِ Remote Control شل ِ آزاد ندارد؛ هر توان تازه یک فرمان **نام‌دار** `barsa` است با endpoint ِ خودش در فهرست بسته‌ی
+`REMOTE_ENDPOINTS` (remote-cli-spec.js) و یک ردیف ممیزی با actor ِ `remote:<name>`. جزئیات و جدول endpointها: docs/remote-control/README.md.
+
+- ماژول‌های تازه: `remote-ops-routes.js` (همه‌ی endpointهای تازه)، `diag.js` + `diag-format.js` (جمع‌آوری و قالب ِ متنی ِ `barsa diag`)،
+  `process-list.js` (عکس فرآیندها: Win32_Process / ps، درخت، تشخیص `npm ci`)، `remote-artifacts.js` (فهرست بسته‌ی نام artifact)،
+  `remote-waiting.js` (بخش «منتظر تو» در `barsa task`)، `bundles.js` (zip ِ پوشانده‌شده در <dataDir>/bundles).
+- artifact از راه `manager.js artifact`/`events` خوانده می‌شود، نه فایل مستقیم؛ نام از فهرست بسته، مسیر هرگز از کاربر نمی‌آید.
+- `kill-stuck-install`: ریشه‌ی درخت **فقط** pid ِ ثبت‌شده در registry ِ کانبان برای همان تسک است؛ هدف = فرزندان مستقیم ِ یک `npm ci` ِ داخل
+  همان درخت که بیش از N دقیقه عمر دارند؛ درست پیش از بستن یک عکس ِ تازه می‌گیرد (pid + زمان شروع باید برابر باشد). بستن با `killProcessTree` ِ موجود.
+- redactor: الگوهای تازه (Bearer با فاصله، `--password x`، PEM، AKIA، `user:pass@`) و نام متغیرهای تازه (`USER_ID`، `CREDENTIAL`، `COOKIE`، …)؛ در
+  diag اول redact و بعد clip می‌شود تا راز با بریدن فرار نکند.
+- `sync` در settings.json: ask بر allow می‌چربد (deny ← ask ← allow)؛ پس ask فقط `Bash(./barsa sync)` ِ دقیق است و allow فقط
+  `sync --dry-run` و `sync --status` (ثابت `READ_FORMS`).
+- config ِ اختیاری: `logs.errFile` (مسیر kanban.err.log برای `diag --system`؛ پیش‌فرض `<پوشه‌ی برنامه>-logs/kanban.err.log`).

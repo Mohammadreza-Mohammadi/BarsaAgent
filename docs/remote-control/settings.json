@@ -8,6 +8,11 @@
       "Bash(./barsa task:*)",
       "Bash(./barsa log:*)",
       "Bash(./barsa waiting:*)",
+      "Bash(./barsa artifact:*)",
+      "Bash(./barsa diag:*)",
+      "Bash(./barsa bundle:*)",
+      "Bash(./barsa sync --dry-run:*)",
+      "Bash(./barsa sync --status:*)",
       "Bash(./barsa --help)",
       "Bash(./barsa help)"
     ],
@@ -16,7 +21,11 @@
       "Bash(./barsa create-task:*)",
       "Bash(./barsa run:*)",
       "Bash(./barsa stop:*)",
-      "Bash(./barsa answer:*)"
+      "Bash(./barsa answer:*)",
+      "Bash(./barsa recover:*)",
+      "Bash(./barsa retry-install:*)",
+      "Bash(./barsa kill-stuck-install:*)",
+      "Bash(./barsa sync)"
     ],
     "deny": [
       "Edit",

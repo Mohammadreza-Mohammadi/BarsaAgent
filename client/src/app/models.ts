@@ -301,6 +301,9 @@ export interface ManagerInfoView {
 }
 export interface HealthCheckItem { id: string; group: string; label: string; status: 'ok' | 'warn' | 'fail'; detail: string; hint: string }
 export interface EnvHealthReport { checkedAt: string; ok: boolean; checks: HealthCheckItem[] }
+export interface BundleItem { name: string; bytes: number; createdAt: string; }
+export interface BundleResult { ok: boolean; taskId: string; name: string; path: string; bytes: number; files: number; skipped: number; }
+
 export interface AuditItem {
   id: string; user: string | null; action: string; status?: string; startedAt: string; exitCode?: number | null; durationMs?: number | null;
   repoId?: string; taskId?: string; line?: string; reason?: string; outputFile?: string | null;

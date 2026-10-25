@@ -11,6 +11,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { APP_ROOT, defaultDataDir, parseConfigYaml } from './config.js';
 import { environmentSecrets, redact } from './security.js';
+import { formatSystemDiag, formatTaskDiag } from './diag-format.js';
+import { buildWaiting, formatWaiting } from './remote-waiting.js';
 import {
   ANSWER_MODES, DEFAULT_TOKEN_NAME, DEFAULT_URL, EXIT, NOT_REMOTE_ANSWER_FLAGS, NOT_REMOTE_COMMANDS, NOT_REMOTE_MESSAGE,
   READ_COMMANDS, WRITE_COMMANDS
@@ -21,6 +23,9 @@ const FINISHED = ['integrated', 'cancelled', 'abandoned'];
 // کنترل‌کاراکتر/ANSI از متن بیرونی (لاگ agent، عنوان issue) به خروجی نرسد.
 // eslint-disable-next-line no-control-regex
 const CONTROL = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b[@-_]|[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+
+// eslint-disable-next-line no-control-regex
+const NO_CONTROL = /[\u0000-\u001f\u007f]/;
 
 class CliError extends Error {
   constructor(code, message, extra = {}) { super(message); this.exitCode = code; this.extra = extra; }
@@ -38,6 +43,12 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa task <id>                           جزئیات یک تسک
   barsa log <id> [--tail N]                 انتهای لاگ آخرین اجرا (پیش‌فرض ۴۰ خط)
   barsa waiting [--since <ISO>]             تسک‌های منتظر تصمیم تو از آن زمان
+  barsa artifact <id> [name] [--attempt N] [--tail N]   بدون name فهرست؛ با name متن (questions.md, proposed-task.md, review.md, …)
+  barsa diag <id>                           تشخیص کامل یک تسک (وضعیت، health، رویدادها، لاگ، فرآیندها، git، worktree، صف)
+  barsa diag --system                       تشخیص سرویس (فرآیندها، قفل‌ها، sync، git، دیسک، PATH، issue-portal، kanban.err.log)
+  barsa bundle <id>                         zip ِ پوشانده‌شده‌ی تشخیصی در پوشه‌ی داده‌ی سرور؛ مسیر و حجم را چاپ می‌کند
+  barsa sync --dry-run                      پیش‌نمایش sync ِ Manager با origin (چیزی تغییر نمی‌کند)
+  barsa sync --status <execId>              نتیجه‌ی یک sync که هنوز در جریان بود
 
 نوشتنی (روی گوشی تأیید می‌خواهند):
   barsa create-from-issue <externalId> [--run]
@@ -46,10 +57,15 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa stop <id>
   barsa answer <id> --approve [--text-file <f> | --stdin]
   barsa answer <id> --reject [--route implementer|architect] (--text-file <f> | --stdin)
-  barsa answer <id> --clarify (--text-file <f> | --stdin)
+  barsa answer <id> --clarify [--respec] (--text-file <f> | --stdin)
   barsa answer <id> --note (--text-file <f> | --stdin)
   barsa answer <id> --raise-limit <field>=<n> (--text-file <f> | --stdin)
   barsa answer <id> --unblock (--text-file <f> | --stdin)
+  barsa answer <id> --allow-shared-knowledge-file <path> (--text-file <f> | --stdin)
+  barsa recover <id> [--discard-residue (--text-file <f> | --stdin)]
+  barsa retry-install <id>                  unblock + run برای شکست نصب وابستگی (actions.retryInstall)
+  barsa sync                                sync ِ واقعی Manager با origin (ff/push/merge؛ هرگز rebase)
+  barsa kill-stuck-install <id> [--minutes N]   فقط lifecycle scriptهای گیرکرده‌ی همان npm ci ِ این تسک (پیش‌فرض ۵ دقیقه)
 
 گزینه‌های مشترک: --json  --repo <id>  --token-file <f>  --url <loopback-url>
 exit code: 0 موفق · 2 آرگومان بد · 3 اکشن مجاز نیست · 4 سرور در دسترس نیست · 5 احراز هویت · 6 Manager/سرور رد کرد · 41 اجرا خاموش است
@@ -57,10 +73,13 @@ exit code: 0 موفق · 2 آرگومان بد · 3 اکشن مجاز نیست �
 
 // --- پارس آرگومان --------------------------------------------------------------------------------------------
 
-const VALUE_FLAGS = new Set(['--tail', '--since', '--repo', '--token-file', '--url', '--title', '--text-file', '--route', '--raise-limit']);
+const VALUE_FLAGS = new Set([
+  '--tail', '--since', '--repo', '--token-file', '--url', '--title', '--text-file', '--route', '--raise-limit',
+  '--attempt', '--minutes', '--status', '--allow-shared-knowledge-file'
+]);
 const BOOL_FLAGS = new Set([
   '--json', '--all', '--waiting', '--running', '--blocked', '--run', '--stdin', '--help', '-h',
-  '--approve', '--reject', '--clarify', '--note', '--unblock'
+  '--approve', '--reject', '--clarify', '--note', '--unblock', '--respec', '--system', '--discard-residue', '--dry-run'
 ]);
 
 export function parseArgs(argv) {
@@ -297,12 +316,23 @@ const commands = {
     ]);
     const run = Array.isArray(running.data) ? running.data.find(r => String(r.taskId) === String(id)) : null;
     const evidence = t.review?.evidence || {};
+    const waiting = await buildWaiting(t, async name => {
+      const response = await need(client, 'GET', `/api/remote/tasks/${enc(id)}/artifact`, { query: { repo, name } });
+      return response.data?.text ?? null;
+    });
+    const health = t.health ? {
+      stuck: t.health.stuck === true, reasons: t.health.stuckReasons || [],
+      lock: t.health.transitionLock ? { pid: t.health.transitionLock.pid ?? null, alive: t.health.transitionLock.alive ?? null } : null,
+      recovery: t.health.recovery?.suggested ? { suggested: t.health.recovery.suggested, mode: t.health.recovery.mode ?? null, reason: clip(t.health.recovery.reason, 240) } : null,
+      install: t.health.install ? { phase: t.health.install.phase ?? null, alive: t.health.install.alive ?? null, startedAt: t.health.install.startedAt ?? null } : null
+    } : null;
     const out = {
       id: String(t.id), title: clip(t.title ?? t.slug, 200), state: t.state, stateSince: t.stateSince ?? null,
       gate: t.awaitingHuman ? { kind: t.awaitingHuman.kind ?? null, since: t.awaitingHuman.since ?? null } : null,
       running: { running: run?.running === true, queued: run?.queued === true, exitCode: run?.exitCode ?? null },
       actions: t.actions ?? null,
       blocker: t.blocker ? { kind: t.blocker.kind ?? null, detail: clip(t.blocker.detail ?? t.blocker.reason ?? '', 500) } : null,
+      health,
       review: t.review ? {
         decision: t.review.decision ?? null, evidenceStatus: t.review.evidenceStatus ?? null,
         acceptance: (evidence.acceptance || []).map(r => ({ ac: r.ac ?? null, verdict: r.verdict ?? null })),
@@ -311,19 +341,23 @@ const commands = {
       releaseNote: t.releaseNote ? { userVisible: t.releaseNote.userVisible ?? null, headline: clip(t.releaseNote.headline, 200), body: clip(t.releaseNote.body, 600), approvedByHuman: t.releaseNote.approvedByHuman ?? null } : null,
       diff: t.diff ? { headCommit: t.diff.headCommit ?? null, files: (t.diff.files || []).map(f => ({ path: f.path, added: f.added ?? 0, deleted: f.deleted ?? 0, status: f.status ?? null, inScope: f.inScope ?? null })) } : null,
       externalSources: (t.externalSources || []).map(s => (s.error ? { id: s.id, error: clip(s.error, 200) } : { id: s.id, access: s.access, delivery: s.delivery, staged: s.staged, checkedIn: s.checkedIn })),
-      budget: t.budget ?? null
+      budget: t.budget ?? null,
+      waiting
     };
     if (json) return out;
     const lines = [`#${out.id} · ${out.title}`, `وضعیت: ${out.state}${out.gate ? ` · منتظر ${out.gate.kind} (از ${short(out.gate.since)})` : ''}${out.running.running ? ' · در حال اجرا' : out.running.queued ? ' · در صف' : ''}`];
     const active = activeActions(t);
     lines.push(`اکشن‌های مجاز: ${active.length ? active.join('، ') : (t.actions ? 'هیچ' : 'نامشخص (Manager قدیمی)')}`);
     if (out.blocker) lines.push(`blocker: ${out.blocker.kind} — ${clip(out.blocker.detail, 240)}`);
-    if (out.review) {
+    if (health?.stuck) lines.push(`گیرکرده: ${health.reasons.join('+')}${health.recovery ? ` — پیشنهاد Manager: ${health.recovery.suggested}${health.recovery.mode ? ` [${health.recovery.mode}]` : ''}` : ''} (جزئیات: barsa diag ${out.id})`);
+    if (health?.install) lines.push(`نصب وابستگی‌ها: ${health.install.phase ?? '؟'}${health.install.alive === true ? ' (زنده)' : health.install.alive === false ? ' (مرده)' : ''} از ${short(health.install.startedAt)}`);
+    const mergeGate = waiting?.kind === 'merge-approval';
+    if (out.review && !mergeGate) {
       const verdicts = out.review.acceptance.map(r => `${r.ac}:${r.verdict}`).join(' ');
       lines.push(`بازبینی: ${out.review.decision ?? '—'}${verdicts ? ` · ${verdicts}` : ''}${out.review.problems.length ? ` · مشکل: ${out.review.problems.join('؛ ')}` : ''}`);
     }
-    if (out.releaseNote) lines.push(`release note${out.releaseNote.userVisible === false ? ' (برای کاربر دیده نمی‌شود)' : ''}: ${out.releaseNote.headline}${out.releaseNote.body ? `\n  ${clip(out.releaseNote.body, 320)}` : ''}`);
-    if (out.diff?.files.length) {
+    if (out.releaseNote && !mergeGate) lines.push(`release note${out.releaseNote.userVisible === false ? ' (برای کاربر دیده نمی‌شود)' : ''}: ${out.releaseNote.headline}${out.releaseNote.body ? `\n  ${clip(out.releaseNote.body, 320)}` : ''}`);
+    if (out.diff?.files.length && !mergeGate) {
       const sum = out.diff.files.reduce((acc, f) => ({ a: acc.a + f.added, d: acc.d + f.deleted }), { a: 0, d: 0 });
       lines.push(`diff: ${out.diff.files.length} فایل (+${sum.a} −${sum.d})`);
       for (const f of out.diff.files.slice(0, 12)) lines.push(`  ${f.status === 'added' ? '+' : f.status === 'deleted' ? '−' : '~'} ${clip(f.path, 80)} (+${f.added} −${f.deleted})${f.inScope === false ? ' ⚠ خارج scope' : ''}`);
@@ -333,6 +367,7 @@ const commands = {
       lines.push(s.error ? `منبع بیرونی ${s.id}: خطا — ${s.error}` : `منبع بیرونی ${s.id} (${s.access}/${s.delivery}): staged=${s.staged ? `${String(s.staged.sha).slice(0, 8)} ${s.staged.mode}` : '—'} · checked-in=${s.checkedIn ? s.checkedIn.changesets.join(',') : '—'}`);
     }
     if (out.budget) lines.push(`budget: ${Object.entries(out.budget).map(([k, v]) => `${k} ${v.used}/${v.max}`).join(' · ')}`);
+    lines.push(...formatWaiting(waiting, out.id, text => String(text).replace(CONTROL, ' ')));
     return lines.join('\n');
   },
 
@@ -354,6 +389,120 @@ const commands = {
     const lines = data.tasks.length ? [`${data.tasks.length} تسک منتظر تصمیم تو:`] : ['چیز تازه‌ای منتظر تو نیست.'];
     for (const t of data.tasks) lines.push(`#${t.id} · ${t.gate.kind} (از ${short(t.gate.since)}) · ${clip(t.title, 60)}`);
     lines.push(`برای بررسی بعدی --since ${data.generatedAt ?? '<همین لحظه>'}`);
+    return lines.join('\n');
+  },
+
+  // --- مشاهده‌ی کامل و تشخیص (فقط‌خواندنی) ---------------------------------------------------------------------
+
+  async artifact({ client, flags, positional, repo, json }) {
+    const [id, name, ...extra] = positional;
+    if (!id || extra.length) throw usage('استفاده: barsa artifact <id> [name] [--attempt N] [--tail N]');
+    needId([id]);
+    if (flags['--attempt'] !== undefined && !/^\d{1,3}$/.test(String(flags['--attempt']))) throw usage('--attempt باید عدد صحیح (۱ تا ۳ رقم) باشد.');
+    if (flags['--tail'] !== undefined && !(Number.isInteger(Number(flags['--tail'])) && Number(flags['--tail']) >= 1 && Number(flags['--tail']) <= 500)) throw usage('--tail باید عدد صحیح ۱ تا ۵۰۰ باشد.');
+    if (!name && (flags['--attempt'] !== undefined || flags['--tail'] !== undefined)) throw usage('--attempt/--tail فقط کنار نام artifact معنا دارند.');
+    const { data } = await need(client, 'GET', `/api/remote/tasks/${enc(id)}/artifact`, { query: { repo, name, attempt: flags['--attempt'], tail: flags['--tail'] } });
+    if (json) return data;
+    if (!name) {
+      const lines = [`artifactهای تسک #${id}:`, `  سطح تسک: ${data.artifacts.length ? data.artifacts.join('، ') : '—'}`];
+      lines.push(`  هر attempt: ${data.perAttempt.join('، ')}${data.attempts.length ? ` — attemptها: ${data.attempts.map(a => `${a.n}${a.role ? `(${a.role}${a.outcome ? `→${a.outcome}` : ''})` : ''}`).join(' ')}` : ''}`);
+      lines.push(`  رویدادها: ${data.extra.join('، ')} (فقط انتها)`);
+      lines.push(`بخوان: barsa artifact ${id} <name> [--attempt N] [--tail N]`);
+      return lines.join('\n');
+    }
+    const head = `── ${data.name}${data.attempt !== null ? ` (attempt ${String(data.attempt).padStart(3, '0')})` : ''} · ${data.shownLines}${data.totalLines !== data.shownLines ? `/${data.totalLines}` : ''} خط${data.truncated ? ' · بریده شد' : ''}`;
+    return [head, String(data.text).replace(CONTROL, ' ')].join('\n');
+  },
+
+  async diag({ client, flags, positional, repo, json }) {
+    if (flags['--system']) {
+      if (positional.length) throw usage('استفاده: barsa diag --system (بدون شناسه)');
+      const { data } = await need(client, 'GET', '/api/remote/diag/system', { query: { repo } });
+      return json ? data : formatSystemDiag(data).replace(CONTROL, ' ');
+    }
+    const id = needId(positional);
+    const { data } = await need(client, 'GET', `/api/remote/tasks/${enc(id)}/diag`, { query: { repo } });
+    return json ? data : formatTaskDiag(data).replace(CONTROL, ' ');
+  },
+
+  async bundle({ client, positional, repo, json }) {
+    const id = needId(positional);
+    const { data } = await need(client, 'POST', `/api/remote/tasks/${enc(id)}/bundle`, { query: { repo }, body: {} });
+    if (json) return data;
+    return `bundle ساخته شد: ${data.path}\nحجم: ${(data.bytes / 1024).toFixed(1)} KB · ${data.files} فایل${data.skipped ? ` · ${data.skipped} مورد ردشده (MANIFEST.txt)` : ''}\n(روی سرور است؛ از صفحه‌ی «bundleهای تشخیصی» در کانبان هم دانلود می‌شود. محتوای zip پوشانده‌شده است.)`;
+  },
+
+  // --- اکشن‌های نام‌دار برای رفع گیر ----------------------------------------------------------------------------------
+
+  async recover({ client, flags, positional, io, repo, json }) {
+    const id = needId(positional);
+    const discard = flags['--discard-residue'] === true;
+    const text = await readText(flags, io, { required: discard });
+    if (!discard && text) throw usage('متن دلیل فقط کنار --discard-residue معنا دارد.');
+    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    assertAllowed(task, 'recover', 'recover');
+    const mode = task.health?.recovery?.mode ?? null;
+    if (discard && mode === 'process-attempt') throw new CliError(EXIT.NOT_ALLOWED, `برای تسک #${id} attempt ِ کامل ولی تفسیرنشده هست؛ --discard-residue آن را دور می‌ریخت. بدون --discard-residue بزن: barsa recover ${id}`);
+    if (!discard && mode === 'discard-residue') throw new CliError(EXIT.NOT_ALLOWED, `برای تسک #${id} فقط «برگرداندن کثیفی» (با نسخه‌ی پشتیبان) مجاز است و تصمیم انسان می‌خواهد: barsa recover ${id} --discard-residue --stdin  (دلیل انگلیسی در heredoc)`);
+    const { data } = await need(client, 'POST', `/api/remote/tasks/${enc(id)}/recover`, { query: { repo }, body: { discardResidue: discard, ...(discard ? { reason: text } : {}) } });
+    if (json) return data;
+    return [`تسک #${id}: recover${discard ? ' --discard-residue' : ''} انجام شد.`, ...data.output.map(line => `  ${clip(line, 300)}`), `اجرا خودکار نیست؛ اگر خواستی «barsa run ${id}».`].join('\n');
+  },
+
+  async 'retry-install'({ client, positional, repo, json }) {
+    const id = needId(positional);
+    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    assertAllowed(task, 'retryInstall', 'retry-install');
+    const { data } = await need(client, 'POST', `/api/remote/tasks/${enc(id)}/retry-install`, { query: { repo }, body: {} });
+    if (json) return data;
+    return `تسک #${id}: unblock شد و ${data.duplicate ? 'اجرا از قبل در جریان/صف بود' : data.queued ? 'در صف اجرا رفت' : 'اجرا شروع شد'}.\nبا «barsa log ${id}» ببین.`;
+  },
+
+  async sync({ client, flags, positional, repo, json, env }) {
+    if (positional.length) throw usage('استفاده: barsa sync [--dry-run] | barsa sync --status <execId>');
+    const pollMs = Number(env.BARSA_POLL_MS) > 0 ? Number(env.BARSA_POLL_MS) : 1500;
+    const waitMs = Number(env.BARSA_SYNC_WAIT_MS) > 0 ? Number(env.BARSA_SYNC_WAIT_MS) : 100_000;
+    let execId = flags['--status'];
+    let dryRun = flags['--dry-run'] === true;
+    if (execId !== undefined) {
+      if (dryRun) throw usage('--status با --dry-run معنا ندارد.');
+      if (!/^[0-9]{14}-[0-9a-f]{8}$/.test(String(execId))) throw usage('execId نامعتبر است.');
+    } else {
+      const { data } = await need(client, 'POST', '/api/remote/sync', { query: { repo }, body: { dryRun } });
+      execId = data.execId;
+    }
+    const deadline = Date.now() + waitMs;
+    let view;
+    for (;;) {
+      view = (await need(client, 'GET', `/api/remote/execs/${enc(execId)}`)).data;
+      if (view.finished || Date.now() >= deadline || flags['--status'] !== undefined) break;
+      await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+    const tail = view.lines.slice(-25).map(line => String(line).replace(CONTROL, ' ').slice(0, 300));
+    if (view.finished && view.exitCode !== 0) {
+      const extra = view.exitCode === EXIT.EXECUTION_OFF ? undefined : { managerExit: view.exitCode };
+      const error = new CliError(view.exitCode === EXIT.EXECUTION_OFF ? EXIT.EXECUTION_OFF : EXIT.REJECTED, `${view.message ?? `sync با exit code ${view.exitCode} تمام شد.`} [exit ${view.exitCode}]\n${tail.join('\n')}`, extra);
+      throw error;
+    }
+    if (json) return { ok: true, execId, finished: view.finished, exitCode: view.exitCode, lines: tail };
+    if (!view.finished) return [`sync هنوز در جریان است (execId ${execId}).`, ...tail, `بعداً: barsa sync --status ${execId}`].join('\n');
+    return [`${dryRun || /sync-preview/.test(view.action ?? '') ? 'پیش‌نمایش sync' : 'sync'} تمام شد (exit 0).`, ...tail].join('\n');
+  },
+
+  async 'kill-stuck-install'({ client, flags, positional, repo, json }) {
+    const id = needId(positional);
+    let minutes;
+    if (flags['--minutes'] !== undefined) {
+      minutes = Number(flags['--minutes']);
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 240) throw usage('--minutes باید عدد صحیح ۱ تا ۲۴۰ باشد.');
+    }
+    const { data } = await need(client, 'POST', `/api/remote/tasks/${enc(id)}/kill-stuck-install`, { query: { repo }, body: minutes === undefined ? {} : { minutes } });
+    if (json) return data;
+    const lines = data.killed.length
+      ? [`تسک #${id}: ${data.killed.length} lifecycle script ِ گیرکرده (بیش از ${data.minutes} دقیقه) بسته شد:`, ...data.killed.map(k => `  ✗ pid ${k.pid} ${k.name} · ${k.ageMin}m · ${k.cmd}${k.stillAlive ? ' (هشدار: هنوز زنده است)' : ''}`)]
+      : [`تسک #${id}: ${data.note}`];
+    if (data.remaining.length) lines.push(`ماند (جوان‌تر از ${data.minutes} دقیقه): ${data.remaining.map(k => `pid ${k.pid} ${k.ageMin}m`).join('، ')}`);
+    if (data.killed.length) lines.push(data.note);
     return lines.join('\n');
   },
 
@@ -394,8 +543,10 @@ const commands = {
     const modes = [];
     for (const mode of ['approve', 'reject', 'clarify', 'note', 'unblock']) if (flags[`--${mode}`]) modes.push(mode);
     if (flags['--raise-limit'] !== undefined) modes.push('raise-limit');
+    if (flags['--allow-shared-knowledge-file'] !== undefined) modes.push('allow-shared-knowledge-file');
     if (modes.length !== 1) throw usage(`دقیقاً یکی از این‌ها: ${ANSWER_MODES.map(m => `--${m}`).join(' ')}`);
     const mode = modes[0];
+    if (flags['--respec'] && mode !== 'clarify') throw usage('--respec فقط کنار --clarify معنا دارد.');
     if (flags['--route'] && mode !== 'reject') throw usage('--route فقط کنار --reject معنا دارد.');
     if (flags['--route'] && !['implementer', 'architect'].includes(flags['--route'])) throw usage('--route باید implementer یا architect باشد.');
 
@@ -405,26 +556,34 @@ const commands = {
       if (!match) throw usage('قالب: --raise-limit <field>=<n> (n = سقف تازه‌ی کل)');
       [, field, value] = match; value = Number(value);
     }
+    let sharedPath;
+    if (mode === 'allow-shared-knowledge-file') {
+      sharedPath = String(flags['--allow-shared-knowledge-file']).trim();
+      if (!sharedPath || sharedPath.length > 500 || NO_CONTROL.test(sharedPath) || sharedPath.startsWith('-') || path.isAbsolute(sharedPath) || /^[A-Za-z]:/.test(sharedPath) || sharedPath.replace(/\\/g, '/').split('/').includes('..')) {
+        throw usage('مسیر باید نسبی به ریشه‌ی مخزن باشد (بدون .. و بدون شروع با -).');
+      }
+    }
     const text = await readText(flags, io, { required: mode !== 'approve' });
 
     // پیش‌سنجی از actions ِ همین تسک؛ داور نهایی سرور و Manager است.
     const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
-    const key = { approve: 'approve', reject: 'reject', clarify: 'clarify', note: 'note', unblock: 'unblock', 'raise-limit': 'raiseLimit' }[mode];
+    const key = { approve: 'approve', reject: 'reject', clarify: 'clarify', note: 'note', unblock: 'unblock', 'raise-limit': 'raiseLimit', 'allow-shared-knowledge-file': 'allowSharedKnowledgeFile' }[mode];
     assertAllowed(task, key, mode, { field });
 
     const base = `/api/repos/${enc(repo)}/tasks/${enc(id)}`;
     let response;
     if (mode === 'approve') response = await need(client, 'POST', `${base}/answer`, { body: { mode: 'approve', ...(text ? { releaseNoteText: text } : {}) } });
     else if (mode === 'reject') response = await need(client, 'POST', `${base}/answer`, { body: { mode: 'reject', reason: text, ...(flags['--route'] ? { route: flags['--route'] } : {}) } });
-    else if (mode === 'clarify') response = await need(client, 'POST', `${base}/answer`, { body: { mode: 'clarify', text } });
+    else if (mode === 'clarify') response = await need(client, 'POST', `${base}/answer`, { body: { mode: 'clarify', text, ...(flags['--respec'] ? { respec: true } : {}) } });
     else if (mode === 'note') response = await need(client, 'POST', `${base}/note`, { body: { text } });
     else if (mode === 'raise-limit') response = await need(client, 'POST', `${base}/raise-limit`, { body: { field, value, reason: text } });
+    else if (mode === 'allow-shared-knowledge-file') response = await need(client, 'POST', `${base}/allow-shared-knowledge-file`, { body: { path: sharedPath, reason: text } });
     else response = await need(client, 'POST', `${base}/unblock`, { body: { reason: text } });
 
     const data = response.data || {};
     const resumed = data.autoResumed === true && (data.queued || data.started);
     if (json) return { ok: true, taskId: String(id), mode, autoResumed: data.autoResumed === true, queued: data.queued === true, started: data.started === true };
-    return `تسک #${id}: ${mode} انجام شد.${resumed ? `\nاجرا خودکار ادامه یافت (${data.queued ? 'در صف' : 'شروع شد'}). با «barsa log ${id}» ببین.` : ''}${mode === 'unblock' || mode === 'raise-limit' ? `\nاجرا خودکار نیست؛ اگر خواستی «barsa run ${id}».` : ''}`;
+    return `تسک #${id}: ${mode} انجام شد.${resumed ? `\nاجرا خودکار ادامه یافت (${data.queued ? 'در صف' : 'شروع شد'}). با «barsa log ${id}» ببین.` : ''}${mode === 'unblock' || mode === 'raise-limit' || mode === 'allow-shared-knowledge-file' ? `\nاجرا خودکار نیست؛ اگر خواستی «barsa run ${id}».` : ''}`;
   }
 };
 
@@ -470,7 +629,8 @@ export async function run(argv, io = {}) {
     const base = resolveUrl(flags, env);
     const token = readToken(resolveTokenFile(flags, env));
     secrets = [...secrets, token];
-    const client = makeClient({ base, token, timeoutMs: command === 'health' ? 120_000 : 40_000 });
+    const SLOW = { health: 120_000, diag: 150_000, bundle: 150_000, recover: 150_000, 'retry-install': 150_000, artifact: 60_000, 'kill-stuck-install': 90_000 };
+    const client = makeClient({ base, token, timeoutMs: SLOW[command] ?? 40_000 });
 
     // مخزن پیش‌فرض: --repo یا اولین مخزن سرور
     let repo = flags['--repo'];
@@ -480,7 +640,7 @@ export async function run(argv, io = {}) {
       if (!repo) throw new CliError(EXIT.REJECTED, 'سرور هیچ مخزنی گزارش نکرد.');
     }
 
-    const result = await commands[command]({ client, flags, positional: rest, io: { stdin: io.stdin ?? process.stdin }, repo, json });
+    const result = await commands[command]({ client, flags, positional: rest, io: { stdin: io.stdin ?? process.stdin }, repo, json, env });
     if (json) print(out, JSON.stringify(typeof result === 'string' ? { ok: true, message: result } : result));
     else print(out, result);
     return EXIT.OK;

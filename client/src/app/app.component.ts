@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { LoginComponent } from './login.component';
 import { ConsoleComponent } from './console.component';
 import { MaintenanceComponent } from './maintenance.component';
+import { BundlesComponent } from './bundles.component';
 import { AuditComponent, EnvHealthComponent } from './env-health.component';
 import { TaskOpsComponent } from './task-ops.component';
 import { ArchiveComponent } from './archive.component';
@@ -72,14 +73,14 @@ type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 
 @Component({
   selector: 'ba-root',
   standalone: true,
-  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, ArchiveComponent],
+  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, BundlesComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, ArchiveComponent],
   templateUrl: './app.component.html'
 })
 export class AppComponent implements OnInit, OnDestroy {
   readonly api = inject(ApiService);
   readonly auth = inject(AuthService);
   // کانبان فاز ۱: صفحه‌های کنسول/نگهداری/سلامت/ممیزی کنار برد
-  readonly view = signal<'board' | 'archive' | 'console' | 'maintenance' | 'health' | 'audit'>(readStoredView());
+  readonly view = signal<'board' | 'archive' | 'console' | 'maintenance' | 'bundles' | 'health' | 'audit'>(readStoredView());
   private started = false;
   private poll?: number;
   private source?: EventSource;
@@ -290,7 +291,7 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  showView(view: 'board' | 'archive' | 'console' | 'maintenance' | 'health' | 'audit'): void {
+  showView(view: 'board' | 'archive' | 'console' | 'maintenance' | 'bundles' | 'health' | 'audit'): void {
     this.view.set(view);
     if (view === 'board' || view === 'archive') {
       try { localStorage.setItem(VIEW_STORAGE_KEY, view); } catch { /* ذخیره اختیاری است */ }
