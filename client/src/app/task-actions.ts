@@ -9,7 +9,8 @@ import type { Task } from './models';
 
 export type BooleanAction =
   | 'approve' | 'reject' | 'clarify' | 'note' | 'unblock'
-  | 'allowPath' | 'allowSharedKnowledgeFile' | 'cancel' | 'abandon' | 'void' | 'unlock';
+  | 'allowPath' | 'allowSharedKnowledgeFile' | 'cancel' | 'abandon' | 'void' | 'unlock'
+  | 'recover' | 'retryProvision' | 'retryInstall' | 'setRuntime';
 
 /** اکشن‌های «فهرستی»: آرایه‌ی غیرخالی = مجاز (عنصرها: attempt، منبع یا فیلد سقف). */
 export type ListAction = 'closeOrphan' | 'externalAccess' | 'resetExternal' | 'raiseLimit';
@@ -80,7 +81,7 @@ export function conflictFiles(task: Pick<Task, 'blocker'> | null | undefined): s
 
 export type ButtonId =
   | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan' | 'allow-path' | 'allow-shared-knowledge-file'
-  | 'external-access' | 'reset-external' | 'void' | 'unlock' | 'cancel' | 'abandon';
+  | 'external-access' | 'reset-external' | 'void' | 'unlock' | 'cancel' | 'abandon' | 'recover' | 'retry-provision';
 
 export interface CardButton {
   id: ButtonId;
@@ -90,15 +91,37 @@ export interface CardButton {
 }
 
 /** نگاشت کلید actions ← جایی که دکمه‌اش رندر می‌شود. */
-export const ACTION_PLACEMENT: Readonly<Record<BooleanAction | ListAction, 'ops' | 'gate' | 'tools'>> = {
+// 'runtime' = بخش «مدل‌ها» (setRuntime)؛ `retryInstall` alias ِ retryProvision است و دکمه‌ی جدا ندارد (همان یک دکمه).
+export const ACTION_PLACEMENT: Readonly<Record<BooleanAction | ListAction, 'ops' | 'gate' | 'tools' | 'runtime'>> = {
   approve: 'gate', reject: 'gate', clarify: 'gate', note: 'tools',
   unblock: 'ops', raiseLimit: 'ops', closeOrphan: 'ops', allowPath: 'ops', allowSharedKnowledgeFile: 'ops',
-  externalAccess: 'ops', resetExternal: 'ops', cancel: 'ops', abandon: 'ops', void: 'ops', unlock: 'ops'
+  externalAccess: 'ops', resetExternal: 'ops', cancel: 'ops', abandon: 'ops', void: 'ops', unlock: 'ops',
+  recover: 'ops', retryProvision: 'ops', retryInstall: 'ops', setRuntime: 'runtime'
 };
+
+/**
+ * stage ِ blocker ← یک خط: با «دوباره امتحان کن» (retryProvision = unblock + run، idempotent) در این stage چه چیزی دوباره اجرا می‌شود
+ * (جدول ِ TOOLING-045).
+ */
+export const PROVISION_STAGE_TEXT: Readonly<Record<string, string>> = {
+  install: 'npm ci از نو اجرا می‌شود (marker ِ نصب نیست).',
+  build: 'buildDependencies ِ صریح + کتابخانه‌های داخلیِ بی‌dist ساخته و Baseline دوباره اجرا می‌شود.',
+  'worktree-baseline': 'worktree ِ موجود دوباره استفاده می‌شود: کتابخانه‌های بی‌dist ساخته و verify.build / verify.lint دوباره اجرا می‌شود.'
+};
+
+export function provisionStageText(stage: string | null | undefined): string {
+  return (stage && PROVISION_STAGE_TEXT[stage]) || 'provisioning (نصب / build / baseline) دوباره اجرا می‌شود.';
+}
+
+/** دکمه‌ی «دوباره امتحان کن» (provisioning): retryProvision یا alias ِ retryInstall. */
+export function canRetryProvision(task: Pick<Task, 'actions'> | null | undefined): boolean {
+  return can(task, 'retryProvision') || can(task, 'retryInstall');
+}
 
 export const KNOWN_ACTION_KEYS: readonly string[] = Object.keys(ACTION_PLACEMENT);
 
 const OPS_ORDER: ReadonlyArray<{ key: BooleanAction | ListAction; id: ButtonId }> = [
+  { key: 'recover', id: 'recover' }, { key: 'retryProvision', id: 'retry-provision' },
   { key: 'unblock', id: 'unblock' }, { key: 'raiseLimit', id: 'raise-limit' }, { key: 'closeOrphan', id: 'close-orphan' },
   { key: 'allowPath', id: 'allow-path' }, { key: 'allowSharedKnowledgeFile', id: 'allow-shared-knowledge-file' },
   { key: 'externalAccess', id: 'external-access' }, { key: 'resetExternal', id: 'reset-external' },
@@ -117,6 +140,8 @@ export function opsButtons(
   for (const { key, id } of OPS_ORDER) {
     if (key === 'closeOrphan') {
       for (const attempt of allowed(task, 'closeOrphan')) out.push({ id, action: key, target: attempt });
+    } else if (key === 'retryProvision') {
+      if (canRetryProvision(task)) out.push({ id, action: key });
     } else if (key === 'raiseLimit') {
       if (opts.raiseLimitSupported !== false && raiseLimitFields(task).length) out.push({ id, action: key });
     } else if (key === 'externalAccess' || key === 'resetExternal') {
@@ -143,7 +168,7 @@ export function unknownActionKeys(task: Pick<Task, 'actions'> | null | undefined
 /** کدام کلیدهای فعال در کدام بخش (ops/gate/tools) دکمه دارند — برای تست «هیچ کلید فعالی بی‌دکمه نمی‌ماند». */
 export function renderedActionKeys(task: Pick<Task, 'actions'> | null | undefined, opts: { rebaseConflict?: boolean; raiseLimitSupported?: boolean } = {}): string[] {
   const ops = opsButtons(task, opts).map(b => b.action as string);
-  const others = activeActionKeys(task).filter(k => (ACTION_PLACEMENT as Record<string, string>)[k] === 'gate' || (ACTION_PLACEMENT as Record<string, string>)[k] === 'tools');
+  const others = activeActionKeys(task).filter(k => ['gate', 'tools', 'runtime'].includes((ACTION_PLACEMENT as Record<string, string>)[k]));
   return [...new Set([...ops, ...others])];
 }
 
@@ -154,3 +179,9 @@ export function renderedActionKeys(task: Pick<Task, 'actions'> | null | undefine
  * اسمش و پنجره‌ی تأییدش صریحاً می‌گوید unblock + run.
  */
 export const AUTO_RESUME_ACTIONS: readonly string[] = ['approve', 'reject', 'clarify'];
+
+/**
+ * اکشن‌هایی که **خودشان** unblock + run هستند (فرمان ِ ثبت‌شده‌ی Manager): «دوباره امتحان کن» ِ rebase-conflict و ِ provisioning.
+ * اسم و پنجره‌ی تأییدشان صریحاً می‌گوید اجرا هم می‌شود.
+ */
+export const SELF_RESUMING_ACTIONS: readonly string[] = ['retry-rebase', 'retry-provision'];

@@ -4,17 +4,18 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
 import { HealthStatus, RunRecord, RunningTask, Task } from './models';
-import { CardButton, allowed, can, conflictFiles, hasActions, opsButtons, raiseLimitFields, supportsRaiseLimitList, unknownActionKeys } from './task-actions';
+import { CardButton, allowed, can, conflictFiles, hasActions, opsButtons, provisionStageText, raiseLimitFields, supportsRaiseLimitList, unknownActionKeys } from './task-actions';
 
 type Pending =
   | 'abandon' | 'cancel' | 'void' | 'unlock' | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan'
-  | 'allow-path' | 'allow-shared-knowledge-file' | 'external-access' | 'reset-external';
+  | 'allow-path' | 'allow-shared-knowledge-file' | 'external-access' | 'reset-external' | 'recover' | 'retry-provision';
 
 const BUTTON_LABELS: Record<string, string> = {
   unblock: '🔓 رفع blocker (unblock)', 'retry-rebase': '🔁 دوباره امتحان کن (main عوض شده)', 'raise-limit': '⬆ بالا بردن سقف',
   'allow-path': '➕ افزودن مسیر به scope', 'allow-shared-knowledge-file': '➕ فایل دانش مشترک', 'external-access': '🔑 دسترسی منبع بیرونی',
   'reset-external': '♻ بازنشانی worktree سایه', void: '↩ باطل کردن آخرین transition', unlock: '🔓 آزاد کردن قفل',
-  cancel: 'بستن task (cancel)', abandon: 'کنار گذاشتن (abandon)'
+  cancel: 'بستن task (cancel)', abandon: 'کنار گذاشتن (abandon)',
+  recover: '🛟 بازیابی (recover)', 'retry-provision': '🔁 دوباره امتحان کن (نصب / build / baseline)'
 };
 
 const DANGEROUS = new Set<Pending>(['abandon', 'cancel', 'void', 'unlock', 'reset-external']);
@@ -24,7 +25,8 @@ const TITLES: Record<Pending, string> = {
   unlock: 'آزاد کردن قفل transition (unlock)', unblock: 'رفع blocker (unblock)', 'retry-rebase': 'دوباره امتحان کن (rebase)',
   'raise-limit': 'بالا بردن سقف (raise-limit)', 'close-orphan': 'بستن attempt یتیم (close-orphan)',
   'allow-path': 'افزودن مسیر به scope.allow (allow-path)', 'allow-shared-knowledge-file': 'استثنای فایل دانش مشترک',
-  'external-access': 'تغییر دسترسی منبع بیرونی', 'reset-external': 'بازنشانی worktree سایه (reset-external)'
+  'external-access': 'تغییر دسترسی منبع بیرونی', 'reset-external': 'بازنشانی worktree سایه (reset-external)',
+  recover: 'بازیابی ِ تسک (recover)', 'retry-provision': 'دوباره امتحان کن (provisioning)'
 };
 
 const HINTS: Partial<Record<Pending, string>> = {
@@ -90,6 +92,37 @@ const HINTS: Partial<Record<Pending, string>> = {
         </div>
       }
 
+      @if (provisionBlocker(); as b) {
+        <div class="conflict-card blocker-card">
+          <b>⛔ مسدود: {{ b.stage || b.kind }}@if (b.step) { — گام: <code dir="ltr">{{ b.step }}</code> }</b>
+          @if (b.detail) { <p>{{ b.detail }}</p> }
+          @if (b.stage) { <small>«دوباره امتحان کن» در این stage: {{ stageText() }}</small> }
+          @if (b.log) {
+            <small>لاگ کامل: <code dir="ltr">{{ b.log }}</code>
+              @if (logArtifact(); as rel) { <button class="link-button" (click)="loadLog(rel)">نمایش</button> }</small>
+          }
+          @if (b.outputTail?.length) {
+            <div class="tail-head"><small>۴۰ خط ِ آخر ِ خروجی (<code>blocker.outputTail</code>):</small>
+              <button class="secondary" type="button" (click)="copyTail()">کپی</button></div>
+            <pre class="logs tail-block" dir="ltr">{{ tailText() }}</pre>
+          }
+          @if (logText()) { <pre class="logs tail-block" dir="ltr">{{ logText() }}</pre> }
+        </div>
+      }
+
+      @if (commitFailure(); as cf) {
+        <div class="conflict-card commit-failure-card">
+          <b>⚠ commit شکست خورد و چیزی کثیف مانده</b>
+          @if (cf.message) { <p>{{ cf.message }}</p> }
+          @if (cf.at) { <small>زمان: {{ cf.at }}</small> }
+          @if (cf.leftover.length) {
+            <small>کثیف‌مانده ({{ cf.leftover.length }}):</small>
+            <ul class="conflict-files" dir="ltr">@for (f of cf.leftover; track f) { <li><code>{{ f }}</code></li> }</ul>
+          }
+          @if (cf.recoverCommand) { <small>فرمان ِ بازیابی ِ Manager: <code class="final-command" dir="ltr">{{ cf.recoverCommand }}</code></small> }
+        </div>
+      }
+
       <!-- هر کلید فعال actions دقیقاً یک دکمه (opsButtons در task-actions.ts)؛ هیچ شرط دستی دیگری نیست -->
       <div class="danger-actions wrap">
         @for (b of buttons(); track b.id + (b.target ?? '')) {
@@ -97,7 +130,14 @@ const HINTS: Partial<Record<Pending, string>> = {
         }
       </div>
       @if (unknownKeys().length) {
-        <div class="disabled-gate-warning">Manager این اکشن‌ها را مجاز کرده که کانبان هنوز دکمه‌ای برایشان ندارد: <code dir="ltr">{{ unknownKeys().join(', ') }}</code> — از «کنسول» انجام بده.</div>
+        <!-- اکشن ِ تازه‌ی Manager هرگز نامرئی نمی‌ماند: دکمه‌ی غیرفعال با نام خودش -->
+        <div class="danger-actions wrap unknown-actions">
+          @for (k of unknownKeys(); track k) {
+            <button class="secondary" type="button" disabled title="Manager این اکشن را مجاز کرده ولی در کانبان پشتیبانی نمی‌شود — از «کنسول» انجام بده.">
+              <code dir="ltr">{{ k }}</code> — در کانبان پشتیبانی نمی‌شود
+            </button>
+          }
+        </div>
       }
 
       @if (pending(); as p) {
@@ -125,11 +165,14 @@ const HINTS: Partial<Record<Pending, string>> = {
           @if (p === 'reset-external') {
             <label><span>--to (اختیاری — sha ِ commit؛ خالی = پیش‌فرض Manager)</span><input dir="ltr" name="to" [(ngModel)]="toSha" placeholder="مثلاً a1b2c3d"></label>
           }
+          @if (p === 'recover' && recoverMode() === 'discard-residue') {
+            <div class="disabled-gate-warning">پوشه‌ی کاملاً untracked ِ این تسک (هرگز commit نشده) با پشتیبان کنار گذاشته می‌شود؛ <code>BOARD.md</code> به HEAD برمی‌گردد و رویداد در <code>logs/residue-discarded.jsonl</code> ثبت می‌شود. دلیل اجباری است.</div>
+          }
           @if (p === 'unlock' && lockUnknown()) {
             <label class="force-check"><input type="checkbox" name="force" [(ngModel)]="force"> مطمئنم — با <code>--force</code> اجرا کن (Manager نمی‌تواند زنده/مرده بودن این قفل را اثبات کند)</label>
           }
 
-          <textarea name="reason" [(ngModel)]="reason" [placeholder]="p === 'retry-rebase' ? 'دلیل (اختیاری)' : 'دلیل (اجباری)…'"></textarea>
+          <textarea name="reason" [(ngModel)]="reason" [placeholder]="reasonOptional(p) ? 'دلیل (اختیاری)' : 'دلیل (اجباری)…'"></textarea>
           <small>فرمان نهایی:</small>
           <code class="final-command" dir="ltr">{{ command(p) }}</code>
           <div class="danger-confirm-actions">
@@ -201,9 +244,9 @@ export class TaskOpsComponent {
   label(b: CardButton): string {
     return b.id === 'close-orphan' ? `📁 بستن attempt یتیم ${b.target}` : (BUTTON_LABELS[b.id] ?? b.id);
   }
-  /** resume ِ خودکار فقط بعد از approve/reject/clarify (پنل گیت)؛ این‌جا هیچ‌کدام نیست جز «دوباره امتحان کن». */
+  /** resume ِ خودکار فقط بعد از approve/reject/clarify (پنل گیت)؛ این‌جا فقط اکشن‌هایی که خودشان unblock + run هستند. */
   resumeNote(p: Pending): string {
-    return p === 'retry-rebase'
+    return p === 'retry-rebase' || p === 'retry-provision'
       ? 'بعد از رفع blocker، کانبان خودش run می‌زند (unblock + run).'
       : 'این اکشن run را خودکار نمی‌زند؛ بعد از آن (و بعد از اکشن‌های پشت‌سرهم) خودت «▶ اجرا / ادامه» را بزن.';
   }
@@ -214,12 +257,49 @@ export class TaskOpsComponent {
   resetSources(): string[] { return allowed(this.task(), 'resetExternal'); }
 
   // --- فقط نمایش (نه اجازه) ---------------------------------------------------------
+  /** blocker ای که step/log/outputTail/stage دارد (شکست ِ provisioning و baseline، ۰۴۳–۰۴۵). */
+  provisionBlocker() {
+    const b = this.task().blocker;
+    return b && (b.step || b.log || b.outputTail?.length || b.stage) ? b : null;
+  }
+  stageText(): string { return provisionStageText(this.task().blocker?.stage); }
+  /** `blocker.log` وقتی زیر پوشه‌ی خود ِ تسک است از راه artifact خوانده می‌شود؛ وگرنه فقط مسیر نشان داده می‌شود. */
+  logArtifact(): string | null {
+    const log = this.task().blocker?.log?.replace(/\\/g, '/');
+    const dir = this.task().dir?.replace(/\\/g, '/').replace(/\/$/, '');
+    return log && dir && log.startsWith(`${dir}/`) ? log.slice(dir.length + 1) : null;
+  }
+  readonly logText = signal('');
+  async loadLog(rel: string): Promise<void> {
+    try {
+      const text = await firstValueFrom(this.api.artifact(this.repoId(), this.task().id, rel));
+      this.logText.set(text.split(/\r?\n/).slice(-200).join('\n'));
+    } catch (e) { this.error.set(this.message(e)); }
+  }
+  tailText(): string { return (this.task().blocker?.outputTail ?? []).join('\n'); }
+  async copyTail(): Promise<void> {
+    const text = this.tailText();
+    try { await navigator.clipboard.writeText(text); this.info.set('خروجی کپی شد.'); } catch { this.error.set('کپی نشد؛ متن را دستی انتخاب کن.'); }
+  }
+  commitFailure() {
+    const cf = this.task().health?.recovery?.commitFailure;
+    return cf ? { ...cf, leftover: cf.leftover ?? [] } : null;
+  }
+  recoverMode(): 'process-attempt' | 'discard-residue' | null { return this.task().health?.recovery?.mode ?? null; }
+  /** دلیل برای این اکشن اختیاری است؟ (rebase/provisioning و recover ِ process-attempt) */
+  reasonOptional(p: Pending): boolean {
+    return p === 'retry-rebase' || p === 'retry-provision' || (p === 'recover' && this.recoverMode() !== 'discard-residue');
+  }
   rebaseConflict(): boolean { return this.task().blocker?.kind === 'rebase-conflict'; }
   conflicts(): string[] | null { return conflictFiles(this.task()); }
   lockUnknown(): boolean { return this.task().health?.transitionLock?.alive === null; }
   title(p: Pending): string { return TITLES[p]; }
-  hint(p: Pending): string { return HINTS[p] ?? ''; }
-  dangerous(p: string): boolean { return DANGEROUS.has(p as Pending); }
+  hint(p: Pending): string {
+    if (p === 'retry-provision') return this.stageText();
+    if (p === 'recover') return this.recoverMode() === 'discard-residue' ? 'پوشه‌ی untracked با پشتیبان کنار گذاشته می‌شود (discard-residue).' : 'attempt ِ نیمه‌تمام را پردازش می‌کند (process-attempt).';
+    return HINTS[p] ?? '';
+  }
+  dangerous(p: string): boolean { return DANGEROUS.has(p as Pending) || (p === 'recover' && this.recoverMode() === 'discard-residue'); }
 
   /**
    * سقف فعلی فیلد انتخاب‌شده برای نمایش و سنجش فرم: `budget[field].max` ِ status (فیلدهای *Runs)، یا مقدار همان فیلد
@@ -259,7 +339,7 @@ export class TaskOpsComponent {
 
   // --- فرم ---------------------------------------------------------------------------
   valid(p: Pending): boolean {
-    if (p !== 'retry-rebase' && !this.reason.trim()) return false;
+    if (!this.reasonOptional(p) && !this.reason.trim()) return false;
     switch (p) {
       case 'raise-limit': return !!this.limitField && Number.isInteger(Number(this.limitValue)) && Number(this.limitValue) >= 1 && !this.limitTooLow();
       case 'allow-path': case 'allow-shared-knowledge-file': return !!this.path.trim();
@@ -280,6 +360,8 @@ export class TaskOpsComponent {
       case 'unlock': return `node scripts/manager.js unlock ${id} ${why}${this.force ? ' --force' : ''}`;
       case 'unblock': return `node scripts/manager.js answer ${id} --unblock ${why}`;
       case 'retry-rebase': return `node scripts/manager.js answer ${id} --unblock ${why}  ←  سپس  node scripts/manager.js run ${id}`;
+      case 'retry-provision': return `node scripts/manager.js answer ${id} --unblock ${why}  ←  سپس  node scripts/manager.js run ${id}`;
+      case 'recover': return `node scripts/manager.js recover ${id}${this.recoverMode() === 'discard-residue' ? ` --discard-residue --reason-file ‹متن دلیل›` : ''}`;
       case 'raise-limit': return `node scripts/manager.js answer ${id} --raise-limit ${this.limitField}=${this.limitValue} ${why}`;
       case 'close-orphan': return `node scripts/manager.js answer ${id} --close-orphan ${this.attempt} ${why}`;
       case 'allow-path': return `node scripts/manager.js answer ${id} --allow-path ${this.path.trim() || '‹مسیر›'} ${why}`;
@@ -321,6 +403,8 @@ export class TaskOpsComponent {
         case 'unlock': await firstValueFrom(this.api.unlockTask(repo, id, reason, this.force)); break;
         case 'unblock': await firstValueFrom(this.api.unblockTask(repo, id, reason)); break;
         case 'retry-rebase': await firstValueFrom(this.api.retryRebase(repo, id, reason || undefined)); break;
+        case 'retry-provision': await firstValueFrom(this.api.retryProvision(repo, id, reason || undefined)); break;
+        case 'recover': await firstValueFrom(this.api.recoverTask(repo, id, this.recoverMode() === 'discard-residue' ? { discardResidue: true, reason } : {})); break;
         case 'raise-limit': await firstValueFrom(this.api.raiseLimit(repo, id, this.limitField, Number(this.limitValue), reason)); break;
         case 'close-orphan': await firstValueFrom(this.api.closeOrphan(repo, id, this.attempt, reason)); break;
         case 'allow-path': await firstValueFrom(this.api.allowPath(repo, id, this.path.trim(), reason)); break;

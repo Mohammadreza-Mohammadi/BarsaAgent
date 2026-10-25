@@ -72,6 +72,8 @@ repos:
 توکن فقط در `<dataDir>/tokens/<name>.token` با دسترسی فقط-مالک، چاپ نمی‌شود، باطل‌سازی فوری). سرور برای توکن remote فقط فهرست بسته‌ی
 endpointها (`REMOTE_ENDPOINTS` در `server/src/remote-cli-spec.js`) را باز می‌گذارد، actor ِ ممیزی `remote:<name>` است و رابط کاربری با
 برچسب `remote` نشانش می‌دهد. `abandon`، `void`، `unlock`، `cancel`، منبع بیرونی، scope، `sync` و کنسول عمداً از CLI بیرون‌اند.
+از TOOLING-046 مدل/effort ِ هر مرحله هم دیده و عوض می‌شود: `barsa runtime <id>`، `barsa runtime-options`، `barsa set-runtime …` (و در رابط
+کاربری بخش «مدل‌ها» در جزئیات ِ کارت، و انتخاب ِ preset/مدل هنگام ساخت). گزینه‌ها فقط از `runtime --options --json` ِ Manager می‌آیند.
 قالب‌ها و راه‌اندازی روی سرور: `docs/remote-control/` (`CLAUDE.md`، `settings.json`، `guard.mjs`، `bin/`، `README.md`).
 
 ## دکمه‌های کارت: فقط از `actions` (TOOLING-037)
