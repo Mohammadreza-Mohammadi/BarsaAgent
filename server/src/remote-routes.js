@@ -66,6 +66,33 @@ function tailLines(file, count) {
 // فایل خروجی هر خط را «<iso> [stream] متن» می‌نویسد (process-registry.js / action-runner.js).
 const LINE_PREFIX = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z \[(?:stdout|stderr|system)\] /;
 
+/** انتهای لاگ آخرین اجرای یک تسک: اول registry ِ زنده، وگرنه فایل خروجی در دفتر ممیزی. همیشه از redactor می‌گذرد. */
+export function runLogOf({ registry, audit, repo, taskId, tail }) {
+  const secrets = environmentSecrets();
+  const live = registry.get(repo, taskId);
+  if (live) {
+    const lines = live.lines.map(item => redact(item.text, secrets));
+    return {
+      taskId: String(taskId), runId: live.runId ?? null, running: !live.finished && !!live.startedAt, queued: live.queued === true,
+      startedAt: live.startedAt ?? null, finishedAt: live.finishedAt ?? null, exitCode: live.exitCode ?? null,
+      truncated: lines.length > tail, lines: lines.slice(-tail)
+    };
+  }
+  const latest = audit.summaries({ action: 'run', repoId: repo.id, taskId, limit: 1 })[0];
+  if (!latest) return { taskId: String(taskId), runId: null, running: false, queued: false, startedAt: null, finishedAt: null, exitCode: null, truncated: false, lines: [] };
+  let lines = [];
+  let truncated = false;
+  if (latest.outputFile && fs.existsSync(latest.outputFile)) {
+    const result = tailLines(latest.outputFile, tail);
+    lines = result.lines.map(line => redact(line.replace(LINE_PREFIX, ''), secrets));
+    truncated = result.truncated;
+  }
+  return {
+    taskId: String(taskId), runId: latest.id, running: !latest.phases?.includes('end'), queued: false, startedAt: latest.startedAt ?? null,
+    finishedAt: latest.phases?.includes('end') ? latest.at : null, exitCode: latest.exitCode ?? null, truncated, lines
+  };
+}
+
 export function createRemoteRoutes({ registry, audit, repoFor, config, send, route, boardCached }) {
   const defaultRepo = () => config.repos[0];
   const repoOf = url => repoFor(url.searchParams.get('repo') || defaultRepo().id);
@@ -103,29 +130,7 @@ export function createRemoteRoutes({ registry, audit, repoFor, config, send, rou
     if ((p = route('/api/repos/:repo/tasks/:id/log', pathname)) && req.method === 'GET') {
       const repo = repoFor(p.repo);
       const tail = Math.min(TAIL_MAX, Math.max(1, Number(url.searchParams.get('tail')) || 40));
-      const secrets = environmentSecrets();
-      const live = registry.get(repo, p.id);
-      if (live) {
-        const lines = live.lines.map(item => redact(item.text, secrets));
-        return send(res, 200, {
-          taskId: String(p.id), runId: live.runId ?? null, running: !live.finished && !!live.startedAt, queued: live.queued === true,
-          startedAt: live.startedAt ?? null, finishedAt: live.finishedAt ?? null, exitCode: live.exitCode ?? null,
-          truncated: lines.length > tail, lines: lines.slice(-tail)
-        }), true;
-      }
-      const latest = audit.summaries({ action: 'run', repoId: repo.id, taskId: p.id, limit: 1 })[0];
-      if (!latest) return send(res, 200, { taskId: String(p.id), runId: null, running: false, queued: false, startedAt: null, finishedAt: null, exitCode: null, truncated: false, lines: [] }), true;
-      let lines = [];
-      let truncated = false;
-      if (latest.outputFile && fs.existsSync(latest.outputFile)) {
-        const result = tailLines(latest.outputFile, tail);
-        lines = result.lines.map(line => redact(line.replace(LINE_PREFIX, ''), secrets));
-        truncated = result.truncated;
-      }
-      return send(res, 200, {
-        taskId: String(p.id), runId: latest.id, running: !latest.phases?.includes('end'), queued: false, startedAt: latest.startedAt ?? null,
-        finishedAt: latest.phases?.includes('end') ? latest.at : null, exitCode: latest.exitCode ?? null, truncated, lines
-      }), true;
+      return send(res, 200, runLogOf({ registry, audit, repo, taskId: p.id, tail })), true;
     }
     return false;
   };

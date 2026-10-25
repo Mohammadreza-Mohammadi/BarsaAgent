@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import {
-  AgentEvent, AuditItem, Board, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, EnvHealthReport,
+  AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, EnvHealthReport,
   ExecInfo, GitInventory, GitStatus, HealthResult, Issue, ManagerInfoView, Repo, RunRecord, RunningTask, StopResult, Task
 } from './models';
 
@@ -96,6 +96,9 @@ export class ApiService {
   /** `manager.js sync --json` — ff / push / merge ِ واقعی + npm ci ِ مشروط (منطقش در Manager است). */
   managerUpdate = (repo: string) => this.http.post<{ execId: string }>(`${this.repoPath(repo)}/manager/update`, {});
   envHealth = () => this.http.get<EnvHealthReport>('/api/env-health');
+  bundles = () => this.http.get<BundleItem[]>('/api/bundles');
+  bundleUrl = (name: string) => `/api/bundles/${encodeURIComponent(name)}`;
+  createBundle = (repo: string, id: string) => this.http.post<BundleResult>(`/api/remote/tasks/${encodeURIComponent(id)}/bundle`, {}, { params: { repo } });
   audit = (limit = 100) => this.http.get<AuditItem[]>('/api/audit', { params: { limit } });
 
   streamUrl(repo: string, id: string) { return `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/stream`; }

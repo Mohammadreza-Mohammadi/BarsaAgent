@@ -12,7 +12,7 @@ import { AuditLog } from '../src/audit.js';
 import { RemoteTokenStore } from '../src/remote-tokens.js';
 import { run as barsa, parseArgs, HELP } from '../src/remote-cli.js';
 import {
-  READ_COMMANDS, WRITE_COMMANDS, NOT_REMOTE_COMMANDS, NOT_REMOTE_ANSWER_FLAGS, REMOTE_ENDPOINTS, COMMAND_ENDPOINTS, EXIT, isRemoteAllowed, matchRoute
+  READ_COMMANDS, WRITE_COMMANDS, READ_FORMS, NOT_REMOTE_COMMANDS, NOT_REMOTE_ANSWER_FLAGS, REMOTE_ENDPOINTS, COMMAND_ENDPOINTS, EXIT, isRemoteAllowed, matchRoute
 } from '../src/remote-cli-spec.js';
 import { evaluate } from '../../docs/remote-control/guard.mjs';
 
@@ -327,7 +327,7 @@ test('task <id>: وضعیت، actions، blocker، بازبینی، release note�
   assert.match(blocked.out, /blocker: budget-exhausted — سقف implementerRuns پر شد/);
   assert.match(blocked.out, /raiseLimit\[implementerRuns,maxAttempts\]/);
   const json = (await s.cli(['task', '7', '--json'])).json();
-  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'blocker', 'review', 'releaseNote', 'diff', 'externalSources', 'budget']);
+  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'waiting']);
   assert.equal(json.actions.approve, true);
   assert.equal((await s.cli(['task', '999'])).code, EXIT.REJECTED, 'تسک ناموجود = رد');
   assert.equal((await s.cli(['task'])).code, EXIT.USAGE);
@@ -581,14 +581,20 @@ test('اتصال و احراز هویت: سرور پایین = 4، توکن بد
 test('settings.json: هر فرمان CLI دقیقاً در یکی از allow یا ask؛ خواندنی‌ها allow، نوشتنی‌ها ask؛ هیچ فرمان بیرون‌ماندهای نیست', () => {
   const settings = JSON.parse(read('docs/remote-control/settings.json'));
   const { allow, ask, deny } = settings.permissions;
-  const ruleCommand = rule => /^Bash\(\.\/barsa ([a-z-]+)(?::\*|\))/.exec(rule)?.[1];
+  const ruleCommand = rule => /^Bash\(\.\/barsa ([a-z-]+)(?::\*|\)| )/.exec(rule)?.[1];
   const inAllow = allow.map(ruleCommand).filter(Boolean);
   const inAsk = ask.map(ruleCommand).filter(Boolean);
   for (const command of READ_COMMANDS) {
     assert.deepEqual([inAllow.filter(c => c === command).length, inAsk.filter(c => c === command).length], [1, 0], `read ${command}`);
   }
-  for (const command of WRITE_COMMANDS) {
+  for (const command of WRITE_COMMANDS.filter(c => !READ_FORMS[c])) {
     assert.deepEqual([inAllow.filter(c => c === command).length, inAsk.filter(c => c === command).length], [0, 1], `write ${command}`);
+  }
+  // فرمانی که شکل خواندنی هم دارد (sync): ask دقیقاً «بدون آرگومان» (ask بر allow می‌چربد)، و allow فقط شکل‌های خواندنی
+  for (const [command, forms] of Object.entries(READ_FORMS)) {
+    assert.ok(WRITE_COMMANDS.includes(command));
+    assert.deepEqual(ask.filter(r => r.startsWith(`Bash(./barsa ${command}`)), [`Bash(./barsa ${command})`], `ask ِ دقیق ِ ${command}`);
+    assert.deepEqual(allow.filter(r => r.startsWith(`Bash(./barsa ${command}`)).sort(), forms.map(f => `Bash(./barsa ${command} ${f}:*)`).sort());
   }
   // هیچ قاعده‌ی allow/ask ای برای چیزی بیرون از فهرست (یا چیز دیگری جز Bash(./barsa …)) نیست
   const known = new Set([...READ_COMMANDS, ...WRITE_COMMANDS, 'help']);
@@ -622,12 +628,15 @@ test('guard.mjs (پیش‌فرض-رد برای Bash): فقط یک فراخوان
     './barsa health', './barsa tasks --waiting', './barsa task 10013', './barsa log 5 --tail 100', './barsa waiting --since 2026-10-21T08:00:00Z',
     './barsa answer 5 --raise-limit implementerRuns=5 --stdin <<\'EOF\'\nbecause\nEOF',
     './barsa create-task --title "عنوان فارسی با فاصله" --stdin <<\'EOF\'\nمتن $HOME `x` $(y) ; | &&\nEOF',
-    './barsa answer 5 --note --text-file D:/agent-remote/inbox/a.txt', './barsa --help', './barsa'
+    './barsa answer 5 --note --text-file D:/agent-remote/inbox/a.txt', './barsa --help', './barsa',
+    './barsa artifact 5 questions.md --tail 50', './barsa diag 5', './barsa diag --system', './barsa bundle 5', './barsa sync --dry-run', './barsa sync',
+    './barsa recover 5', './barsa retry-install 5', './barsa kill-stuck-install 5 --minutes 10',
+    './barsa answer 5 --allow-shared-knowledge-file src/app/x.ts --stdin <<\'EOF\'\nneeded\nEOF'
   ];
   for (const command of ok) assert.deepEqual(evaluate(command), { ok: true }, command);
   const bad = [
     'ls', 'git status', 'cat secret.txt', './barsa tasks; ls', './barsa health && ls', './barsa health | cat', './barsa health > out.txt',
-    './barsa task $(whoami)', './barsa task `id`', './barsa task-evil 5', './barsa abandon 5', './barsa sync', 'barsa health', 'bash ./barsa health',
+    './barsa task $(whoami)', './barsa task `id`', './barsa task-evil 5', './barsa abandon 5', './barsa unlock 5', './barsa diag 5; cat x', './barsa sync && ls', 'barsa health', 'bash ./barsa health',
     './barsa answer 5 --note --stdin <<EOF\nx\nEOF', './barsa answer 5 --note --stdin <<\'EOF\'\nx\nEOF\nrm -rf /', './barsa answer 5 --note --stdin <<\'EOF\'\nx',
     './barsa create-task --title "a$HOME" --stdin', './barsa tasks\nls', './barsa tasks "unclosed', ''
   ];

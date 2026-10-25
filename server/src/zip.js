@@ -36,17 +36,23 @@ function dosDateTime(date) {
 
 export function buildZip(root, limits = ZIP_LIMITS) {
   const files = listFiles(root, limits);
+  const entries = files.map(file => ({ name: file.name, data: fs.readFileSync(file.full), mtime: fs.statSync(file.full).mtime }));
+  return zipEntries(entries);
+}
+
+/** zip از ورودی‌های درون‌حافظه‌ای: [{ name, data: Buffer, mtime?: Date }] (برای bundle ِ پوشانده‌شده). */
+export function zipEntries(files) {
   const chunks = [];
   const central = [];
   let offset = 0;
   for (const file of files) {
-    const data = fs.readFileSync(file.full);
+    const data = file.data;
     const deflated = zlib.deflateRawSync(data);
     const useDeflate = deflated.length < data.length;
     const body = useDeflate ? deflated : data;
     const name = Buffer.from(file.name, 'utf8');
     const crc = zlib.crc32(data);
-    const { time, day } = dosDateTime(fs.statSync(file.full).mtime);
+    const { time, day } = dosDateTime(file.mtime ?? new Date());
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);

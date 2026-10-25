@@ -12,17 +12,41 @@
 ## فرمان‌ها
 
 خواندنی (بدون تأیید): `barsa health` · `barsa issues [--all]` · `barsa tasks [--waiting|--running|--blocked|--all]` ·
-`barsa task <id>` · `barsa log <id> [--tail N]` · `barsa waiting --since <ISO>`
+`barsa task <id>` (با بخش «⏳ منتظر تو»: متن کامل سؤال‌ها / خلاصه‌ی AC / تصمیم Reviewer + release note + diff) ·
+`barsa log <id> [--tail N]` · `barsa waiting --since <ISO>` · `barsa artifact <id> [name] [--attempt N] [--tail N]` ·
+`barsa diag <id>` · `barsa diag --system` · `barsa bundle <id>` · `barsa sync --dry-run` · `barsa sync --status <execId>`
 
 نوشتنی (روی گوشی تأیید می‌خواهند): `barsa create-from-issue <externalId> [--run]` ·
 `barsa create-task --title <t> (--text-file <f>|--stdin)` · `barsa run <id>` · `barsa stop <id>` ·
-`barsa answer <id> --approve | --reject [--route implementer|architect] | --clarify | --note | --raise-limit <field>=<n> | --unblock`
-(متن از `--text-file <f>` یا `--stdin`).
+`barsa answer <id> --approve | --reject [--route implementer|architect] | --clarify [--respec] | --note | --raise-limit <field>=<n> | --unblock | --allow-shared-knowledge-file <path>`
+(متن از `--text-file <f>` یا `--stdin`) · `barsa recover <id> [--discard-residue]` · `barsa retry-install <id>` · `barsa sync` ·
+`barsa kill-stuck-install <id> [--minutes N]`.
+
+### «بدون RDP»: دیدن، تشخیص، رفع گیر
+
+اصل ثابت: Claude ِ Remote Control **شل ِ آزاد ندارد**؛ هر توان تازه یک فرمان **نام‌دار** `barsa` است با endpoint ِ خودش در فهرست بسته‌ی
+`REMOTE_ENDPOINTS` و یک ردیف ممیزی با actor ِ `remote:<name>`.
+
+| فرمان | endpoint | کار |
+|---|---|---|
+| `artifact` | `GET /api/remote/tasks/:id/artifact` | از راه `manager.js artifact/events` (نه خواندن مستقیم فایل). بدون نام: فهرست. نام‌های بسته: questions.md، proposed-task.md، task.md، handoff.md، review.md، release-note.md، implementation-report.md، previous-rejection.md (+ request/risks/tests/…)، و داخل attempt: result.yaml، run-meta.yaml، agent-transcript.log (فقط انتها)؛ events (انتها). سقف ۱۲۰٬۰۰۰ نویسه و `--tail N` (≤۵۰۰) |
+| `diag <id>` | `GET /api/remote/tasks/:id/diag` | `status --summary` + health کامل (قفل زنده/مرده، dirtyPaths، recovery، install)، ۳۰ رویداد آخر، ۶۰ خط آخر لاگ آخرین اجرا (+ run id)، فرآیندهای مرتبط با تسک (PID، پدر، شروع، سن، CPU، ۱۲۰ نویسه argv)، `git status --short` پوشه‌ی تسک، وضعیت worktree (وجود، git status، شاخه: merge شده؟ commit ِ خودش؟، `node_modules\.bin`)، وضعیت صف (در حال اجرا/در صف/هیچ‌کدام؛ slotهای `maxConcurrent`) |
+| `diag --system` | `GET /api/remote/diag/system` | زمان شروع سرویس، فرآیندهای node/npm/claude/git با سن و CPU، قفل‌ها و slotها، `repository.sync` و `execution`، `git status --short` و `git worktree list` مخزن Manager، دیسک، ۳۰ خط آخر `kanban.err.log` (`logs.errFile` در config؛ پیش‌فرض `<APP_ROOT>-logs\kanban.err.log`)، **جایی که** node/npm/git/claude/TF.exe روی PATH ِ سرویس پیدا می‌شوند (خود PATH چاپ نمی‌شود)، و تعداد issue برگشتی از پورتال (فقط تعداد) |
+| `bundle <id>` | `POST /api/remote/tasks/:id/bundle` | zip ِ **پوشانده‌شده** از پوشه‌ی تسک + `diag.txt` + لاگ آخرین اجرا در `<dataDir>\bundles\<id>-<زمان>.zip`؛ مسیر و حجم چاپ می‌شود. در رابط کاربری: «bundleهای تشخیصی» (دانلود با نام ساده؛ `..`/مسیر مطلق رد می‌شود) |
+| `recover <id>` | `POST /api/remote/tasks/:id/recover` | `manager.js recover` (attempt ِ کامل ولی تفسیرنشده را پردازش می‌کند). `--discard-residue` با دلیل: کثیفی بدون قفل را با نسخه‌ی پشتیبان برمی‌گرداند. پیش‌سنجی از `actions.recover` |
+| `retry-install <id>` | `POST /api/remote/tasks/:id/retry-install` | `--unblock` و بعد `run` (فقط وقتی `actions.retryInstall`) |
+| `sync` / `sync --dry-run` | `POST /api/remote/sync` + `GET /api/remote/execs/:id` | همان `manager.js sync` ِ کانبان (ff/push/merge، هرگز rebase) با پیام روشن برای exit code ۵۰ تا ۵۷؛ تا ~۱۰۰ ثانیه صبر می‌کند وگرنه `sync --status <execId>` |
+| `kill-stuck-install <id>` | `POST /api/remote/tasks/:id/kill-stuck-install` | فقط فرزندان مستقیم ِ یک `npm ci` (lifecycle scriptها) در **درخت ِ فرآیند ِ ثبت‌شده در registry ِ کانبان** برای همین تسک، که بیش از N دقیقه (پیش‌فرض ۵) عمر دارند. هیچ جست‌وجوی متنی روی کل سیستم، هیچ pid ِ دلخواه، هیچ ری‌استارت سرویس |
+| `answer --allow-shared-knowledge-file <path>` | `POST /api/repos/:repo/tasks/:id/allow-shared-knowledge-file` | همان endpoint ِ دکمه‌ی رابط کاربری؛ پیش‌سنجی از `actions.allowSharedKnowledgeFile` |
+
+امنیت `diag`/`bundle`/`artifact`: فقط خواندنی؛ هر متن از redactor ِ مشترک می‌گذرد (راز محیط، توکن، `Authorization`، کلید PEM/AWS،
+`user:pass@` در URL، و `BARSA_ISSUE_USER_ID`)؛ argv ِ فرآیندها پیش از نمایش پوشانده می‌شود؛ هیچ مسیر/فرمان دلخواهی از ورودی کاربر ساخته نمی‌شود
+(مسیرها از `status` ِ Manager، نام artifact از فهرست بسته).
 
 **عمداً بیرون از CLI** (ثابت `NOT_REMOTE_COMMANDS` و `NOT_REMOTE_ANSWER_FLAGS` در `server/src/remote-cli-spec.js`؛ CLI می‌گوید
-«این تصمیم را از رابط کاربری کانبان بگیر»): `abandon`، `void`، `unlock`، `cancel`، `--external-access`، `--allow-path`،
-`--allow-shared-knowledge-file`، `--reset-external`، `--stage-external`، `--external-checked-in`، `sync` ِ اجرایی، کنسول ِ آزاد و
-هر چیز دیگر. سرور هم برای توکن remote فقط همین endpointها را باز می‌گذارد (`REMOTE_ENDPOINTS`)؛ حتی با توکن لو رفته abandon/console ممکن نیست.
+«این تصمیم را از رابط کاربری کانبان بگیر»): `abandon`، `void`، `unlock`، `cancel`، `--external-access`، `--reset-external`،
+`--stage-external`، `--external-checked-in`، (و `--allow-path`، `--close-orphan`)، کنسول ِ آزاد. عبارت «از رابط کاربری» فقط برای همین‌ها گفته می‌شود.
+سرور هم برای توکن remote فقط endpointهای `REMOTE_ENDPOINTS` را باز می‌گذارد؛ حتی با توکن لو رفته abandon/console ممکن نیست.
 
 exit code: `0` موفق · `2` آرگومان بد · `3` اکشن مجاز نیست (پیش‌سنجی از `actions`، بدون هیچ درخواستی) · `4` سرور کانبان در دسترس نیست ·
 `5` احراز هویت · `6` Manager/سرور رد کرد (پیام عیناً) · `41` اجرا روی این دستگاه خاموش است (کد Manager).
@@ -93,7 +117,12 @@ exit code: `0` موفق · `2` آرگومان بد · `3` اکشن مجاز نی
 | `health` | `ok, checkedAt, execution{enabled,status,detail}, sync{status,ahead,behind,lastFetchAt,detail}, claude{installed,auth}, problems[{id,status,label,detail,hint}]` |
 | `issues` | `issues[{externalId,title,status,labels,importedTaskId,importedRepoId}], hiddenImported` |
 | `tasks` | `repo, filter, generatedAt, total, truncated, execution, tasks[{id,title,state,stateSince,gate{kind,since}\|null,blocker{kind,detail}\|null,running,queued,actions[]}]` |
-| `task` | `id, title, state, stateSince, gate, running{running,queued,exitCode}, actions, blocker, review{decision,evidenceStatus,acceptance[{ac,verdict}],problems}, releaseNote, diff{headCommit,files[]}, externalSources[], budget` |
+| `task` | `id, title, state, stateSince, gate, running{running,queued,exitCode}, actions, blocker, health{stuck,reasons,lock,recovery,install}, review{…}, releaseNote, diff{headCommit,files[]}, externalSources[], budget, waiting{kind,since,artifact,questions\|proposal\|review+releaseNote+diff+external,hint}` |
+| `artifact` | بدون نام: `taskId, artifacts[], attempts[], perAttempt[], extra[], lastAttempt` — با نام: `taskId, name, attempt, path, bytes, totalLines, shownLines, truncated, tail, text` |
+| `diag <id>` | `taskId, repo, generatedAt, state, gate, blocker, health, actions[], summary, events[], log{runId,…,lines[]}, processes[{pid,ppid,name,startedAt,ageSec,cpuSeconds,cmd}], taskDirGit, worktree{path,exists,branch,merged,ownCommits,nodeModulesBin,dirty[]}, queue{state,position,slotsUsed,slotsMax}` |
+| `diag --system` | `service, processes[], locks, slots, repository{sync,execution}, git{status[],worktrees[]}, disk[], errLog{file,lines[]}, tools{node,npm,git,claude,tf}, issues{count}` |
+| `bundle` | `ok, taskId, name, path, bytes, files, skipped` |
+| `recover` / `retry-install` / `kill-stuck-install` / `sync` | `ok, taskId, mode, output[]` / `ok, queued, started, duplicate` / `ok, killed[{pid,name,ageMin,cmd}], remaining[], note` / `ok, execId, finished, exitCode, lines[]` |
 | `log` | `taskId, runId, running, queued, startedAt, finishedAt, exitCode, truncated, lines[]` |
 | `waiting` | `repo, since, generatedAt, tasks[{id,title,state,gate,…}]` — `generatedAt` را برای `--since` ِ دفعه‌ی بعد نگه دار |
 | `create-*` | `ok, taskId, repoId, queued, started` |

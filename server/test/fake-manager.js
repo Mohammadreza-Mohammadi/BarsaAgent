@@ -42,10 +42,26 @@ else if (cmd === 'status') {
   const board = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8'));
   const only = fileArg('--task');
   if (only !== null) board.tasks = (board.tasks || []).filter(t => String(t.id) === String(only));
-  setTimeout(() => process.stdout.write(JSON.stringify(board)), ${statusDelayMs});
+  if (args.includes('--summary')) {
+    // status <id> --summary: خلاصه‌ی متنی مثل Manager واقعی (یک خط برای هر تسک)
+    process.stdout.write((board.tasks || []).map(t => '- ' + t.id + ' [' + t.state + '] ' + (t.title || '')).join('\n') + '\n');
+  } else setTimeout(() => process.stdout.write(JSON.stringify(board)), ${statusDelayMs});
 }
-else if (cmd === 'events') { process.stdout.write('[]'); }
-else if (cmd === 'artifact') { process.stdout.write('# artifact'); }
+else if (cmd === 'events') {
+  // events.json (اختیاری): آرایه‌ی رویدادها؛ وگرنه []
+  try { process.stdout.write(fs.readFileSync(path.join(dir, 'events.json'), 'utf8')); } catch { process.stdout.write('[]'); }
+}
+else if (cmd === 'artifact') {
+  // artifacts.json (اختیاری): { "<مسیر نسبی>": "متن" } — کلید نبود = رد مثل Manager واقعی؛ فایل نبود = متن ثابت قدیمی
+  let map = null;
+  try { map = JSON.parse(fs.readFileSync(path.join(dir, 'artifacts.json'), 'utf8')); } catch { map = null; }
+  if (map === null) process.stdout.write('# artifact');
+  else {
+    const rel = fileArg('--path');
+    if (!Object.prototype.hasOwnProperty.call(map, rel)) { process.stderr.write('artifact پیدا نشد: ' + rel); process.exit(1); }
+    process.stdout.write(map[rel]);
+  }
+}
 else if (cmd === 'capabilities') { process.stdout.write(JSON.stringify({contract:'barsa-agent-manager',contractVersion:1,managerVersion:'fake',capabilities:{status:true,taskStatus:true,events:true,artifact:true,run:true,answer:{approve:true,reject:true,clarify:true},importIssue:true}})); }
 else if (cmd === 'run') {
   ${run || "console.log('run-ok'); console.log('token=' + (process.env.CLAUDE_CODE_OAUTH_TOKEN || 'none'));"}
@@ -87,7 +103,9 @@ ${extra}
     files: () => read('files.jsonl'),
     setStatus: value => fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify(value), 'utf8'),
     setFail: value => fs.writeFileSync(path.join(root, 'fail.json'), JSON.stringify(value), 'utf8'),
-    setSync: value => fs.writeFileSync(path.join(root, 'sync.json'), JSON.stringify(value), 'utf8')
+    setSync: value => fs.writeFileSync(path.join(root, 'sync.json'), JSON.stringify(value), 'utf8'),
+    setArtifacts: value => fs.writeFileSync(path.join(root, 'artifacts.json'), JSON.stringify(value), 'utf8'),
+    setEvents: value => fs.writeFileSync(path.join(root, 'events.json'), JSON.stringify(value), 'utf8')
   };
 }
 
@@ -109,7 +127,7 @@ export function configureGit(dir) {
 
 /** فایل‌های ساختگی manager داخل .git/info/exclude تا git status تمیز بماند. */
 export function excludeFakeManagerFiles(dir) {
-  fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'calls.jsonl\nfiles.jsonl\nhelp.txt\nstatus.json\nsync.json\nfail.json\nmanager.cjs\ngrandchild-*.pid\n');
+  fs.appendFileSync(path.join(dir, '.git', 'info', 'exclude'), 'calls.jsonl\nfiles.jsonl\nhelp.txt\nstatus.json\nsync.json\nfail.json\nmanager.cjs\nartifacts.json\nevents.json\ngrandchild-*.pid\n');
 }
 
 export function initGitRepo(root, { files = { 'README.md': '# test\n' } } = {}) {

@@ -26,6 +26,7 @@
   <button [class.active]="view() === 'archive'" (click)="showView('archive')">آرشیو</button>
   <button [class.active]="view() === 'console'" (click)="showView('console')">کنسول Manager</button>
   <button [class.active]="view() === 'maintenance'" (click)="showView('maintenance')">نگهداری مخزن ابزار</button>
+  <button [class.active]="view() === 'bundles'" (click)="showView('bundles')">bundleهای تشخیصی</button>
   <button [class.active]="view() === 'health'" (click)="showView('health')">سلامت محیط</button>
   <button [class.active]="view() === 'audit'" (click)="showView('audit')">ممیزی</button>
 </nav>
@@ -37,6 +38,7 @@
 <main class="ops-main" *ngIf="view() !== 'board' && view() !== 'archive' && repoId()">
   <ba-console *ngIf="view() === 'console'" [repoId]="repoId()"></ba-console>
   <ba-maintenance *ngIf="view() === 'maintenance'" [repoId]="repoId()"></ba-maintenance>
+  <ba-bundles *ngIf="view() === 'bundles'" [repoId]="repoId()"></ba-bundles>
   <ba-env-health *ngIf="view() === 'health'"></ba-env-health>
   <ba-audit *ngIf="view() === 'audit'"></ba-audit>
 </main>

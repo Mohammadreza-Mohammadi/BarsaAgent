@@ -21,6 +21,7 @@ import { validArtifactPath } from './security.js';
 import { RemoteTokenStore, bearerOf, isLoopbackAddress, proxiedHeaders, REMOTE_ACTOR_PREFIX } from './remote-tokens.js';
 import { isRemoteAllowed } from './remote-cli-spec.js';
 import { createRemoteRoutes } from './remote-routes.js';
+import { createRemoteOpsRoutes } from './remote-ops-routes.js';
 
 // علت ریشه‌ای «بازیابی از داخل ابزار» بند ۴ — یک شنونده‌ی SIGINT/SIGTERM
 // سراسری در سطح ماژول (نه داخل createApp)، چون createApp در تست‌ها بارها در
@@ -351,6 +352,11 @@ export function createApp(config, deps = {}) {
   };
 
   const remoteRoutes = createRemoteRoutes({ registry, audit, repoFor, config, send, route, boardCached });
+  const remoteOpsRoutes = createRemoteOpsRoutes({
+    registry, runner, audit, repoFor, config, send, route, readBody, boardFor, collect, collectJson, collectAction, assertExecution,
+    updater, dataDir, listProcesses: deps.listProcesses, killTree: deps.killTree,
+    issuesCount: async () => (await refreshIssues(false)).length
+  });
   const opsRoutes = createOpsRoutes({
     audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor,
     managerAudited: collectAction, pipeStream, users: auth.users, assertExecution
@@ -422,6 +428,7 @@ export function createApp(config, deps = {}) {
           return send(res, 200, { ok: true }, JSON_TYPE, { 'Set-Cookie': auth.clearCookie() });
         }
         if (await remoteRoutes(req, res, url, pathname, session)) return;
+        if (await remoteOpsRoutes(req, res, url, pathname, session)) return;
         if (await opsRoutes(req, res, url, pathname, session)) return;
       }
       if (req.method === 'GET' && pathname === '/api/repos') {

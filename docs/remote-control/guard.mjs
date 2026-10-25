@@ -7,7 +7,7 @@
 // قاعده‌های ask/allow است؛ این hook فقط چیزی را مجاز نمی‌کند، فقط رد می‌کند.
 //
 // فهرست فرمان‌ها باید با server/src/remote-cli-spec.js (READ_COMMANDS/WRITE_COMMANDS) یکی باشد؛ تست مطابقت را می‌سنجد.
-const COMMANDS = ['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'create-from-issue', 'create-task', 'run', 'stop', 'answer'];
+const COMMANDS = ['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'retry-install', 'sync', 'kill-stuck-install'];
 const ARG_CHAR = /^[A-Za-z0-9_\-./:=@,+؀-ۿ‌‍]+$/;
 
 /**

@@ -5,24 +5,30 @@
 // نشست‌های `remote:*`، app.js) و تست‌ها (قالب settings.json، «بیرون از فهرست وجود ندارد»).
 
 /** فرمان‌های خواندنی: بدون تأیید روی گوشی. */
-export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting']);
+export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle']);
 
 /** فرمان‌های نوشتنی: هر کدام روی گوشی تأیید می‌خواهد (`ask` در settings.json). */
-export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer']);
+export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'retry-install', 'sync', 'kill-stuck-install']);
+
+/**
+ * فرمان‌هایی که یک شکل ِ فقط‌خواندنی هم دارند. قاعده‌ی ask در settings.json ترتیبش بر allow می‌چربد (deny ← ask ← allow)، پس
+ * برای این‌ها ask دقیقاً «بدون آرگومان» است و allow فقط همین شکل‌های خواندنی را باز می‌کند.
+ */
+export const READ_FORMS = Object.freeze({ sync: ['--dry-run', '--status'] });
 
 /** حالت‌های `barsa answer <id> --…` (دقیقاً همین‌ها؛ هیچ اکشن دیگری از راه دور نیست). */
-export const ANSWER_MODES = Object.freeze(['approve', 'reject', 'clarify', 'note', 'raise-limit', 'unblock']);
+export const ANSWER_MODES = Object.freeze(['approve', 'reject', 'clarify', 'note', 'raise-limit', 'unblock', 'allow-shared-knowledge-file']);
 
 /**
  * عمداً بیرون از CLI: این تصمیم‌ها را باید از رابط کاربری کانبان گرفت. اگر کاربر یکی را خواست، CLI فقط همین را می‌گوید.
  * (نام فرمان‌ها و نام flagهای `answer`.)
  */
 export const NOT_REMOTE_COMMANDS = Object.freeze([
-  'abandon', 'void', 'unlock', 'cancel', 'sync', 'console', 'exec', 'rebase', 'external-init', 'import-issue', 'update', 'delete', 'remove'
+  'abandon', 'void', 'unlock', 'cancel', 'console', 'exec', 'rebase', 'external-init', 'import-issue', 'update', 'delete', 'remove'
 ]);
 export const NOT_REMOTE_ANSWER_FLAGS = Object.freeze([
-  '--external-access', '--allow-path', '--allow-shared-knowledge-file', '--reset-external', '--stage-external',
-  '--external-checked-in', '--close-orphan', '--respec', '--release-note-file', '--no-release-note', '--changeset', '--route-file'
+  '--external-access', '--allow-path', '--reset-external', '--stage-external',
+  '--external-checked-in', '--close-orphan', '--release-note-file', '--no-release-note', '--changeset', '--route-file'
 ]);
 
 export const NOT_REMOTE_MESSAGE = 'این تصمیم از راه دور مجاز نیست؛ آن را از رابط کاربری کانبان بگیر.';
@@ -55,6 +61,10 @@ export const REMOTE_ENDPOINTS = Object.freeze([
   ['GET', '/api/repos/:repo/running'],
   ['GET', '/api/repos/:repo/tasks/:id'],
   ['GET', '/api/repos/:repo/tasks/:id/log'],
+  ['GET', '/api/remote/tasks/:id/artifact'],
+  ['GET', '/api/remote/tasks/:id/diag'],
+  ['GET', '/api/remote/diag/system'],
+  ['GET', '/api/remote/execs/:id'],
   ['POST', '/api/issues/import'],
   ['POST', '/api/tasks/create'],
   ['POST', '/api/repos/:repo/tasks/:id/run'],
@@ -62,7 +72,13 @@ export const REMOTE_ENDPOINTS = Object.freeze([
   ['POST', '/api/repos/:repo/tasks/:id/answer'],
   ['POST', '/api/repos/:repo/tasks/:id/note'],
   ['POST', '/api/repos/:repo/tasks/:id/raise-limit'],
-  ['POST', '/api/repos/:repo/tasks/:id/unblock']
+  ['POST', '/api/repos/:repo/tasks/:id/unblock'],
+  ['POST', '/api/repos/:repo/tasks/:id/allow-shared-knowledge-file'],
+  ['POST', '/api/remote/tasks/:id/bundle'],
+  ['POST', '/api/remote/tasks/:id/recover'],
+  ['POST', '/api/remote/tasks/:id/retry-install'],
+  ['POST', '/api/remote/tasks/:id/kill-stuck-install'],
+  ['POST', '/api/remote/sync']
 ]);
 
 /** فرمان CLI ← endpointهایی که صدا می‌زند (برای مستند و تست). */
@@ -80,7 +96,15 @@ export const COMMAND_ENDPOINTS = Object.freeze({
   'answer --approve|--reject|--clarify': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/answer']],
   'answer --note': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/note']],
   'answer --raise-limit': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/raise-limit']],
-  'answer --unblock': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/unblock']]
+  'answer --unblock': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/unblock']],
+  'answer --allow-shared-knowledge-file': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/allow-shared-knowledge-file']],
+  artifact: [['GET', '/api/remote/tasks/:id/artifact']],
+  diag: [['GET', '/api/remote/tasks/:id/diag'], ['GET', '/api/remote/diag/system']],
+  bundle: [['POST', '/api/remote/tasks/:id/bundle']],
+  recover: [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/recover']],
+  'retry-install': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/retry-install']],
+  sync: [['POST', '/api/remote/sync'], ['GET', '/api/remote/execs/:id']],
+  'kill-stuck-install': [['POST', '/api/remote/tasks/:id/kill-stuck-install']]
 });
 
 /** هم‌خوانی یک مسیر با الگو (`:name` = یک بخش). */
