@@ -35,6 +35,8 @@ export function summarizeTask(task, run) {
     running: run?.running === true,
     queued: run?.queued === true,
     actions: activeActionKeys(task),
+    // TOOLING-046: خلاصه‌ی runtime فقط وقتی با پیش‌فرض فرق دارد
+    runtime: task.runtime?.summary ?? null,
     ...(task.error ? { error: clip(task.error, 200) } : {})
   };
 }
