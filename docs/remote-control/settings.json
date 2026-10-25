@@ -11,6 +11,8 @@
       "Bash(./barsa artifact:*)",
       "Bash(./barsa diag:*)",
       "Bash(./barsa bundle:*)",
+      "Bash(./barsa runtime:*)",
+      "Bash(./barsa runtime-options:*)",
       "Bash(./barsa sync --dry-run:*)",
       "Bash(./barsa sync --status:*)",
       "Bash(./barsa --help)",
@@ -23,6 +25,8 @@
       "Bash(./barsa stop:*)",
       "Bash(./barsa answer:*)",
       "Bash(./barsa recover:*)",
+      "Bash(./barsa set-runtime:*)",
+      "Bash(./barsa retry-provision:*)",
       "Bash(./barsa retry-install:*)",
       "Bash(./barsa kill-stuck-install:*)",
       "Bash(./barsa sync)"

@@ -5,10 +5,10 @@
 // نشست‌های `remote:*`، app.js) و تست‌ها (قالب settings.json، «بیرون از فهرست وجود ندارد»).
 
 /** فرمان‌های خواندنی: بدون تأیید روی گوشی. */
-export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle']);
+export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options']);
 
 /** فرمان‌های نوشتنی: هر کدام روی گوشی تأیید می‌خواهد (`ask` در settings.json). */
-export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'retry-install', 'sync', 'kill-stuck-install']);
+export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime']);
 
 /**
  * فرمان‌هایی که یک شکل ِ فقط‌خواندنی هم دارند. قاعده‌ی ask در settings.json ترتیبش بر allow می‌چربد (deny ← ask ← allow)، پس
@@ -61,6 +61,7 @@ export const REMOTE_ENDPOINTS = Object.freeze([
   ['GET', '/api/repos/:repo/running'],
   ['GET', '/api/repos/:repo/tasks/:id'],
   ['GET', '/api/repos/:repo/tasks/:id/log'],
+  ['GET', '/api/repos/:repo/runtime-options'],
   ['GET', '/api/remote/tasks/:id/artifact'],
   ['GET', '/api/remote/tasks/:id/diag'],
   ['GET', '/api/remote/diag/system'],
@@ -73,9 +74,11 @@ export const REMOTE_ENDPOINTS = Object.freeze([
   ['POST', '/api/repos/:repo/tasks/:id/note'],
   ['POST', '/api/repos/:repo/tasks/:id/raise-limit'],
   ['POST', '/api/repos/:repo/tasks/:id/unblock'],
+  ['POST', '/api/repos/:repo/tasks/:id/runtime'],
   ['POST', '/api/repos/:repo/tasks/:id/allow-shared-knowledge-file'],
   ['POST', '/api/remote/tasks/:id/bundle'],
   ['POST', '/api/remote/tasks/:id/recover'],
+  ['POST', '/api/remote/tasks/:id/retry-provision'],
   ['POST', '/api/remote/tasks/:id/retry-install'],
   ['POST', '/api/remote/tasks/:id/kill-stuck-install'],
   ['POST', '/api/remote/sync']
@@ -102,7 +105,11 @@ export const COMMAND_ENDPOINTS = Object.freeze({
   diag: [['GET', '/api/remote/tasks/:id/diag'], ['GET', '/api/remote/diag/system']],
   bundle: [['POST', '/api/remote/tasks/:id/bundle']],
   recover: [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/recover']],
+  'retry-provision': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/retry-provision']],
   'retry-install': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/retry-install']],
+  runtime: [['GET', '/api/repos/:repo/tasks/:id'], ['GET', '/api/repos/:repo/running']],
+  'runtime-options': [['GET', '/api/repos/:repo/runtime-options']],
+  'set-runtime': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/runtime']],
   sync: [['POST', '/api/remote/sync'], ['GET', '/api/remote/execs/:id']],
   'kill-stuck-install': [['POST', '/api/remote/tasks/:id/kill-stuck-install']]
 });

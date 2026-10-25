@@ -92,7 +92,8 @@ test('نگهبان: قالب‌ها و task-ops هیچ شرط «مجاز است�
   assert.doesNotMatch(code, /\.state\b|awaitingHuman|previousState|NOTE_BLOCKED/, 'task-ops فقط از actions می‌خواند');
   // تنها استفاده‌ی مجاز از blocker در task-ops: نمایش کارت rebase-conflict و پیش‌فرض‌های فرم (نه اجازه)
   const blockerUses = code.match(/blocker\??\.[a-zA-Z]+/g) || [];
-  for (const use of blockerUses) assert.match(use, /blocker\??\.(kind|base|source|field|maxSpecRevisions|maxAttempts|conflictFiles)/, use);
+  // فقط نمایش ِ جزئیات ِ blocker (kind/stage/step/log/outputTail/detail ِ ۰۴۳–۰۴۵ و فیلدهای قدیمی)؛ هیچ تصمیم ِ «مجاز است؟»ی نیست
+  for (const use of blockerUses) assert.match(use, /blocker\??\.(kind|base|source|field|maxSpecRevisions|maxAttempts|conflictFiles|stage|step|log|outputTail|detail)/, use);
   const html = read('app.component.html');
   assert.doesNotMatch(html, /noteAllowed|\[disabled\][^>]*taskLocked\(/, 'قالب برد: هیچ disabled ِ وابسته به قفل ِ کانبان');
   const ts = read('app.component.ts');
@@ -137,7 +138,8 @@ test('هر کلید به‌تنهایی یک دکمه‌ی دقیقاً یکی �
     const isList = ['closeOrphan', 'externalAccess', 'resetExternal', 'raiseLimit'].includes(key);
     const task = { actions: { [key]: isList ? ['x1'] : true } };
     assert.deepEqual(activeActionKeys(task), [key], key);
-    assert.deepEqual(renderedActionKeys(task), [key], `${key} باید رندر شود`);
+    // retryInstall alias ِ retryProvision است: یک دکمه برای هر دو، پس کلید ِ رندرشده retryProvision است
+    assert.deepEqual(renderedActionKeys(task), [key === 'retryInstall' ? 'retryProvision' : key], `${key} باید رندر شود`);
     const ops = opsButtons(task);
     assert.equal(ops.length, ACTION_PLACEMENT[key] === 'ops' ? 1 : 0, key);
   }

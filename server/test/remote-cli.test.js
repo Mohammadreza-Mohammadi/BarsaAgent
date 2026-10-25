@@ -327,7 +327,7 @@ test('task <id>: وضعیت، actions، blocker، بازبینی، release note�
   assert.match(blocked.out, /blocker: budget-exhausted — سقف implementerRuns پر شد/);
   assert.match(blocked.out, /raiseLimit\[implementerRuns,maxAttempts\]/);
   const json = (await s.cli(['task', '7', '--json'])).json();
-  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'waiting']);
+  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'runtime', 'attempts', 'waiting']);
   assert.equal(json.actions.approve, true);
   assert.equal((await s.cli(['task', '999'])).code, EXIT.REJECTED, 'تسک ناموجود = رد');
   assert.equal((await s.cli(['task'])).code, EXIT.USAGE);
