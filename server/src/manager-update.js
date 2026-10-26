@@ -68,8 +68,15 @@ export class ManagerUpdater {
     // صف خود کانبان را فقط خود کانبان می‌داند (Manager تا شروع واقعی run قفلی نمی‌بیند)؛ بقیه‌ی پیش‌شرط‌ها (main، درخت
     // تمیز، قفل زنده) را Manager می‌سنجد و با exit 50 رد می‌کند.
     if (!dryRun) {
-      const active = this.registry.list(repo).filter(run => run.queued || run.running);
-      if (active.length) this.#reject(repo, ctx, action, `اجرا در جریان/صف است: ${active.map(r => `#${r.taskId}`).join('، ')}`);
+      // در تخلیه، صف ِ نگه‌داشته‌شده «اجرا» نیست (شروع نمی‌شود)؛ فقط run ِ زنده مانع است.
+      const draining = this.registry.draining === true;
+      const active = this.registry.list(repo).filter(run => run.running || (run.queued && !draining));
+      if (active.length) {
+        const hint = draining
+          ? ' — تخلیه روشن است؛ صبر کن تا خالی شود (barsa drain --status)، بعد دوباره sync.'
+          : ' — اول تخلیه را روشن کن (دکمه‌ی «تخلیه» در نگهداری، یا barsa drain) و صبر کن تا run ها تمام شوند.';
+        this.#reject(repo, ctx, action, `اجرا در جریان/صف است: ${active.map(r => `#${r.taskId}`).join('، ')}${hint}`);
+      }
     }
 
     const script = path.resolve(repo.path, repo.managerScript);

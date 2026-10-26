@@ -50,6 +50,7 @@ test('guard.mjs به‌صورت فرآیند: فرمان ِ مجاز ← اجا�
   for (const command of [
     './barsa runtime-options', './barsa runtime 10013', './barsa tasks --waiting', './barsa task 10013 --json',
     './barsa set-runtime 10013 implementer ::high --reason "bump effort"',
+    './barsa drain', './barsa drain --status', './barsa drain --off', './barsa sync --status 20261026101500-0a1b2c3d',
     './barsa answer 5 --note --stdin <<\'EOF\'\nمتن با $HOME و ; داخل heredoc\nEOF'
   ]) expectAllow(runGuard(file, command), command);
 });
@@ -64,6 +65,12 @@ test('guard.mjs به‌صورت فرآیند: whoami، جایگزینی دستو
   expectDeny(runGuard(file, 'ls'), 'ls');
   expectDeny(runGuard(file, './barsa create-task --title x --runtime "bad;spec" --stdin'), 'spec ِ ناجور');
   expectDeny(runGuard(file, ''), 'فرمان ِ خالی');
+  // drain: --status و --off با هم، آرگومان ِ اضافه، زنجیره، گزینه‌ی ناشناخته
+  expectDeny(runGuard(file, './barsa drain --status --off'), 'drain --status --off');
+  expectDeny(runGuard(file, './barsa drain 5'), 'drain با آرگومان');
+  expectDeny(runGuard(file, './barsa drain --off; ls'), 'drain با زنجیره');
+  expectDeny(runGuard(file, './barsa drain --force'), 'drain --force');
+  expectDeny(runGuard(file, './barsa drain $(id)'), 'drain $(id)');
 });
 
 test('guard.mjs به‌صورت فرآیند: ورودی ِ خراب (JSON نامعتبر، بدون tool_input) ← deny، نه کرش', t => {

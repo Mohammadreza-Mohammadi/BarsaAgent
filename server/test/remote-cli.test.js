@@ -12,7 +12,7 @@ import { AuditLog } from '../src/audit.js';
 import { RemoteTokenStore } from '../src/remote-tokens.js';
 import { run as barsa, parseArgs, HELP } from '../src/remote-cli.js';
 import {
-  READ_COMMANDS, WRITE_COMMANDS, READ_FORMS, NOT_REMOTE_COMMANDS, NOT_REMOTE_ANSWER_FLAGS, REMOTE_ENDPOINTS, COMMAND_ENDPOINTS, EXIT, isRemoteAllowed, matchRoute
+  READ_COMMANDS, WRITE_COMMANDS, READ_FORMS, WRITE_FORMS, NOT_REMOTE_COMMANDS, NOT_REMOTE_ANSWER_FLAGS, REMOTE_ENDPOINTS, COMMAND_ENDPOINTS, EXIT, isRemoteAllowed, matchRoute
 } from '../src/remote-cli-spec.js';
 import { evaluate } from '../../docs/remote-control/guard.mjs';
 
@@ -269,7 +269,7 @@ test('health: اجرا، sync و claude؛ متن کوتاه و --json با شک�
   assert.match(text.out, /sync: 1 جلوتر · 2 عقب‌تر · آخرین fetch 2026-10-21 08:00/);
   assert.match(text.out, /claude: نصب ✓ · ورود: ✓/);
   const json = (await s.cli(['health', '--json'])).json();
-  assert.deepEqual(Object.keys(json).sort(), ['checkedAt', 'claude', 'execution', 'ok', 'problems', 'sync']);
+  assert.deepEqual(Object.keys(json).sort(), ['checkedAt', 'claude', 'drain', 'execution', 'ok', 'problems', 'sync']);
   assert.equal(json.execution.enabled, true);
   assert.deepEqual({ ahead: json.sync.ahead, behind: json.sync.behind }, { ahead: 1, behind: 2 });
   assert.deepEqual(json.claude, { installed: true, auth: true });
@@ -593,7 +593,8 @@ test('settings.json: هر فرمان CLI دقیقاً در یکی از allow ی�
   // فرمانی که شکل خواندنی هم دارد (sync): ask دقیقاً «بدون آرگومان» (ask بر allow می‌چربد)، و allow فقط شکل‌های خواندنی
   for (const [command, forms] of Object.entries(READ_FORMS)) {
     assert.ok(WRITE_COMMANDS.includes(command));
-    assert.deepEqual(ask.filter(r => r.startsWith(`Bash(./barsa ${command}`)), [`Bash(./barsa ${command})`], `ask ِ دقیق ِ ${command}`);
+    const writeForms = (WRITE_FORMS[command] ?? []).map(f => `Bash(./barsa ${command} ${f})`);
+    assert.deepEqual(ask.filter(r => r.startsWith(`Bash(./barsa ${command}`)).sort(), [`Bash(./barsa ${command})`, ...writeForms].sort(), `ask ِ دقیق ِ ${command}`);
     assert.deepEqual(allow.filter(r => r.startsWith(`Bash(./barsa ${command}`)).sort(), forms.map(f => `Bash(./barsa ${command} ${f}:*)`).sort());
   }
   // هیچ قاعده‌ی allow/ask ای برای چیزی بیرون از فهرست (یا چیز دیگری جز Bash(./barsa …)) نیست
@@ -631,12 +632,13 @@ test('guard.mjs (پیش‌فرض-رد برای Bash): فقط یک فراخوان
     './barsa answer 5 --note --text-file D:/agent-remote/inbox/a.txt', './barsa --help', './barsa',
     './barsa artifact 5 questions.md --tail 50', './barsa diag 5', './barsa diag --system', './barsa bundle 5', './barsa sync --dry-run', './barsa sync',
     './barsa recover 5', './barsa retry-install 5', './barsa kill-stuck-install 5 --minutes 10',
+    './barsa drain', './barsa drain --status', './barsa drain --off', './barsa drain --json',
     './barsa answer 5 --allow-shared-knowledge-file src/app/x.ts --stdin <<\'EOF\'\nneeded\nEOF'
   ];
   for (const command of ok) assert.deepEqual(evaluate(command), { ok: true }, command);
   const bad = [
     'ls', 'git status', 'cat secret.txt', './barsa tasks; ls', './barsa health && ls', './barsa health | cat', './barsa health > out.txt',
-    './barsa task $(whoami)', './barsa task `id`', './barsa task-evil 5', './barsa abandon 5', './barsa unlock 5', './barsa diag 5; cat x', './barsa sync && ls', 'barsa health', 'bash ./barsa health',
+    './barsa task $(whoami)', './barsa task `id`', './barsa task-evil 5', './barsa abandon 5', './barsa unlock 5', './barsa diag 5; cat x', './barsa sync && ls', './barsa drain --status --off', './barsa drain 5', './barsa drain --off; ls', './barsa drain --force', 'barsa health', 'bash ./barsa health',
     './barsa answer 5 --note --stdin <<EOF\nx\nEOF', './barsa answer 5 --note --stdin <<\'EOF\'\nx\nEOF\nrm -rf /', './barsa answer 5 --note --stdin <<\'EOF\'\nx',
     './barsa create-task --title "a$HOME" --stdin', './barsa tasks\nls', './barsa tasks "unclosed', ''
   ];

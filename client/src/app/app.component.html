@@ -5,7 +5,13 @@
   <b>⛔ اجرای تسک روی این دستگاه خاموش است (execution.enabled=false)</b>
   <small>ساخت/اجرای task و دکمه‌های اکشن غیرفعال‌اند؛ «sync» کار می‌کند.</small>
 </div>
-<header class="topbar" [style.top.px]="executionDisabled() ? 34 : 0">
+<!-- تخلیه (drain): نوار ِ ثابت در همه‌ی نماها؛ منبع فقط /api/drain -->
+<div class="execution-bar drain-bar" role="status" *ngIf="draining()" [style.top.px]="executionDisabled() ? 34 : 0">
+  <b>⏳ در حال تخلیه — run ِ تازه شروع نمی‌شود</b>
+  <small>{{ drain()?.live?.length || 0 }} run ِ زنده ادامه می‌دهد · {{ drain()?.queued?.length || 0 }} در صف نگه داشته شده (بعد از «خاموش کردن» شروع می‌شود)</small>
+  <button class="secondary" (click)="drainOff()">خاموش کردن تخلیه</button>
+</div>
+<header class="topbar" [style.top.px]="(executionDisabled() ? 34 : 0) + (draining() ? 34 : 0)">
   <div class="brand">
     <span class="mark">B</span>
     <div><strong>BarsaAgent</strong><small>کنسول مدیریت پروتکل Agent</small></div>

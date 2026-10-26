@@ -22,6 +22,7 @@ import {
   descendantsOf, isNpmCi, listProcesses, ownHelperPids, parsePsProcesses, parseWindowsProcesses, relatedToTask
 } from '../src/process-list.js';
 import { whichOnPath } from '../src/diag.js';
+import { removeDirOnCleanup } from './cleanup.js';
 
 // --- داده‌ی نمونه ---------------------------------------------------------------------------------------------------
 
@@ -65,7 +66,7 @@ async function boot(t, { tasks = [mk(7), mk(8), mk(9)], run, deps = {}, config =
     fs.writeFileSync(file, content);
   }
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-ops-data-'));
-  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  removeDirOnCleanup(t, dataDir);
   const errFile = path.join(dataDir, 'kanban.err.log');
   const cfg = { repos: [fake.repo], server: {}, issueSource: {}, run: { proxy: '' }, dataDir, logs: { errFile }, health: { claude: OK_CLAUDE, proxyTestUrl: 'http://127.0.0.1:9/' }, ...config };
   const audit = new AuditLog({ dir: dataDir });

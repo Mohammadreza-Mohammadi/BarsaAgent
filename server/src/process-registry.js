@@ -8,6 +8,11 @@ import { lineSplitter, killProcessTree } from './process-tools.js';
 export class ProcessRegistry {
   #runs = new Map();
   #queue = [];
+  #draining = false;
+  #closing = false; // shutdown: هیچ run ِ تازه‌ای شروع نمی‌شود (برخلاف draining ذخیره نمی‌شود)
+  #drainInfo = { since: null, by: null };
+  /** callback ِ تغییر ِ صف/حالت ِ تخلیه (کانبان آن را در drain.json ذخیره می‌کند). */
+  onChange = null;
 
   constructor(options = {}) {
     if (typeof options === 'number') options = { maxLines: options };
@@ -27,6 +32,68 @@ export class ProcessRegistry {
 
   key(repo, task) { return `${repo.id}:${task}`; }
 
+  // --- حالت ِ تخلیه (drain) ---------------------------------------------------------------------------------
+  // run ِ تازه (دستی، خودکار بعد از ساخت/جواب، retry) پذیرفته می‌شود ولی **شروع نمی‌شود**؛ در صف می‌ماند. run های در جریان
+  // ادامه می‌دهند. خاموش شدن صف را می‌اندازد.
+  get draining() { return this.#draining; }
+
+  /** shutdown شروع شده: صف دیگر پمپ نمی‌شود (run ِ تازه‌ای که هنوز به فرآیند نرسیده هرگز شروع نمی‌شود). */
+  beginShutdown() { this.#closing = true; }
+  get drainInfo() { return { ...this.#drainInfo }; }
+
+  setDraining(on, { by = null, since = null } = {}) {
+    const next = on === true;
+    if (next === this.#draining) return false;
+    this.#draining = next;
+    this.#drainInfo = next ? { since: since ?? new Date().toISOString(), by } : { since: null, by: null };
+    this.#notify();
+    if (!next) this.#pump();
+    return true;
+  }
+
+  #notify() {
+    // خاموش شدن: stopAll صف را خالی می‌کند ولی drain.json نباید با آن بازنویسی شود؛ صف ِ ذخیره‌شده باید بعد از restart برگردد.
+    if (this.#closing) return;
+    try { this.onChange?.(); } catch { /* ذخیره‌ی حالت نباید اجرا را بشکند */ }
+  }
+
+  /** run های در حال اجرا (فرآیند ساخته شده، تمام نشده). */
+  liveSnapshot() {
+    return [...this.#runs.values()].filter(x => !x.finished && !!x.startedAt).map(x => ({
+      repoId: x.repo, taskId: x.taskId, runId: x.runId ?? null, user: x.user ?? null, startedAt: x.startedAt
+    }));
+  }
+
+  /** run های در صف (به ترتیب ِ صف). */
+  queuedSnapshot() {
+    return this.#queue.map(key => this.#runs.get(key)).filter(x => x && !x.finished && x.queued).map(x => ({
+      repoId: x.repo, taskId: x.taskId, user: x.user ?? null, queuedAt: x.queuedAt
+    }));
+  }
+
+  /** بعد از restart: صف ِ ذخیره‌شده‌ی تخلیه را بدون شروع برمی‌گرداند (باید draining روشن باشد). */
+  restoreQueued(items, repoOf) {
+    let restored = 0;
+    for (const item of items) {
+      const repo = repoOf(item.repoId);
+      if (!repo) continue;
+      if (this.enqueue(repo, item.taskId, { user: item.user ?? null, queuedAt: item.queuedAt, restored: true })) restored += 1;
+    }
+    return restored;
+  }
+
+  /**
+   * shutdown: همه‌ی run های زنده را (با مهلت ِ graceMs) می‌بندد و صف را خالی می‌کند. خروجی: فهرست ِ آنچه بسته شد.
+   * فقط run هایی که همین registry ساخته؛ pid ِ دلخواه نیست.
+   */
+  async stopAll() {
+    const live = this.liveSnapshot();
+    const queued = this.queuedSnapshot();
+    const repos = new Map([...this.#runs.values()].map(x => [x.repo, x.repoConfig]));
+    await Promise.all([...live, ...queued].map(item => this.stop(repos.get(item.repoId) ?? { id: item.repoId }, item.taskId).catch(() => null)));
+    return { live, queued };
+  }
+
   activeCount() {
     return [...this.#runs.values()].filter(x => !x.finished && !!x.startedAt).length;
   }
@@ -42,6 +109,7 @@ export class ProcessRegistry {
         startedAt: x.startedAt ?? null,
         finishedAt: x.finishedAt ?? null,
         queued: x.queued === true,
+        held: x.queued === true && this.#draining,
         queuePosition: x.queued ? this.#queue.indexOf(this.key(repo, x.taskId)) + 1 : null,
         running: !x.finished && !!x.startedAt,
         stopped: x.stopped === true,
@@ -79,7 +147,9 @@ export class ProcessRegistry {
 
     this.#runs.set(key, run);
     this.#queue.push(key);
-    this.#push(run, 'system', 'در صف اجرا قرار گرفت.');
+    if (context.queuedAt) run.queuedAt = context.queuedAt;
+    this.#push(run, 'system', this.#draining ? 'در صف نگه داشته شد: حالت تخلیه است و run ِ تازه شروع نمی‌شود (با drain --off شروع می‌شود).' : 'در صف اجرا قرار گرفت.');
+    if (!context.restored) this.#notify();
     this.#pump();
     return run;
   }
@@ -99,6 +169,7 @@ export class ProcessRegistry {
       run.queued = false;
       run.stopped = true;
       this.#finish(run, null, 'از صف حذف شد (توقف).');
+      this.#notify();
       return { stopped: true, wasQueued: true };
     }
     if (!run.child?.pid) return { stopped: false, reason: 'no-process' };
@@ -109,6 +180,7 @@ export class ProcessRegistry {
   }
 
   #pump() {
+    if (this.#draining || this.#closing) return; // تخلیه / shutdown: هیچ run ِ تازه‌ای شروع نمی‌شود
     while (this.activeCount() < this.maxConcurrent && this.#queue.length) {
       const key = this.#queue.shift();
       const run = this.#runs.get(key);

@@ -1,9 +1,9 @@
-import { Component, OnInit, inject, input, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
-import { GitInventory, GitStatus, GitWorktree, ManagerInfoView } from './models';
+import { DrainStatus, GitInventory, GitStatus, GitWorktree, ManagerInfoView } from './models';
 import { LiveOutputComponent } from './live-output.component';
 
 type GitAction = 'worktree-add' | 'prove' | 'merge' | 'worktree-remove' | 'branch-delete';
@@ -39,6 +39,33 @@ const BRANCH_PATTERN = /^(fix|feat|chore)\/[a-z0-9-]+$/;
         </div>
       }
 
+      <div class="detail-section drain-panel">
+        <div class="section-head"><div><h3>تخلیه (drain) — پیش از به‌روزرسانی ِ کانبان یا sync</h3>
+          <p>با تخلیه روشن، run ِ تازه (دستی و خودکار) شروع نمی‌شود و در صف می‌ماند؛ run های در جریان تا پایان/نقطه‌ی انتظار ادامه می‌دهند. حالت در <code>dataDir</code> ذخیره می‌شود و بعد از restart هم می‌ماند.</p></div></div>
+        @if (drain(); as d) {
+          <div class="facts">
+            <div><small>حالت</small><b>{{ d.draining ? 'روشن — run ِ تازه شروع نمی‌شود' : 'خاموش (عادی)' }}</b></div>
+            <div><small>run ِ زنده</small><b>{{ d.live.length }}</b></div>
+            <div><small>در صف</small><b>{{ d.queued.length }}</b></div>
+          </div>
+          @if (d.live.length) {
+            <table class="drain-table"><thead><tr><th>تسک</th><th>state</th><th>مدت</th></tr></thead><tbody>
+              @for (x of d.live; track x.taskId) { <tr><td dir="ltr">#{{ x.taskId }}</td><td dir="ltr">{{ x.state || '—' }}</td><td>{{ x.durationText }}</td></tr> }
+            </tbody></table>
+          } @else if (d.draining) { <div class="drain-empty">✅ خالی — هیچ run ِ زنده‌ای نیست؛ می‌توانی sync / به‌روزرسانی کنی.</div> }
+          @if (d.queued.length) { <small class="sync-note">در صف{{ d.draining ? ' (نگه‌داشته‌شده)' : '' }}: {{ queuedText(d) }}</small> }
+        }
+        <div class="danger-actions">
+          @if (drain()?.draining) {
+            <button class="primary" [disabled]="busy()" (click)="setDrain(false)">خاموش کردن تخلیه و شروع ِ صف</button>
+          } @else {
+            <button class="secondary" [disabled]="busy()" (click)="setDrain(true)">روشن کردن تخلیه</button>
+          }
+          <button class="secondary" [disabled]="busy()" (click)="refreshDrain()">↻ وضعیت</button>
+        </div>
+        <small class="sync-note">routine ِ به‌روزرسانی: تخلیه ← صبر تا «خالی» ← stop سرویس ← pull/build/start (یا sync) ← خاموش کردن تخلیه. جزئیات: docs/server-service.md</small>
+      </div>
+
       <div class="detail-section">
         <div class="section-head"><div><h3>همگام‌سازی Manager با origin (sync)</h3>
           <p>منطقش در خود Manager است: ff / push / merge ِ واقعی (هرگز rebase) و <code>npm ci</code> فقط با تغییر package-lock. با اجرا خاموش هم کار می‌کند.</p></div></div>
@@ -56,6 +83,11 @@ const BRANCH_PATTERN = /^(fix|feat|chore)\/[a-z0-9-]+$/;
           <button class="secondary" [disabled]="busy() || syncRunning()" (click)="askPreview()">پیش‌نمایش (sync --dry-run)</button>
           <button class="primary" [disabled]="busy() || syncRunning()" (click)="askUpdate()">همگام‌سازی با origin (sync)</button>
         </div>
+        @if (syncHint(); as hint) {
+          <div class="disabled-gate-warning">{{ hint }}
+            @if (!drain()?.draining) { <button class="primary" [disabled]="busy()" (click)="setDrain(true)">روشن کردن تخلیه</button> }
+          </div>
+        }
         <small class="sync-note">⏱ <code>npm ci</code> تا ۲۰ دقیقه و hook ِ <code>pre-push</code> ِ سنگین (<code>ng lint</code> و <code>ng build</code>) روی push ِ main تا ۳۰ دقیقه طول می‌کشد؛ خروجی زنده‌ی فرمان پایین صفحه نمایش داده می‌شود. بستن این صفحه اجرا را قطع نمی‌کند.</small>
       </div>
 
@@ -122,7 +154,7 @@ const BRANCH_PATTERN = /^(fix|feat|chore)\/[a-z0-9-]+$/;
     </section>
   `
 })
-export class MaintenanceComponent implements OnInit {
+export class MaintenanceComponent implements OnInit, OnDestroy {
   readonly api = inject(ApiService);
   readonly repoId = input.required<string>();
   readonly gitStatus = signal<GitStatus | null>(null);
@@ -133,12 +165,38 @@ export class MaintenanceComponent implements OnInit {
   /** تا پایان خروجی زنده‌ی sync (ممکن است دقایق طول بکشد) دکمه‌های sync غیرفعال می‌مانند. */
   readonly syncRunning = signal(false);
   readonly error = signal('');
+  readonly drain = signal<DrainStatus | null>(null);
+  /** وقتی run ِ زنده هست و کاربر sync را زد: به‌جای رد شدن ِ بی‌توضیح، تخلیه را پیشنهاد می‌دهیم. */
+  readonly syncHint = signal('');
+  private drainTimer?: number;
   readonly streamUrl = signal<string | null>(null);
   newBranch = '';
   newDir = '';
   manualBranch = '';
 
-  async ngOnInit(): Promise<void> { await this.reload(); }
+  async ngOnInit(): Promise<void> {
+    await this.reload();
+    this.drainTimer = window.setInterval(() => void this.refreshDrain(), 5000);
+  }
+
+  ngOnDestroy(): void { if (this.drainTimer) window.clearInterval(this.drainTimer); }
+
+  queuedText(d: DrainStatus): string { return d.queued.map(x => '#' + x.taskId).join('، '); }
+
+  async refreshDrain(): Promise<void> {
+    try {
+      this.drain.set(await firstValueFrom(this.api.drain()));
+      if (this.syncHint() && (this.drain()?.live.length ?? 0) === 0) this.syncHint.set('');
+    } catch (e) { this.error.set(this.message(e)); }
+  }
+
+  async setDrain(on: boolean): Promise<void> {
+    this.busy.set(true);
+    this.error.set('');
+    try { this.drain.set(await firstValueFrom(on ? this.api.drainOn() : this.api.drainOff())); }
+    catch (e) { this.error.set(this.message(e)); }
+    finally { this.busy.set(false); }
+  }
 
   branchValid(value: string): boolean { return BRANCH_PATTERN.test(value || ''); }
 
@@ -152,6 +210,7 @@ export class MaintenanceComponent implements OnInit {
     if (status.status === 'fulfilled') this.gitStatus.set(status.value); else this.error.set(this.message(status.reason));
     if (inventory.status === 'fulfilled') this.inventory.set(inventory.value); else this.error.set(this.message(inventory.reason));
     if (info.status === 'fulfilled') this.managerInfo.set(info.value);
+    await this.refreshDrain();
   }
 
   ask(c: Confirm): void { this.error.set(''); this.confirm.set(c); }
@@ -165,7 +224,18 @@ export class MaintenanceComponent implements OnInit {
     });
   }
 
-  askUpdate(): void {
+  async askUpdate(): Promise<void> {
+    // run ِ زنده sync را رد می‌کند (سرور هم می‌سنجد)؛ اینجا پیش از رد شدن راهِ درست را نشان می‌دهیم.
+    await this.refreshDrain();
+    const live = this.drain()?.live ?? [];
+    if (live.length) {
+      const who = live.map(x => '#' + x.taskId).join('، ');
+      this.syncHint.set(this.drain()?.draining
+        ? `تخلیه روشن است ولی هنوز ${live.length} run ِ زنده هست (${who}). صبر کن تا «خالی» شود، بعد دوباره sync را بزن.`
+        : `${live.length} run ِ زنده هست (${who}) و sync رد می‌شود. اول تخلیه را روشن کن، صبر کن تا خالی شود، بعد sync کن و آخرش تخلیه را خاموش کن.`);
+      return;
+    }
+    this.syncHint.set('');
     this.ask({
       title: 'همگام‌سازی Manager با origin',
       command: 'node scripts/manager.js sync --json  →  (بعد از موفقیت) manager.js --help و capabilities دوباره خوانده می‌شود',

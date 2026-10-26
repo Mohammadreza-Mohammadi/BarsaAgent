@@ -30,6 +30,7 @@ const str = value => typeof value === 'string';
 const nonEmptyStr = value => typeof value === 'string' && value.trim() !== '';
 const strOrNull = value => value === null || typeof value === 'string';
 const strList = value => Array.isArray(value) && value.every(str);
+const oneOf = (...allowed) => value => allowed.includes(value);
 
 const SCHEMA = [
   ['server.port', int(1, 65535), 'عدد صحیح بین ۱ تا ۶۵۵۳۵'],
@@ -47,7 +48,10 @@ const SCHEMA = [
   ['dataDir', nonEmptyStr, 'رشته‌ی غیرخالی (مسیر)'],
   ['editor.command', str, 'رشته (مسیر executable)'],
   ['logs.errFile', nonEmptyStr, 'رشته‌ی غیرخالی (مسیر kanban.err.log برای barsa diag --system)'],
-  ['health.proxyTestUrl', nonEmptyStr, 'رشته‌ی غیرخالی (URL)']
+  ['health.proxyTestUrl', nonEmptyStr, 'رشته‌ی غیرخالی (URL)'],
+  ['shutdown.timeoutMs', int(1000), 'عدد صحیح ≥ ۱۰۰۰ (میلی‌ثانیه؛ پیش‌فرض ۱۰۰۰۰)'],
+  ['shutdown.runWaitMs', int(0), 'عدد صحیح ≥ ۰ (میلی‌ثانیه؛ پیش‌فرض ۰ = برای run های زنده صبر نکن)'],
+  ['shutdown.liveRuns', oneOf('terminate', 'leave'), '"terminate" یا "leave"']
 ];
 
 function describe(value) {
