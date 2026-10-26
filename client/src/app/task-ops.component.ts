@@ -3,19 +3,20 @@ import { FormsModule } from '@angular/forms';
 import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
-import { HealthStatus, RunRecord, RunningTask, Task } from './models';
+import { HealthStatus, RecheckResult, RunRecord, RunningTask, Task } from './models';
+import { failedWrites, lockNeedsForce, suggestedRecovery } from './task-health';
 import { CardButton, allowed, can, conflictFiles, hasActions, opsButtons, provisionStageText, raiseLimitFields, supportsRaiseLimitList, unknownActionKeys } from './task-actions';
 
 type Pending =
   | 'abandon' | 'cancel' | 'void' | 'unlock' | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan'
-  | 'allow-path' | 'allow-shared-knowledge-file' | 'external-access' | 'reset-external' | 'recover' | 'retry-provision';
+  | 'allow-path' | 'allow-shared-knowledge-file' | 'external-access' | 'reset-external' | 'recover' | 'recheck' | 'retry-provision';
 
 const BUTTON_LABELS: Record<string, string> = {
   unblock: '🔓 رفع blocker (unblock)', 'retry-rebase': '🔁 دوباره امتحان کن (main عوض شده)', 'raise-limit': '⬆ بالا بردن سقف',
   'allow-path': '➕ افزودن مسیر به scope', 'allow-shared-knowledge-file': '➕ فایل دانش مشترک', 'external-access': '🔑 دسترسی منبع بیرونی',
   'reset-external': '♻ بازنشانی worktree سایه', void: '↩ باطل کردن آخرین transition', unlock: '🔓 آزاد کردن قفل',
   cancel: 'بستن task (cancel)', abandon: 'کنار گذاشتن (abandon)',
-  recover: '🛟 بازیابی (recover)', 'retry-provision': '🔁 دوباره امتحان کن (نصب / build / baseline)'
+  recover: '🛟 بازیابی (recover)', recheck: '♻ سنجش دوباره (بدون اجرای agent)', 'retry-provision': '🔁 دوباره امتحان کن (نصب / build / baseline)'
 };
 
 const DANGEROUS = new Set<Pending>(['abandon', 'cancel', 'void', 'unlock', 'reset-external']);
@@ -26,10 +27,15 @@ const TITLES: Record<Pending, string> = {
   'raise-limit': 'بالا بردن سقف (raise-limit)', 'close-orphan': 'بستن attempt یتیم (close-orphan)',
   'allow-path': 'افزودن مسیر به scope.allow (allow-path)', 'allow-shared-knowledge-file': 'استثنای فایل دانش مشترک',
   'external-access': 'تغییر دسترسی منبع بیرونی', 'reset-external': 'بازنشانی worktree سایه (reset-external)',
-  recover: 'بازیابی ِ تسک (recover)', 'retry-provision': 'دوباره امتحان کن (provisioning)'
+  recover: 'بازیابی ِ تسک (recover)', recheck: 'سنجش دوباره (recheck)', 'retry-provision': 'دوباره امتحان کن (provisioning)'
+};
+
+const RECHECK_RESULT: Record<string, string> = {
+  accepted: 'پذیرفته شد — تسک به مرحله‌ی بعد رفت', rejected: 'باز هم رد شد', blocked: 'مسدود شد', routed: 'به نقش ِ دیگری هدایت شد'
 };
 
 const HINTS: Partial<Record<Pending, string>> = {
+  recheck: 'همان خروجی ِ موجود دوباره سنجیده می‌شود. budget مصرف نمی‌شود؛ agent اجرا نمی‌شود و attempt ِ تازه‌ای ساخته نمی‌شود.',
   abandon: 'task را برای همیشه کنار می‌گذارد؛ برنمی‌گردد.',
   cancel: 'task را می‌بندد؛ برنمی‌گردد.',
   void: 'آخرین transition (بدون اثر بیرونی) را برمی‌گرداند.',
@@ -51,6 +57,32 @@ const HINTS: Partial<Record<Pending, string>> = {
       <div class="section-head"><div><h3>اجراها و اکشن‌ها</h3><p>هر اکشن با نام تو در دفتر ممیزی ثبت می‌شود؛ مجاز بودنش را خود Manager می‌گوید.</p></div></div>
       @if (error()) { <div class="notice error"><span>{{ error() }}</span><button (click)="error.set('')">×</button></div> }
       @if (info()) { <div class="notice info"><span>{{ info() }}</span><button (click)="info.set('')">×</button></div> }
+      @if (recheckResult(); as rr) {
+        <div class="notice info recheck-result">
+          <span>♻ نتیجه‌ی سنجش دوباره (<code>attempt.rechecked</code>): <b>{{ recheckText(rr) }}</b>
+            @if (rr.event) { · attempt {{ rr.event.attempt ?? '؟' }} · guard ِ قبلی: <code dir="ltr">{{ rr.event.previousGuard ?? '—' }}</code> · budget مصرف نشد }
+            @if (!rr.event) { · رویداد ِ attempt.rechecked پیدا نشد؛ خروجی ِ Manager: {{ rr.output.join(' / ') }} }
+          </span>
+          <button (click)="recheckResult.set(null)">×</button>
+        </div>
+      }
+      @if (failedWritesView(); as fw) {
+        <div class="conflict-card blocker-card failed-writes-card">
+          <b>⛔ خطای نوشتن ِ ابزار (<code>tool-write-failed</code>)@if (fw.role) { — نقش {{ fw.role }} }@if (fw.attempt) { · attempt {{ fw.attempt }} }</b>
+          @if (fw.detail) { <p>{{ fw.detail }}</p> }
+          @if (fw.legacy) {
+            <div class="disabled-gate-warning">فهرست ِ نوشتن‌های ناموفق ثبت نشده (<code>failedWrites: null</code>) — رویداد ِ قدیمی‌تر از TOOLING-049.</div>
+          } @else if (!fw.rows.length) {
+            <div class="disabled-gate-warning">فهرست ِ نوشتن‌های ناموفق خالی است.</div>
+          } @else {
+            <table class="fw-table">
+              <thead><tr><th>ابزار</th><th>مسیر نسبی</th><th>خطا</th></tr></thead>
+              <tbody>@for (w of fw.rows; track $index) { <tr><td dir="ltr">{{ w.tool }}</td><td dir="ltr"><code>{{ w.path }}</code></td><td>{{ w.error }}@if (w.kind) { <i dir="ltr"> [{{ w.kind }}]</i> }</td></tr> }</tbody>
+            </table>
+          }
+          @if (suggested(); as s) { <small>پیشنهاد ِ Manager (<code>health.recovery</code>): <b>{{ s === 'recheck' ? 'سنجش دوباره (recheck)' : 'رفع blocker (unblock)' }}</b>@if (task().health?.recovery?.reason) { — {{ task().health!.recovery!.reason }} }</small> }
+        </div>
+      }
 
       <div class="danger-actions wrap">
         @if (active()) { <button class="danger" [disabled]="busy()" (click)="stop()">⏹ توقف این اجرا</button> }
@@ -126,9 +158,12 @@ const HINTS: Partial<Record<Pending, string>> = {
       <!-- هر کلید فعال actions دقیقاً یک دکمه (opsButtons در task-actions.ts)؛ هیچ شرط دستی دیگری نیست -->
       <div class="danger-actions wrap">
         @for (b of buttons(); track b.id + (b.target ?? '')) {
-          <button [class]="dangerous(b.id) ? 'danger-outline' : 'secondary'" [disabled]="busy() || active()" (click)="open(b.id, b.target)">{{ label(b) }}</button>
+          <button [class]="dangerous(b.id) ? 'danger-outline' : 'secondary'" [class.recovery-suggested]="b.id === suggested()" [disabled]="busy() || active()" (click)="open(b.id, b.target)">{{ label(b) }}@if (b.id === suggested()) { <em> — پیشنهاد Manager</em> }</button>
         }
       </div>
+      @if (can('recheck')) {
+        <small class="recheck-note">♻ «سنجش دوباره»: همان خروجی ِ موجود دوباره سنجیده می‌شود. budget مصرف نمی‌شود.</small>
+      }
       @if (unknownKeys().length) {
         <!-- اکشن ِ تازه‌ی Manager هرگز نامرئی نمی‌ماند: دکمه‌ی غیرفعال با نام خودش -->
         <div class="danger-actions wrap unknown-actions">
@@ -212,6 +247,8 @@ export class TaskOpsComponent {
   readonly error = signal('');
   readonly info = signal('');
   readonly afterStop = signal<HealthStatus | null>(null);
+  /** نتیجه‌ی آخرین recheck (رویداد attempt.rechecked)؛ بعد از اجرا نشان داده می‌شود. */
+  readonly recheckResult = signal<RecheckResult | null>(null);
   reason = '';
   limitField = '';
   limitValue = 1;
@@ -246,6 +283,7 @@ export class TaskOpsComponent {
   }
   /** resume ِ خودکار فقط بعد از approve/reject/clarify (پنل گیت)؛ این‌جا فقط اکشن‌هایی که خودشان unblock + run هستند. */
   resumeNote(p: Pending): string {
+    if (p === 'recheck') return 'agent اجرا نمی‌شود، attempt ِ تازه‌ای ساخته نمی‌شود و budget مصرف نمی‌شود؛ ممکن است تا چند دقیقه طول بکشد (verify و commit ِ transition).';
     return p === 'retry-rebase' || p === 'retry-provision'
       ? 'بعد از رفع blocker، کانبان خودش run می‌زند (unblock + run).'
       : 'این اکشن run را خودکار نمی‌زند؛ بعد از آن (و بعد از اکشن‌های پشت‌سرهم) خودت «▶ اجرا / ادامه» را بزن.';
@@ -288,11 +326,16 @@ export class TaskOpsComponent {
   recoverMode(): 'process-attempt' | 'discard-residue' | null { return this.task().health?.recovery?.mode ?? null; }
   /** دلیل برای این اکشن اختیاری است؟ (rebase/provisioning و recover ِ process-attempt) */
   reasonOptional(p: Pending): boolean {
-    return p === 'retry-rebase' || p === 'retry-provision' || (p === 'recover' && this.recoverMode() !== 'discard-residue');
+    return p === 'retry-rebase' || p === 'retry-provision' || p === 'recheck' || (p === 'recover' && this.recoverMode() !== 'discard-residue');
   }
   rebaseConflict(): boolean { return this.task().blocker?.kind === 'rebase-conflict'; }
   conflicts(): string[] | null { return conflictFiles(this.task()); }
-  lockUnknown(): boolean { return this.task().health?.transitionLock?.alive === null; }
+  lockUnknown(): boolean { return lockNeedsForce(this.task().health?.transitionLock); }
+  /** جدول ِ failedWrites ِ blocker ِ tooling/tool-write-failed (TOOLING-049)؛ دیگر blockerها ← null. */
+  failedWritesView() { return failedWrites(this.task().blocker); }
+  /** پیشنهاد ِ Manager (health.recovery.suggested) فقط وقتی recheck یا unblock است. */
+  suggested(): 'recheck' | 'unblock' | null { return suggestedRecovery(this.task()); }
+  recheckText(r: RecheckResult): string { return (r.result && RECHECK_RESULT[r.result]) || (r.result ? `نتیجه: ${r.result}` : 'نتیجه نامعلوم'); }
   title(p: Pending): string { return TITLES[p]; }
   hint(p: Pending): string {
     if (p === 'retry-provision') return this.stageText();
@@ -361,6 +404,7 @@ export class TaskOpsComponent {
       case 'unblock': return `node scripts/manager.js answer ${id} --unblock ${why}`;
       case 'retry-rebase': return `node scripts/manager.js answer ${id} --unblock ${why}  ←  سپس  node scripts/manager.js run ${id}`;
       case 'retry-provision': return `node scripts/manager.js answer ${id} --unblock ${why}  ←  سپس  node scripts/manager.js run ${id}`;
+      case 'recheck': return `node scripts/manager.js recheck ${id}`;
       case 'recover': return `node scripts/manager.js recover ${id}${this.recoverMode() === 'discard-residue' ? ` --discard-residue --reason-file ‹متن دلیل›` : ''}`;
       case 'raise-limit': return `node scripts/manager.js answer ${id} --raise-limit ${this.limitField}=${this.limitValue} ${why}`;
       case 'close-orphan': return `node scripts/manager.js answer ${id} --close-orphan ${this.attempt} ${why}`;
@@ -404,6 +448,7 @@ export class TaskOpsComponent {
         case 'unblock': await firstValueFrom(this.api.unblockTask(repo, id, reason)); break;
         case 'retry-rebase': await firstValueFrom(this.api.retryRebase(repo, id, reason || undefined)); break;
         case 'retry-provision': await firstValueFrom(this.api.retryProvision(repo, id, reason || undefined)); break;
+        case 'recheck': this.recheckResult.set(await firstValueFrom(this.api.recheckTask(repo, id))); break;
         case 'recover': await firstValueFrom(this.api.recoverTask(repo, id, this.recoverMode() === 'discard-residue' ? { discardResidue: true, reason } : {})); break;
         case 'raise-limit': await firstValueFrom(this.api.raiseLimit(repo, id, this.limitField, Number(this.limitValue), reason)); break;
         case 'close-orphan': await firstValueFrom(this.api.closeOrphan(repo, id, this.attempt, reason)); break;

@@ -4,8 +4,8 @@
 // اصل‌ها:
 //  - ردیف‌ها از کلیدهای `runtime.effective` (و `runtime --options` ← `roles`) ساخته می‌شوند، نه از فهرست ِ ثابت ِ نقش‌ها.
 //  - گزینه‌ها (provider، مدل، effort، preset) **فقط** از `runtime --options --json` می‌آیند.
-//  - کانبان نگاشت ِ state به نقش ندارد: نقش ِ «جاری» از attempt ِ زنده، وگرنه از `lastAttempt` می‌آید؛ «بعدی» را
-//    status نمی‌دهد (در manifest است، نه در status --json) و نشان داده نمی‌شود.
+//  - کانبان نگاشت ِ state به نقش ندارد و نقش را حدس نمی‌زند: نقش ِ «جاری» و «بعدی» از `task.roles` ِ Manager می‌آید (TOOLING-048).
+//    `roles` غایب (Manager ِ قدیمی‌تر) ⇒ هیچ برجسته‌سازی، بدون خطا.
 //  - اعتبارسنجی ِ معنایی کار ِ Manager است؛ این‌جا فقط جلوگیری از انتخاب ِ آشکارا ناممکن (و reason ِ خالی).
 import type {
   Attempt, AttemptRuntime, EffectiveRoleRuntime, QueuedRuntimeChange, RuntimeOptions, RuntimeProviderOption, RuntimeSelection, StructuredFailure, Task
@@ -41,15 +41,14 @@ export function liveAttempt(task: Pick<Task, 'attempts'> | null | undefined): At
   return last && (last.outcome == null || last.outcome === '') ? last : null;
 }
 
-/**
- * نقش ِ «جاری»: نقش ِ attempt ِ زنده، وگرنه ِ `lastAttempt`. تسک ِ پایان‌یافته نقش ِ جاری ندارد.
- * (نگاشت ِ state ← نقش عمداً این‌جا نیست؛ منطق ِ Manager است.)
- */
-export function currentRole(task: Pick<Task, 'attempts' | 'lastAttempt' | 'state'> | null | undefined): string | null {
-  if (!task || RUNTIME_FINISHED_STATES.includes(task.state)) return null;
-  const live = liveAttempt(task);
-  if (live?.role) return live.role;
-  return task.lastAttempt?.role ?? null;
+/** نقش ِ «جاری» همان‌طور که Manager در `roles.current` داد (null = ندارد / `roles` غایب). هیچ حدسی روی attempt ِ آخر نیست. */
+export function currentRole(task: Pick<Task, 'roles'> | null | undefined): string | null {
+  return task?.roles?.current ?? null;
+}
+
+/** نقش ِ «بعدی» (`roles.next`)؛ null = پس از گام ِ جاری نقشی نیست (مثلاً بعد از review) یا `roles` غایب. */
+export function nextRole(task: Pick<Task, 'roles'> | null | undefined): string | null {
+  return task?.roles?.next ?? null;
 }
 
 /** ترتیب ِ نقش‌ها: اول ترتیب ِ `runtime --options` ← roles، بعد بقیه‌ی کلیدهای effective به ترتیب ِ خودشان. */
@@ -79,6 +78,8 @@ export interface RuntimeRow {
   /** resolve نشد (`{error, code}`). */
   error: string | null;
   isCurrent: boolean;
+  /** نقش ِ بعدی (`roles.next`): با نشانه‌ی کم‌رنگ‌تر. */
+  isNext: boolean;
   /** تغییر ِ در صف که روی این نقش اثر دارد (آخری برنده است). */
   pending: PendingRow | null;
   /** attempt ِ زنده‌ی همین نقش با runtime ی که با مؤثر ِ امروز فرق دارد (تغییر وسط ِ کار). */
@@ -122,6 +123,7 @@ export function runtimeRows(task: Task | null | undefined, optionRoles?: readonl
   const effective = runtime?.effective;
   if (!task || !effective) return [];
   const current = currentRole(task);
+  const next = nextRole(task);
   const live = liveAttempt(task);
   return roleOrder(Object.keys(effective), optionRoles).map(role => {
     const entry = effective[role];
@@ -137,6 +139,7 @@ export function runtimeRows(task: Task | null | undefined, optionRoles?: readonl
       sourceTitle: fieldSourcesTitle(entry),
       error,
       isCurrent: current === role,
+      isNext: next === role && next !== current,
       pending: error ? null : pendingFor(runtime, role),
       liveDiffers: liveRuntimeDiffers(live, role, entry)
     };

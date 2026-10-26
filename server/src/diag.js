@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gitEnv } from './git-ops.js';
 import { environmentSecrets, redact } from './security.js';
+import { failedWrites as failedWritesView } from './task-health-view.js';
 import { ageMs, interestingProcesses, ownHelperPids, relatedToTask } from './process-list.js';
 import { APP_ROOT } from './config.js';
 
@@ -20,6 +21,9 @@ export const clip = (value, max) => {
 };
 
 /** هر متن بیرونی که به خروجی می‌رود از redactor مشترک می‌گذرد (راز محیط + الگوهای توکن + شناسه‌ی کاربر پورتال). */
+/** سقف ِ فهرست‌های git status در diag؛ از آن بیشتر شد تعداد ِ کل هم گزارش می‌شود (بریدن ِ بی‌صدا ممنوع). */
+export const DIAG_LIST_MAX = 40;
+
 export const safe = (value, max) => {
   const text = redact(String(value ?? ''), environmentSecrets());
   return max ? clip(text, max) : text;
@@ -34,6 +38,7 @@ export function runGit(cwd, args, { timeoutMs = 20_000 } = {}) {
 }
 
 const lines = text => String(text || '').split(/\r?\n/).map(l => l.trimEnd()).filter(Boolean);
+const capped = (list, max = DIAG_LIST_MAX) => ({ lines: list.slice(0, max), total: list.length });
 
 async function guard(fn) {
   try { return await fn(); } catch (error) { return { error: safe(error?.message || error, 300) }; }
@@ -92,20 +97,26 @@ export async function collectTaskDiag(ctx) {
       if (!taskDirPath) return { note: 'Manager مسیر پوشه‌ی تسک را نداد.' };
       const rel = path.relative(repo.path, taskDirPath).split(path.sep).join('/');
       if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return { note: 'مسیر پوشه‌ی تسک بیرون از مخزن است؛ بررسی نشد.' };
-      const result = await runGit(repo.path, ['status', '--short', '--', rel]);
-      return result.ok ? { path: rel, lines: lines(result.stdout).map(l => safe(l, 200)) } : { error: safe(result.stderr, 200) };
+      // --untracked-files=all: پوشه‌ی untracked ِ تازه به یک خط ِ `?? dir/` فشرده نشود؛ همه‌ی مسیرها (تا سقف) با شمار ِ کل
+      const result = await runGit(repo.path, ['status', '--short', '--untracked-files=all', '--', rel]);
+      return result.ok ? { path: rel, ...capped(lines(result.stdout).map(l => safe(l, 200))) } : { error: safe(result.stderr, 200) };
     }),
     guard(async () => {
       const exists = worktreePath ? fs.existsSync(worktreePath) : false;
       const out = {
         path: worktreePath ? safe(worktreePath, 200) : null, managerStatus: task.worktree?.status ?? null, exists,
-        branch: task.git?.branch ?? null, base: task.git?.base ?? null, nodeModulesBin: null, dirty: null, merged: null, ownCommits: null, branchExists: null
+        branch: task.git?.branch ?? null, base: task.git?.base ?? null, nodeModulesBin: null, dirty: null, dirtyTotal: null, merged: null, ownCommits: null, branchExists: null
       };
       if (worktreePath && exists) {
         const bin = path.join(worktreePath, 'node_modules', '.bin');
         out.nodeModulesBin = fs.existsSync(bin);
-        const status = await runGit(worktreePath, ['status', '--short']);
-        out.dirty = status.ok ? lines(status.stdout).slice(0, 15).map(l => safe(l, 160)) : [`خطا: ${safe(status.stderr, 120)}`];
+        // باگ ِ ۱۰۰۲۳: بدون -uall پوشه‌ی untracked ِ تازه یک خط می‌شد؛ بعد diag-format فقط ۶ خط ِ اول را بی‌صدا نشان می‌داد.
+        const status = await runGit(worktreePath, ['status', '--short', '--untracked-files=all']);
+        if (status.ok) {
+          const all = capped(lines(status.stdout).map(l => safe(l, 160)));
+          out.dirty = all.lines;
+          out.dirtyTotal = all.total;
+        } else out.dirty = [`خطا: ${safe(status.stderr, 120)}`];
       }
       const branch = typeof out.branch === 'string' ? out.branch : '';
       const base = typeof out.base === 'string' && BRANCH.test(out.base) ? out.base : 'main';
@@ -139,8 +150,12 @@ export async function collectTaskDiag(ctx) {
     blocker: task.blocker ? {
       kind: task.blocker.kind ?? null, detail: safe(task.blocker.detail ?? task.blocker.reason ?? '', 300),
       stage: task.blocker.stage ?? null, step: task.blocker.step ?? null, log: task.blocker.log ? safe(task.blocker.log, 300) : null,
-      outputTail: Array.isArray(task.blocker.outputTail) ? task.blocker.outputTail.slice(-40).map(line => safe(line, 300)) : null
+      outputTail: Array.isArray(task.blocker.outputTail) ? task.blocker.outputTail.slice(-40).map(line => safe(line, 300)) : null,
+      // TOOLING-049: جدول ِ نوشتن‌های ناموفق ِ ابزار (kind=tooling، stage=tool-write-failed)
+      failedWrites: failedWritesOf(task.blocker)
     } : null,
+    // TOOLING-048: نقش ِ جاری و بعدی از Manager (نه حدس)
+    roles: task.roles ?? null,
     // TOOLING-044: commit شکست خورد و چیزی کثیف مانده؛ چه چیزی و فرمان ِ دقیق ِ بازیابی
     commitFailure: commitFailureOf(task),
     // TOOLING-046: خلاصه‌ی یک‌خطی ِ runtime (فقط وقتی با پیش‌فرض فرق دارد) و تعداد تغییر ِ در صف
@@ -149,6 +164,18 @@ export async function collectTaskDiag(ctx) {
     health: task.health ?? null,
     actions: Object.keys(task.actions || {}).filter(key => task.actions[key] === true || (Array.isArray(task.actions[key]) && task.actions[key].length)),
     summary, events, log, processes, taskDirGit, worktree, queue
+  };
+}
+
+/** جدول ِ failedWrites با متن‌های redact و محدود (تا ${DIAG_LIST_MAX} ردیف + totalRows)؛ blocker از این نوع نیست ⇒ null. */
+export function failedWritesOf(blocker) {
+  const view = failedWritesView(blocker);
+  if (!view) return null;
+  return {
+    ...view,
+    detail: view.detail ? safe(view.detail, 300) : null,
+    totalRows: view.rows.length,
+    rows: view.rows.slice(0, DIAG_LIST_MAX).map(r => ({ tool: safe(r.tool, 40), path: safe(r.path, 200), error: safe(r.error, 300), kind: r.kind ? safe(r.kind, 60) : null }))
   };
 }
 
@@ -223,8 +250,10 @@ export async function collectSystemDiag(ctx) {
       const status = await runGit(repo.path, ['status', '--short']);
       const worktrees = await runGit(repo.path, ['worktree', 'list']);
       return {
-        status: status.ok ? lines(status.stdout).slice(0, 40).map(l => safe(l, 200)) : [`خطا: ${safe(status.stderr, 150)}`],
-        worktrees: worktrees.ok ? lines(worktrees.stdout).slice(0, 40).map(l => safe(l, 200)) : [`خطا: ${safe(worktrees.stderr, 150)}`]
+        status: status.ok ? capped(lines(status.stdout).map(l => safe(l, 200))).lines : [`خطا: ${safe(status.stderr, 150)}`],
+        statusTotal: status.ok ? lines(status.stdout).length : null,
+        worktrees: worktrees.ok ? capped(lines(worktrees.stdout).map(l => safe(l, 200))).lines : [`خطا: ${safe(worktrees.stderr, 150)}`],
+        worktreesTotal: worktrees.ok ? lines(worktrees.stdout).length : null
       };
     }),
     guard(async () => {

@@ -7,7 +7,7 @@
 // قاعده‌های ask/allow است؛ این hook فقط چیزی را مجاز نمی‌کند، فقط رد می‌کند.
 //
 // فهرست فرمان‌ها باید با server/src/remote-cli-spec.js (READ_COMMANDS/WRITE_COMMANDS) یکی باشد؛ تست مطابقت را می‌سنجد.
-const COMMANDS = ['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options', 'create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain'];
+const COMMANDS = ['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options', 'create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain'];
 // شکل ِ آرگومان‌های runtime (TOOLING-046). اعتبارسنجی ِ **معنایی** (کدام provider/مدل/effort مجاز است) کار ِ Manager است؛
 // این‌جا فقط نویسه‌ها و جایگاه‌ها: نقش هر نامِ [a-z-]+ ، و <provider>:<model>:<effort> فقط حرف/عدد/نقطه/خط (قطعه‌ی خالی مجاز).
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -22,6 +22,7 @@ const RUNTIME_SHAPES = {
   runtime: { value: new Set(['--repo']), bool: new Set(), positional: [ID] },
   'runtime-options': { value: new Set(['--repo']), bool: new Set(), positional: [] },
   'retry-provision': { value: new Set(['--repo']), bool: new Set(), positional: [ID] },
+  recheck: { value: new Set(['--repo']), bool: new Set(), positional: [ID] },
   // drain: بدون آرگومان ِ مکانی؛ فقط --status یا --off (نه هر دو)
   drain: { value: new Set(), bool: new Set(['--status', '--off']), positional: [], exclusive: ['--status', '--off'] }
 };

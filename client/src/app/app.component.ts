@@ -12,6 +12,7 @@ import { AuditComponent, EnvHealthComponent } from './env-health.component';
 import { TaskOpsComponent } from './task-ops.component';
 import { TaskRuntimeComponent } from './task-runtime.component';
 import { RuntimePickerComponent } from './runtime-picker.component';
+import { attemptRunMode, lockNeedsForce, lockStatus } from './task-health';
 import { attemptModelCell, createRuntimePayload, duplicateText, runtimeEventText, runtimeInvalidText } from './runtime';
 import { ArchiveComponent } from './archive.component';
 import { actionsVersionOf, allowed, can, canAnswerGate } from './task-actions';
@@ -356,8 +357,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const parts: string[] = [];
     if (h.managerLock) {
       const lock = h.managerLock;
-      const alive = lock.alive === true ? 'زنده' : lock.alive === false ? 'مرده' : 'نامشخص';
-      parts.push(`قفل سراسری (task ${lock.task || '؟'}، pid ${lock.pid ?? '؟'}، ${alive})`);
+      parts.push(`قفل سراسری (task ${lock.task || '؟'}، pid ${lock.pid ?? '؟'}، ${lockStatus(lock)?.label ?? 'نامشخص'})`);
     }
     if (h.unownedDirtyFiles.length) parts.push(`${h.unownedDirtyFiles.length} فایل کثیفِ بی‌صاحب`);
     if (!h.acceptsOperations) parts.push('مخزن الان پذیرای عملیات تازه نیست');
@@ -383,7 +383,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
   stuckReasonsTitle(t: Task): string {
     const lock = t.health?.transitionLock;
-    const lockPart = lock ? `state=${lock.fromState || '—'}، شروع ${this.formatDate(lock.startedAt)}` : '';
+    const lockPart = lock ? `state=${lock.fromState || '—'}، شروع ${this.formatDate(lock.startedAt)}، قفل: ${lockStatus(lock)?.label ?? '—'}` : '';
     const dirtyPart = (t.health?.dirtyPaths?.length ?? 0) > 0 ? `${t.health?.dirtyPaths?.length} مسیر commit‌نشده` : '';
     return [lockPart, dirtyPart].filter(Boolean).join(' · ');
   }
@@ -1035,6 +1035,23 @@ export class AppComponent implements OnInit, OnDestroy {
   duplicateText = duplicateText;
   failText(r: CreateTaskResult): string { return runtimeInvalidText(r.structured)?.text ?? (r.message || 'ناموفق'); }
   attemptCell = attemptModelCell;
+  /** attempt ِ قدیمی ِ relay (TOOLING-049): برچسب و outerModel؛ main-agent ← null. */
+  runMode = attemptRunMode;
+  /** وضعیت ِ قفل ِ transition با برچسب ِ liveness (TOOLING-048)؛ برای alive-unverified دلیل/فرمان از پیام ِ Manager. */
+  lockInfo(t: Task | null) { return lockStatus(t?.health?.transitionLock, t?.health?.recovery); }
+  lockNeedsForce(t: Task | null): boolean { return lockNeedsForce(t?.health?.transitionLock); }
+  /** دکمه‌ی پنل ِ بازیابی: run همین‌جا؛ بقیه (recover/recheck/unblock) در جزئیات ِ تسک که فرمشان آنجاست. */
+  recoveryShown(t: Task, cmd: string): boolean {
+    return cmd === 'run' || (cmd === 'recover' && can(t, 'recover')) || (cmd === 'recheck' && can(t, 'recheck')) || (cmd === 'unblock' && can(t, 'unblock')) || (cmd === 'unlock' && can(t, 'unlock'));
+  }
+  recoveryLabel(cmd: string): string {
+    return ({ run: '▶ دوباره اجرا کن', recover: '🛟 بازیابی (recover) — در جزئیات ِ تسک', recheck: '♻ سنجش دوباره (recheck، بدون agent) — در جزئیات ِ تسک', unblock: '🔓 رفع blocker (unblock) — در جزئیات ِ تسک' } as Record<string, string>)[cmd] ?? '🔓 آزاد کردن قفل';
+  }
+  recoveryClick(t: Task, cmd: string): void {
+    if (cmd === 'run') void this.runTask();
+    else if (cmd === 'unlock') this.openDanger('unlock');
+    else this.openTask(t);
+  }
   setDupReason(key: string, value: string): void { this.dupReasons.update(m => ({ ...m, [key]: value })); }
 
   async openTaskById(id: string | null): Promise<void> {

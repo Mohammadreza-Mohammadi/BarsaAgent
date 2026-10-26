@@ -40,6 +40,7 @@ const STATUS = {
   tasks: [
     {
       id: '7', title: 'تسک زنده', state: 'implementing', stateSince: '2026-10-25T08:10:00Z', awaitingHuman: null, blocker: null, dir: '.agent-work/tasks/0007-x',
+      roles: { current: 'implementer', next: 'reviewer' },
       actions: { ...NO_ACTIONS, setRuntime: true, note: true },
       runtime: runtime({
         stored: { preset: 'heavy', roles: { implementer: { effort: 'max' } } }, summary: 'preset heavy · implementer effort=max',
@@ -287,7 +288,8 @@ test('barsa runtime: جدول ِ مؤثر ِ هر نقش با منبع، نقش 
   const s = await boot(t);
   const text = await s.cli(['runtime', '7']);
   assert.equal(text.code, 0, text.err);
-  assert.match(text.out, /مدل‌های تسک #7 \(preset: heavy\) · نقش جاری: implementer/);
+  assert.match(text.out, /مدل‌های تسک #7 \(preset: heavy\) · نقش جاری: implementer · بعدی: reviewer/);
+  assert.match(text.out, /☆ reviewer — claude:claude-opus-5-5:high · پیش‌فرض/, 'نقش ِ بعدی با نشانه‌ی جدا');
   assert.match(text.out, /• intake — claude:claude-sonnet-5-5:medium · پیش‌فرض/);
   assert.match(text.out, /★ implementer — claude:claude-sonnet-5-5:max · تنظیم همین تسک \(جاری\)/);
   assert.match(text.out, /↳ در انتظار اعمال → claude:claude-sonnet-5-5:xhigh · reason: second try/);
@@ -295,7 +297,9 @@ test('barsa runtime: جدول ِ مؤثر ِ هر نقش با منبع، نقش 
   assert.match(text.out, /تغییرهای در صف: 1/);
   assert.match(text.out, /set-runtime 7 <role>/);
   const json = (await s.cli(['runtime', '7', '--json'])).json();
-  assert.deepEqual(Object.keys(json), ['id', 'preset', 'summary', 'canSet', 'current', 'rows', 'live', 'queued']);
+  assert.deepEqual(Object.keys(json), ['id', 'preset', 'summary', 'canSet', 'current', 'next', 'rows', 'live', 'queued']);
+  assert.deepEqual([json.current, json.next], ['implementer', 'reviewer']);
+  assert.deepEqual(json.rows.filter(r => r.next).map(r => r.role), ['reviewer']);
   assert.equal(json.canSet, true);
   assert.deepEqual(json.rows.map(r => r.role), ['intake', 'architect', 'implementer', 'reviewer'], 'از کلیدهای effective، فقط چهار نقش');
   assert.equal(json.rows.find(r => r.role === 'implementer').pending.effort, 'xhigh');

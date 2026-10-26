@@ -1,1 +1,1 @@
-["approve","reject","clarify","note","unblock","raiseLimit","closeOrphan","allowPath","allowSharedKnowledgeFile","externalAccess","resetExternal","cancel","abandon","void","unlock","recover","retryProvision","retryInstall","setRuntime"]
+["approve","reject","clarify","note","unblock","raiseLimit","closeOrphan","allowPath","allowSharedKnowledgeFile","externalAccess","resetExternal","cancel","abandon","void","unlock","recover","recheck","retryProvision","retryInstall","setRuntime"]

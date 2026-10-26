@@ -1,5 +1,7 @@
 // قالب‌بندی متنی ِ diag — «یک بلوک منسجم با سرتیترهای کوتاه» که روی گوشی کپی‌شدنی باشد (≈۱۵۰ خط).
 // هم CLI (barsa diag) و هم bundle (diag.txt داخل zip) از همین استفاده می‌کنند تا دو شکل ِ متفاوت از یک چیز نباشد.
+import { failedWritesLines, lockStatus, moreLine } from './task-health-view.js';
+
 const yes = value => (value === true ? 'بله' : value === false ? 'خیر' : '؟');
 const when = iso => (iso ? String(iso).replace('T', ' ').slice(0, 19) : '—');
 const err = section => (section && section.error ? `  ⚠ خطا: ${section.error}` : null);
@@ -25,7 +27,9 @@ function healthLines(health) {
   if (!health) return ['  health: (Manager نداد)'];
   const out = [];
   const lock = health.transitionLock;
-  out.push(`  قفل transition: ${lock ? `pid ${lock.pid ?? '؟'} ${lock.alive === true ? 'زنده' : lock.alive === false ? 'مرده' : 'نامعلوم'} · از ${lock.fromState ?? '؟'} · ${when(lock.startedAt)}` : 'ندارد'}`);
+  const lockInfo = lockStatus(lock, health.recovery);
+  out.push(`  قفل transition: ${lock ? `pid ${lock.pid ?? '؟'} ${lockInfo.label} · از ${lock.fromState ?? '؟'} · ${when(lock.startedAt)}` : 'ندارد'}`);
+  if (lockInfo?.detail) out.push(`    ↳ ${lockInfo.detail}`);
   out.push(`  stuck: ${yes(health.stuck)}${health.stuckReasons?.length ? ` (${health.stuckReasons.join('، ')})` : ''}`);
   const dirty = health.dirtyPaths || [];
   out.push(`  dirtyPaths: ${dirty.length}${dirty.length ? ` — ${dirty.slice(0, 4).join(' | ')}${dirty.length > 4 ? ' …' : ''}` : ''}`);
@@ -40,9 +44,11 @@ function healthLines(health) {
 export function formatTaskDiag(d) {
   const out = [];
   out.push(`═══ diag تسک #${d.taskId} · مخزن ${d.repo} · ${when(d.generatedAt)} ═══`);
+  if (d.roles) out.push(`نقش: جاری ${d.roles.current ?? '—'} → بعدی ${d.roles.next ?? '—'}`);
   out.push(`وضعیت: ${d.state ?? '؟'} از ${when(d.stateSince)}${d.gate ? ` · منتظر ${d.gate.kind}` : ''}${d.blocker ? ` · blocker ${d.blocker.kind}: ${d.blocker.detail}` : ''}${d.waitingFor ? ` · منتظر تسک ${d.waitingFor.task ?? JSON.stringify(d.waitingFor)}` : ''}`);
   out.push(`اکشن‌های مجاز: ${d.actions?.length ? d.actions.join('، ') : 'هیچ'}`);
   if (d.runtime?.summary) out.push(`runtime: ${d.runtime.summary}${d.runtime.pending ? ` · ${d.runtime.pending} تغییر در انتظار اعمال` : ''}`);
+  if (d.blocker?.failedWrites) out.push('', '── blocker: خطای نوشتن ِ ابزار (tool-write-failed)', ...failedWritesLines(d.blocker.failedWrites).map(line => `  ${line}`));
   if (d.blocker && (d.blocker.stage || d.blocker.step || d.blocker.log || d.blocker.outputTail?.length)) {
     out.push('', `── blocker: ${d.blocker.kind ?? '؟'}${d.blocker.stage ? ` · stage ${d.blocker.stage}` : ''}${d.blocker.step ? ` · گام ${d.blocker.step}` : ''}`);
     if (d.blocker.log) out.push(`  لاگ کامل: ${d.blocker.log}`);
@@ -80,7 +86,7 @@ export function formatTaskDiag(d) {
   const g = d.taskDirGit;
   if (g?.error) out.push(err(g));
   else if (g?.note) out.push(`  ${g.note}`);
-  else out.push(...(g?.lines?.length ? g.lines.slice(0, 8).map(l => `  ${l}`).concat(g.lines.length > 8 ? [`  … و ${g.lines.length - 8} خط دیگر`] : []) : ['  تمیز']));
+  else out.push(...(g?.lines?.length ? [...g.lines.map(l => `  ${l}`), moreLine(g.total ?? g.lines.length, g.lines.length)].filter(Boolean).map(l => (l.startsWith('  ') ? l : `  ${l}`)) : ['  تمیز']));
 
   out.push('', '── worktree تسک');
   const w = d.worktree;
@@ -89,7 +95,12 @@ export function formatTaskDiag(d) {
     out.push(`  مسیر: ${w.path ?? '—'} · وجود دارد: ${yes(w.exists)} · وضعیت Manager: ${w.managerStatus ?? '—'}`);
     out.push(`  شاخه: ${w.branch ?? '—'} (base ${w.base ?? '—'}) · شاخه هست: ${yes(w.branchExists)} · merge شده در base: ${yes(w.merged)} · commit ِ خودش: ${w.ownCommits ?? '؟'}`);
     out.push(`  node_modules\\.bin: ${w.exists ? yes(w.nodeModulesBin) : '—'}`);
-    if (w.dirty) out.push(`  git status --short: ${w.dirty.length ? '' : 'تمیز'}`, ...w.dirty.slice(0, 6).map(l => `    ${l}`));
+    if (w.dirty) {
+      const total = w.dirtyTotal ?? w.dirty.length;
+      out.push(`  git status --short --untracked-files=all: ${w.dirty.length ? `${total} مسیر` : 'تمیز'}`, ...w.dirty.map(l => `    ${l}`));
+      const more = moreLine(total, w.dirty.length);
+      if (more) out.push(`    ${more}`);
+    }
   }
   return out.filter(line => line !== null).join('\n');
 }
@@ -108,9 +119,10 @@ export function formatSystemDiag(d) {
   if (d.locks?.error) out.push(err(d.locks));
   else {
     const m = d.locks.manager;
-    out.push(`  قفل سراسری Manager: ${m ? `pid ${m.pid ?? '؟'} ${m.alive === true ? 'زنده' : m.alive === false ? 'مرده' : 'نامعلوم'} · task ${m.task ?? '—'} · ${when(m.startedAt)}` : 'ندارد'}`);
+    const managerInfo = lockStatus(m);
+    out.push(`  قفل سراسری Manager: ${m ? `pid ${m.pid ?? '؟'} ${managerInfo.label} · task ${m.task ?? '—'} · ${when(m.startedAt)}` : 'ندارد'}`);
     if (!d.locks.tasks.length) out.push('  قفل transition ِ تسک: ندارد');
-    for (const t of d.locks.tasks.slice(0, 12)) out.push(`  تسک #${t.id} [${t.state}]: pid ${t.pid ?? '؟'} ${t.alive === true ? 'زنده' : t.alive === false ? 'مرده' : 'نامعلوم'} · از ${t.fromState ?? '؟'} · ${when(t.startedAt)}`);
+    for (const t of d.locks.tasks.slice(0, 12)) out.push(`  تسک #${t.id} [${t.state}]: pid ${t.pid ?? '؟'} ${lockStatus(t).label} · از ${t.fromState ?? '؟'} · ${when(t.startedAt)}`);
     if (d.locks.stuck.length) out.push(`  گیرکرده: ${d.locks.stuck.slice(0, 10).map(s => `#${s.id}(${s.reasons.join('+')})`).join('  ')}`);
   }
 
@@ -125,10 +137,10 @@ export function formatSystemDiag(d) {
   }
   out.push('  git status --short:');
   if (d.git?.error) out.push(err(d.git));
-  else out.push(...(d.git.status.length ? d.git.status.slice(0, 12).map(l => `    ${l}`) : ['    تمیز']));
+  else out.push(...(d.git.status.length ? [...d.git.status.map(l => `    ${l}`), moreLine(d.git.statusTotal ?? d.git.status.length, d.git.status.length)].filter(Boolean).map(l => (l.startsWith('    ') ? l : `    ${l}`)) : ['    تمیز']));
   out.push('  git worktree list:');
   if (d.git?.error) out.push(err(d.git));
-  else out.push(...d.git.worktrees.slice(0, 20).map(l => `    ${l}`));
+  else out.push(...[...d.git.worktrees.map(l => `    ${l}`), moreLine(d.git.worktreesTotal ?? d.git.worktrees.length, d.git.worktrees.length, 'worktree')].filter(Boolean).map(l => (l.startsWith('    ') ? l : `    ${l}`)));
 
   out.push('', '── دیسک');
   if (Array.isArray(d.disk)) for (const x of d.disk) out.push(`  ${x.label}: ${x.error ? `خطا ${x.error}` : `${x.freeGB} گیگابایت آزاد`} (${x.path})`);

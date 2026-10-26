@@ -562,6 +562,55 @@ test('diag <id>: worktree جامانده (وجود، git status، شاخه merge
   assert.match((await s.cli(['diag', '7'])).out, /وجود دارد: خیر/);
 });
 
+// باگ ِ تسک ۱۰۰۲۳: health.dirtyPaths ده مسیر می‌گفت ولی «git status» ِ worktree در diag فقط ۶ خط نشان می‌داد (پوشه‌ی untracked ِ تازه و
+// یک فایل ِ دانش نبودند). علت: ۱) diag-format ِ `dirty.slice(0, 6)` بی‌صدا می‌برید؛ ۲) جمع‌آوری بدون --untracked-files=all بود پس پوشه‌ی تازه
+// به یک خط ِ `?? dir/` فشرده می‌شد؛ ۳) سقف ِ ۱۵ ِ بی‌صدا در جمع‌آوری.
+async function worktreeWithDirtyTree(t, { untracked }) {
+  const wt = path.join(os.tmpdir(), `barsa-ops-wt-dirty-${process.pid}-${Date.now()}`);
+  t.after(() => fs.rmSync(wt, { recursive: true, force: true }));
+  const s = await boot(t, { tasks: [mk(7)], git: true });
+  g(s.fake.root, 'worktree', 'add', '-b', 'agent/7-x', wt);
+  configureGit(wt);
+  for (const name of ['src/a.ts', 'src/b.ts', 'src/c.ts']) {
+    fs.mkdirSync(path.dirname(path.join(wt, name)), { recursive: true });
+    fs.writeFileSync(path.join(wt, name), 'original');
+  }
+  g(wt, 'add', '-A');
+  g(wt, 'commit', '-m', 'tracked files');
+  for (const name of ['src/a.ts', 'src/b.ts', 'src/c.ts']) fs.writeFileSync(path.join(wt, name), 'modified');
+  for (const name of untracked) {
+    fs.mkdirSync(path.dirname(path.join(wt, name)), { recursive: true });
+    fs.writeFileSync(path.join(wt, name), 'new');
+  }
+  s.fake.setStatus(board([mk(7, { worktree: { status: 'active', path: path.relative(s.fake.root, wt) }, git: { base: 'main', branch: 'agent/7-x' } })]));
+  return s;
+}
+
+test('diag <id>: worktree ِ کثیف — همه‌ی مسیرها (با پوشه‌ی untracked ِ تازه)، نه فقط ۶ خط ِ اول؛ ۱۰ مسیر = ۱۰ خط', async t => {
+  const folder = 'ai-context/spdd/barsa-sap-ui/BSUI-026-feature';
+  const untracked = [1, 2, 3, 4, 5, 6].map(i => `${folder}/doc${i}.md`).concat('ai-context/knowledge/shared-knowledge.md');
+  const s = await worktreeWithDirtyTree(t, { untracked }); // ۳ tracked ِ تغییرکرده + ۷ untracked = ۱۰ مسیر
+  const out = (await s.cli(['diag', '7'])).out;
+  assert.match(out, /git status --short --untracked-files=all: 10 مسیر/);
+  const section = out.slice(out.indexOf('git status --short --untracked-files=all'));
+  for (const name of ['src/a.ts', 'src/b.ts', 'src/c.ts', ...untracked]) assert.ok(section.includes(name), `«${name}» در diag نیست`);
+  assert.doesNotMatch(section, /و \d+ مسیر دیگر/, 'چیزی بریده نشده است');
+  const json = (await s.cli(['diag', '7', '--json'])).json();
+  assert.equal(json.worktree.dirtyTotal, 10);
+  assert.equal(json.worktree.dirty.length, 10);
+  assert.ok(json.worktree.dirty.some(line => line.includes('BSUI-026-feature/doc1.md')), 'مسیر ِ داخل ِ پوشه‌ی تازه، نه فقط «?? dir/»');
+});
+
+test('diag <id>: بیش از سقف (۴۰) — ۴۰ مسیر و «و N مسیر دیگر» با شمار ِ کل، نه بریدن ِ بی‌صدا', async t => {
+  const untracked = Array.from({ length: 45 }, (_, i) => `gen/file${String(i + 1).padStart(2, '0')}.txt`);
+  const s = await worktreeWithDirtyTree(t, { untracked }); // ۳ + ۴۵ = ۴۸
+  const out = (await s.cli(['diag', '7'])).out;
+  assert.match(out, /git status --short --untracked-files=all: 48 مسیر/);
+  assert.match(out, /… و 8 مسیر دیگر/);
+  const json = (await s.cli(['diag', '7', '--json'])).json();
+  assert.deepEqual([json.worktree.dirty.length, json.worktree.dirtyTotal], [40, 48]);
+});
+
 test('diag <id>: صف (maxConcurrent) — queued در برابر running در برابر هیچ‌کدام', async t => {
   const s = await boot(t, { maxConcurrent: 1, run: 'setInterval(() => {}, 1000);' });
   assert.equal((await s.cli(['run', '9'])).code, 0);
