@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  runtimeRows, currentRole, liveAttempt, pendingFor, attemptModelCell, queuedRejections, runtimeEventText, sourceLabel, fieldSourcesTitle,
+  runtimeRows, currentRole, nextRole, liveAttempt, pendingFor, attemptModelCell, queuedRejections, runtimeEventText, sourceLabel, fieldSourcesTitle,
   providerChoices, modelsFor, effortsFor, reconcileSelection, changeSpec, buildSetRuntime, effectNote, presetBaseline, createRuntimePayload,
   duplicateText, runtimeInvalidText, roleOrder, RUNTIME_FINISHED_STATES
 } from '../../client/src/app/runtime.ts';
@@ -66,22 +66,34 @@ test('ردیف ِ resolve-نشده ({error, code}) خطای همان ردیف ا
 
 // --- نقش ِ جاری ----------------------------------------------------------------------------------------------------------
 
-test('نقش ِ جاری: attempt ِ زنده، وگرنه lastAttempt؛ پایان‌یافته هیچ؛ هیچ نگاشت ِ state ← نقش نیست', () => {
-  const live = task({ attempts: [attempt(1, 'intake', 'completed'), attempt(2, 'implementer', null)], lastAttempt: { n: 1, role: 'intake' } });
-  assert.equal(liveAttempt(live).role, 'implementer');
-  assert.equal(currentRole(live), 'implementer');
-  assert.equal(runtimeRows(live).find(r => r.role === 'implementer').isCurrent, true);
-  assert.equal(runtimeRows(live).filter(r => r.isCurrent).length, 1);
+test('نقش ِ جاری و بعدی: از task.roles ِ Manager (TOOLING-048)، نه حدس روی attempt ِ آخر؛ roles غایب = بدون برجسته‌سازی', () => {
+  const t = task({ roles: { current: 'implementer', next: 'reviewer' }, attempts: [attempt(1, 'intake', 'completed'), attempt(2, 'architect', null)], lastAttempt: { n: 1, role: 'intake' } });
+  assert.equal(liveAttempt(t).role, 'architect', 'attempt ِ زنده هنوز برای «تغییر وسط ِ کار» استفاده می‌شود');
+  assert.equal(currentRole(t), 'implementer', 'نقش ِ جاری از roles.current است، نه از attempt ِ زنده/آخر');
+  assert.equal(nextRole(t), 'reviewer');
+  const rows = runtimeRows(t);
+  assert.deepEqual(rows.filter(r => r.isCurrent).map(r => r.role), ['implementer']);
+  assert.deepEqual(rows.filter(r => r.isNext).map(r => r.role), ['reviewer']);
 
-  const idle = task({ attempts: [attempt(1, 'architect', 'completed')], lastAttempt: { n: 1, role: 'architect', outcome: 'completed' } });
-  assert.equal(liveAttempt(idle), null);
-  assert.equal(currentRole(idle), 'architect');
+  // Manager: مقدار ِ خالی null است (تسک ِ بسته، یا next پس از review)
+  const closing = task({ roles: { current: 'reviewer', next: null } });
+  assert.equal(nextRole(closing), null);
+  assert.deepEqual(runtimeRows(closing).filter(r => r.isNext), []);
+  assert.equal(currentRole(task({ roles: { current: null, next: null }, state: 'integrated' })), null);
+  // current == next هرگز دو نشانه روی یک ردیف نمی‌گذارد
+  assert.deepEqual(runtimeRows(task({ roles: { current: 'implementer', next: 'implementer' } })).filter(r => r.isNext), []);
 
-  assert.equal(currentRole(task({ state: 'integrated', lastAttempt: { n: 1, role: 'reviewer' } })), null);
-  assert.equal(currentRole(task({ state: 'ready' })), null, 'بدون attempt هیچ نقشی حدس زده نمی‌شود (state ← نقش در Manager است)');
+  // Manager ِ قدیمی‌تر (بدون roles): هیچ نقشی حدس زده نمی‌شود، بدون خطا
+  for (const old of [task({ attempts: [attempt(1, 'architect', null)], lastAttempt: { n: 1, role: 'architect' } }), task({ roles: undefined }), task({ roles: null })]) {
+    assert.equal(currentRole(old), null);
+    assert.equal(nextRole(old), null);
+    assert.equal(runtimeRows(old).filter(r => r.isCurrent || r.isNext).length, 0);
+    assert.equal(runtimeRows(old).length, 4, 'بخش «مدل‌ها» بدون برجسته‌سازی نمایش داده می‌شود');
+  }
   assert.deepEqual([...RUNTIME_FINISHED_STATES], [...FINISHED_STATES], 'نسخه‌ی محلی با task-archive یکی است');
   const source = read('../../client/src/app/runtime.ts');
-  assert.doesNotMatch(source, /ready'\s*:\s*'implementer|roles\.next|roles\.current/);
+  assert.doesNotMatch(source, /ready'\s*:\s*'implementer/);
+  assert.doesNotMatch(source, /lastAttempt\??\.role/, 'حدس ِ نقش از lastAttempt حذف شده است');
 });
 
 // --- ب۲: در صف ----------------------------------------------------------------------------------------------------------
@@ -316,6 +328,8 @@ test('تاریخچه: رویدادهای runtime در Timeline برچسب ِ ف�
 test('runtime-view.js (CLI) ≡ runtime.ts (UI) روی همان fixtureها', () => {
   const fixtures = [
     task(),
+    task({ roles: { current: 'implementer', next: 'reviewer' } }),
+    task({ roles: { current: 'reviewer', next: null }, state: 'review' }),
     task({ attempts: [attempt(1, 'intake', 'completed'), attempt(2, 'implementer', null, { provider: 'claude', requestedModel: 'claude-sonnet-5-5', requestedEffort: 'medium' })] }),
     task({ attempts: [attempt(1, 'architect', 'completed')], lastAttempt: { n: 1, role: 'architect', outcome: 'completed' } }),
     task({ state: 'integrated', lastAttempt: { n: 3, role: 'reviewer' } }),
@@ -329,9 +343,10 @@ test('runtime-view.js (CLI) ≡ runtime.ts (UI) روی همان fixtureها', ()
   ];
   for (const t of fixtures) {
     assert.equal(view.currentRole(t), currentRole(t));
+    assert.equal(view.nextRole(t), nextRole(t));
     assert.deepEqual(view.liveAttempt(t)?.n ?? null, liveAttempt(t)?.n ?? null);
-    const a = runtimeRows(t, OPTIONS.roles).map(r => ({ role: r.role, provider: r.provider, model: r.model, effort: r.effort, source: r.source, error: r.error, isCurrent: r.isCurrent, pending: r.pending }));
-    const b = view.runtimeRows(t, OPTIONS.roles).map(r => ({ role: r.role, provider: r.provider, model: r.model, effort: r.effort, source: r.source, error: r.error, isCurrent: r.isCurrent, pending: r.pending }));
+    const a = runtimeRows(t, OPTIONS.roles).map(r => ({ role: r.role, provider: r.provider, model: r.model, effort: r.effort, source: r.source, error: r.error, isCurrent: r.isCurrent, isNext: r.isNext, pending: r.pending }));
+    const b = view.runtimeRows(t, OPTIONS.roles).map(r => ({ role: r.role, provider: r.provider, model: r.model, effort: r.effort, source: r.source, error: r.error, isCurrent: r.isCurrent, isNext: r.isNext, pending: r.pending }));
     assert.deepEqual(b, a);
   }
   for (const att of [null, attempt(1, 'x', 'c', { provider: 'claude', requestedModel: 'a', actualModels: ['b'], requestedEffort: 'high', effectiveEffort: 'low' }), attempt(1, 'x', 'c', { provider: 'codex', model: 'm', effectiveEffort: 'high' })]) {

@@ -13,7 +13,8 @@ import { APP_ROOT, defaultDataDir, parseConfigYaml } from './config.js';
 import { environmentSecrets, redact } from './security.js';
 import { formatSystemDiag, formatTaskDiag } from './diag-format.js';
 import { buildWaiting, formatWaiting } from './remote-waiting.js';
-import { attemptModelCell, currentRole, liveAttempt, parseRuntimeSpec, runtimeRows, sourceLabel } from './runtime-view.js';
+import { attemptModelCell, currentRole, liveAttempt, nextRole, parseRuntimeSpec, runtimeRows, sourceLabel } from './runtime-view.js';
+import { attemptRunMode, failedWrites, failedWritesLines, lockStatus } from './task-health-view.js';
 import {
   ANSWER_MODES, DEFAULT_TOKEN_NAME, DEFAULT_URL, EXIT, NOT_REMOTE_ANSWER_FLAGS, NOT_REMOTE_COMMANDS, NOT_REMOTE_MESSAGE,
   READ_COMMANDS, WRITE_COMMANDS
@@ -66,6 +67,7 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa answer <id> --unblock (--text-file <f> | --stdin)
   barsa answer <id> --allow-shared-knowledge-file <path> (--text-file <f> | --stdin)
   barsa recover <id> [--discard-residue (--text-file <f> | --stdin)]
+  barsa recheck <id>                        سنجش ِ دوباره‌ی attempt ِ ردشده با گارد ِ Manager (یا خطای ابزار ِ نوشتن)؛ بدون agent و بدون مصرف ِ budget
   barsa set-runtime <id> <role> <provider>:<model>:<effort> (--reason "…" | --stdin)   قطعه‌ی خالی = دست نزن (مثلاً ::high)
   barsa set-runtime <id> --preset <name> (--reason "…" | --stdin)
   barsa set-runtime <id> <role|preset|all> --reset (--reason "…" | --stdin)
@@ -372,7 +374,7 @@ const commands = {
     });
     const health = t.health ? {
       stuck: t.health.stuck === true, reasons: t.health.stuckReasons || [],
-      lock: t.health.transitionLock ? { pid: t.health.transitionLock.pid ?? null, alive: t.health.transitionLock.alive ?? null } : null,
+      lock: t.health.transitionLock ? { pid: t.health.transitionLock.pid ?? null, alive: t.health.transitionLock.alive ?? null, liveness: t.health.transitionLock.liveness ?? null, ...lockText(t.health.transitionLock, t.health.recovery) } : null,
       recovery: t.health.recovery?.suggested ? { suggested: t.health.recovery.suggested, mode: t.health.recovery.mode ?? null, reason: clip(t.health.recovery.reason, 240) } : null,
       install: t.health.install ? { phase: t.health.install.phase ?? null, alive: t.health.install.alive ?? null, startedAt: t.health.install.startedAt ?? null } : null
     } : null;
@@ -381,7 +383,8 @@ const commands = {
       gate: t.awaitingHuman ? { kind: t.awaitingHuman.kind ?? null, since: t.awaitingHuman.since ?? null } : null,
       running: { running: run?.running === true, queued: run?.queued === true, exitCode: run?.exitCode ?? null },
       actions: t.actions ?? null,
-      blocker: t.blocker ? { kind: t.blocker.kind ?? null, detail: clip(t.blocker.detail ?? t.blocker.reason ?? '', 500) } : null,
+      roles: t.roles ? { current: t.roles.current ?? null, next: t.roles.next ?? null } : null,
+      blocker: t.blocker ? { kind: t.blocker.kind ?? null, detail: clip(t.blocker.detail ?? t.blocker.reason ?? '', 500), failedWrites: failedWritesText(t.blocker) } : null,
       health,
       review: t.review ? {
         decision: t.review.decision ?? null, evidenceStatus: t.review.evidenceStatus ?? null,
@@ -394,19 +397,22 @@ const commands = {
       budget: t.budget ?? null,
       // TOOLING-046: یک خط runtime (فقط اگر با پیش‌فرض فرق دارد) و ستون «مدل / effort» ِ attemptها
       runtime: t.runtime ? { summary: t.runtime.summary ?? null, preset: t.runtime.stored?.preset ?? null, pending: (t.runtime.pending || []).length } : null,
-      attempts: (t.attempts || []).slice(-6).map(a => ({ n: a.n ?? null, id: a.id ?? null, role: a.role ?? null, outcome: a.outcome ?? null, ...attemptModelCell(a) })),
+      attempts: (t.attempts || []).slice(-6).map(a => ({ n: a.n ?? null, id: a.id ?? null, role: a.role ?? null, outcome: a.outcome ?? null, ...attemptModelCell(a), relay: attemptRunMode(a) })),
       waiting
     };
     if (json) return out;
     const lines = [`#${out.id} · ${out.title}`, `وضعیت: ${out.state}${out.gate ? ` · منتظر ${out.gate.kind} (از ${short(out.gate.since)})` : ''}${out.running.running ? ' · در حال اجرا' : out.running.queued ? ' · در صف' : ''}`];
     const active = activeActions(t);
     lines.push(`اکشن‌های مجاز: ${active.length ? active.join('، ') : (t.actions ? 'هیچ' : 'نامشخص (Manager قدیمی)')}`);
+    if (out.roles) lines.push(`نقش: جاری ${out.roles.current ?? '—'} → بعدی ${out.roles.next ?? '—'}`);
     if (out.runtime?.summary) lines.push(`runtime: ${clip(out.runtime.summary, 200)}${out.runtime.pending ? ` · ${out.runtime.pending} تغییر در انتظار اعمال` : ''}`);
     if (out.attempts.length) {
       lines.push('attemptها (مدل / effort):');
-      for (const a of out.attempts) lines.push(`  #${a.id ?? a.n} ${a.role ?? '—'} → ${a.outcome ?? 'در جریان'} · ${clip(a.model, 70)} · ${a.effort}`);
+      for (const a of out.attempts) lines.push(`  #${a.id ?? a.n} ${a.role ?? '—'} → ${a.outcome ?? 'در جریان'} · ${clip(a.model, 70)} · ${a.effort}${a.relay ? ` · [${a.relay.label}${a.relay.outerModel ? `؛ outer: ${clip(a.relay.outerModel, 40)}` : ''}]` : ''}`);
     }
     if (out.blocker) lines.push(`blocker: ${out.blocker.kind} — ${clip(out.blocker.detail, 240)}`);
+    if (out.blocker?.failedWrites) lines.push(...failedWritesLines(out.blocker.failedWrites));
+    if (health?.lock) lines.push(`قفل transition: pid ${health.lock.pid ?? '؟'} — ${health.lock.label}${health.lock.detail ? ` — ${clip(health.lock.detail, 300)}` : ''}`);
     if (health?.stuck) lines.push(`گیرکرده: ${health.reasons.join('+')}${health.recovery ? ` — پیشنهاد Manager: ${health.recovery.suggested}${health.recovery.mode ? ` [${health.recovery.mode}]` : ''}` : ''} (جزئیات: barsa diag ${out.id})`);
     if (health?.install) lines.push(`نصب وابستگی‌ها: ${health.install.phase ?? '؟'}${health.install.alive === true ? ' (زنده)' : health.install.alive === false ? ' (مرده)' : ''} از ${short(health.install.startedAt)}`);
     const mergeGate = waiting?.kind === 'merge-approval';
@@ -474,6 +480,7 @@ const commands = {
         if (data.commitFailure.leftover?.length) lines.push(`  کثیف‌مانده: ${data.commitFailure.leftover.join(' | ')}`);
         if (data.commitFailure.recoverCommand) lines.push(`  فرمان ِ بازیابی: ${data.commitFailure.recoverCommand}`);
       }
+      if (data.failedWrites) lines.push(...failedWritesLines(data.failedWrites));
       lines.push(`بخوان: barsa artifact ${id} <name> [--attempt N] [--tail N]`);
       return lines.join('\n');
     }
@@ -516,6 +523,19 @@ const commands = {
     return [`تسک #${id}: recover${discard ? ' --discard-residue' : ''} انجام شد.`, ...data.output.map(line => `  ${clip(line, 300)}`), `اجرا خودکار نیست؛ اگر خواستی «barsa run ${id}».`].join('\n');
   },
 
+  async recheck({ client, positional, repo, json }) {
+    const id = needId(positional);
+    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    assertAllowed(task, 'recheck', 'recheck');
+    const { data } = await need(client, 'POST', `/api/remote/tasks/${enc(id)}/recheck`, { query: { repo }, body: {} });
+    if (json) return data;
+    const verdict = RECHECK_TEXT[data.result] ?? (data.result ? `نتیجه: ${data.result}` : 'نتیجه‌ی رویداد attempt.rechecked پیدا نشد (خروجی ِ Manager پایین)');
+    const lines = [`تسک #${id}: recheck انجام شد — ${verdict}.`];
+    if (data.event) lines.push(`  attempt ${data.event.attempt ?? '؟'} · guard ِ قبلی: ${data.event.previousGuard ?? '—'} · budget مصرف نشد (${data.event.budgetConsumed ?? 'none'})`);
+    lines.push(...data.output.map(line => `  ${clip(line, 300)}`), `وضعیت ِ تازه: barsa task ${id}`);
+    return lines.join('\n');
+  },
+
   async 'retry-provision'({ client, positional, repo, json }) {
     return retryProvision({ client, positional, repo, json }, 'retry-provision');
   },
@@ -538,18 +558,19 @@ const commands = {
     const live = liveAttempt(t);
     const out = {
       id: String(t.id), preset: t.runtime.stored?.preset ?? null, summary: t.runtime.summary ?? null,
-      canSet: t.actions?.setRuntime === true, current: currentRole(t),
+      canSet: t.actions?.setRuntime === true, current: currentRole(t), next: nextRole(t),
       rows: rows.map(r => ({
         role: r.role, provider: r.provider, model: r.model, effort: r.effort, source: r.source, sourceText: sourceLabel(r.source), fieldSources: r.fieldSources,
-        current: r.isCurrent, error: r.error, pending: r.pending
+        current: r.isCurrent, next: r.isNext, error: r.error, pending: r.pending
       })),
       live: live ? { attempt: live.id ?? live.n ?? null, role: live.role ?? null, ...attemptModelCell(live), running: run?.running === true } : null,
       queued: (t.runtime.pending || []).map(p => ({ decision: p.decision ?? null, queuedAt: p.queuedAt ?? null, reason: p.reason ? clip(p.reason, 200) : null }))
     };
     if (json) return out;
-    const lines = [`مدل‌های تسک #${out.id}${out.preset ? ` (preset: ${out.preset})` : ''}${out.current ? ` · نقش جاری: ${out.current}` : ''}`];
+    const lines = [`مدل‌های تسک #${out.id}${out.preset ? ` (preset: ${out.preset})` : ''}${out.current ? ` · نقش جاری: ${out.current}` : ''}${out.next ? ` · بعدی: ${out.next}` : ''}`];
+    if (!t.roles) lines.push('نقش ِ جاری/بعدی نامشخص است: این Manager فیلد roles را نمی‌دهد (قدیمی‌تر از TOOLING-048)؛ هیچ ردیفی برجسته نمی‌شود.');
     for (const r of out.rows) {
-      lines.push(r.error ? `  ✗ ${r.role} — ${clip(r.error, 160)}` : `  ${r.current ? '★' : '•'} ${r.role} — ${r.provider}:${r.model}:${r.effort} · ${r.sourceText}${r.current ? ' (جاری)' : ''}`);
+      lines.push(r.error ? `  ✗ ${r.role} — ${clip(r.error, 160)}` : `  ${r.current ? '★' : r.next ? '☆' : '•'} ${r.role} — ${r.provider}:${r.model}:${r.effort} · ${r.sourceText}${r.current ? ' (جاری)' : ''}`);
       if (r.pending) lines.push(`      ↳ در انتظار اعمال → ${r.pending.provider}:${r.pending.model}:${r.pending.effort}${r.pending.reason ? ` · reason: ${clip(r.pending.reason, 120)}` : ''}`);
     }
     if (out.live) lines.push(`attempt ِ زنده #${out.live.attempt ?? '؟'} (${out.live.role ?? '—'}): ${clip(out.live.model, 80)} · ${out.live.effort}`);
@@ -780,6 +801,21 @@ function needId(positional) {
   return id;
 }
 
+/** { label, detail } ِ قفل برای نمایش (liveness ِ Manager؛ بدون آن از alive). */
+function lockText(lock, recovery) {
+  const status = lockStatus(lock, recovery);
+  return { label: status.label, detail: status.detail };
+}
+
+/** جدول ِ failedWrites با متن‌های کوتاه‌شده برای CLI (مسیر نسبت به ِ ریشه‌ی نقش)؛ blocker از این نوع نیست ⇒ null. */
+function failedWritesText(blocker) {
+  const view = failedWrites(blocker);
+  if (!view) return null;
+  return { ...view, totalRows: view.rows.length, rows: view.rows.slice(0, 40).map(r => ({ tool: clip(r.tool, 40), path: clip(r.path, 160), error: clip(r.error, 200), kind: r.kind })) };
+}
+
+const RECHECK_TEXT = { accepted: 'پذیرفته شد (به مرحله‌ی بعد رفت)', rejected: 'باز هم رد شد', blocked: 'مسدود شد', routed: 'به نقش ِ دیگری هدایت شد' };
+
 /** retry-provision / retry-install: unblock + run (فرمان ِ ثبت‌شده‌ی Manager)؛ پیش‌سنجی از actions (retryInstall alias). */
 async function retryProvision({ client, positional, repo, json }, label) {
   const id = needId(positional);
@@ -833,7 +869,7 @@ export async function run(argv, io = {}) {
     const base = resolveUrl(flags, env);
     const token = readToken(resolveTokenFile(flags, env));
     secrets = [...secrets, token];
-    const SLOW = { health: 120_000, diag: 150_000, bundle: 150_000, recover: 150_000, 'retry-install': 150_000, artifact: 60_000, 'kill-stuck-install': 90_000 };
+    const SLOW = { health: 120_000, diag: 150_000, bundle: 150_000, recover: 150_000, recheck: 900_000, 'retry-install': 150_000, artifact: 60_000, 'kill-stuck-install': 90_000 };
     const client = makeClient({ base, token, timeoutMs: SLOW[command] ?? 40_000 });
 
     // مخزن پیش‌فرض: --repo یا اولین مخزن سرور

@@ -1,6 +1,6 @@
 // endpointهای «عملیات از راه دور» برای CLI ِ `barsa` — هر کدام یک کار **نام‌دار** و بسته (نه شل):
 //   خواندنی:  GET  /api/remote/tasks/:id/artifact · GET /api/remote/tasks/:id/diag · GET /api/remote/diag/system · GET /api/remote/execs/:id
-//   نوشتنی:   POST /api/remote/tasks/:id/{bundle,recover,retry-provision,retry-install,kill-stuck-install} · POST /api/remote/sync
+//   نوشتنی:   POST /api/remote/tasks/:id/{bundle,recover,recheck,retry-provision,retry-install,kill-stuck-install} · POST /api/remote/sync
 // همه در REMOTE_ENDPOINTS (remote-cli-spec.js) هستند و هرکدام که چیزی را تغییر می‌دهد یک ردیف ممیزی با actor
 // `remote:<name>` می‌گذارد. هیچ مسیر/فرمان/pid ِ دلخواهی از ورودی نمی‌آید: مسیرها از status ِ Manager، pidها از رجیستری
 // کانبان، و فرمان‌ها ثابت‌اند. UI (نشست کوکی) همان bundle را می‌سازد و از /api/bundles می‌گیرد.
@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BundleStore } from './bundles.js';
-import { collectSystemDiag, collectTaskDiag, commitFailureOf, safe } from './diag.js';
+import { collectSystemDiag, collectTaskDiag, commitFailureOf, failedWritesOf, safe } from './diag.js';
 import { formatTaskDiag } from './diag-format.js';
 import { listProcesses as defaultListProcesses, descendantsOf, isNpmCi, ageMs } from './process-list.js';
 import { killProcessTree } from './process-tools.js';
@@ -68,7 +68,9 @@ export function createRemoteOpsRoutes(ctx) {
           ? { kind: task.blocker.kind ?? null, stage: task.blocker.stage ?? null, step: task.blocker.step ?? null, log: task.blocker.log ? safe(task.blocker.log, 300) : null,
             outputTail: Array.isArray(task.blocker.outputTail) ? task.blocker.outputTail.slice(-40).map(line => safe(line, 300)) : null }
           : null,
-        commitFailure: commitFailureOf(task)
+        commitFailure: commitFailureOf(task),
+        // TOOLING-049: جدول ِ نوشتن‌های ناموفق ِ ابزار (blocker ِ tooling / tool-write-failed)
+        failedWrites: failedWritesOf(task.blocker)
       };
     }
     const checked = validateName(name);
@@ -159,6 +161,29 @@ export function createRemoteOpsRoutes(ctx) {
     const out = discard ? await withTmpFile('recover-reason', reason, run) : await run();
     const output = redact(out.stdout, environmentSecrets()).split(/\r?\n/).filter(Boolean).slice(-12);
     return { ok: true, taskId: id, mode: discard ? 'discard-residue' : 'recover', output };
+  }
+
+  // TOOLING-048: `manager.js recheck <id>` — attempt ِ ردشده با **گارد ِ Manager** (یا خطای ابزار ِ نوشتن) دوباره سنجیده می‌شود، بدون
+  // agent، بدون attempt ِ تازه و بدون مصرف ِ budget. مجاز بودن فقط از actions.recheck ِ خود ِ Manager؛ نتیجه از رویداد ِ
+  // attempt.rechecked (result: accepted | rejected | blocked | routed). چیزی از ورودی به argv نمی‌رسد جز شناسه‌ی تسک.
+  async function recheck(session, repo, id) {
+    await assertExecution(repo);
+    const task = await taskOf(repo, id);
+    if (task.actions?.recheck !== true) {
+      throw bad('«سنجش دوباره» (recheck) برای این تسک الان مجاز نیست (actions.recheck = false): یا attempt ِ آخر با گارد ِ Manager رد نشده، یا worktree از لحظه‌ی رد عوض شده، یا اجرا/قفل ِ زنده هست.', 409);
+    }
+    const rechecked = events => (Array.isArray(events) ? events : []).filter(event => event?.event === 'attempt.rechecked');
+    const before = rechecked(await collectJson(repo, ['events', id, '--json']).catch(() => [])).length;
+    const out = await collectAction(session, repo, ['recheck', id], { action: 'recheck', taskId: id });
+    const after = rechecked(await collectJson(repo, ['events', id, '--json']).catch(() => []));
+    const event = after.length > before ? after.at(-1) : null;
+    const output = redact(out.stdout, environmentSecrets()).split(/\r?\n/).filter(Boolean).slice(-12);
+    audit.note({ user: session.user, action: 'recheck.result', repoId: repo.id, taskId: id, result: event?.result ?? null, attempt: event?.attempt ?? null });
+    return {
+      ok: true, taskId: id, result: event?.result ?? null,
+      event: event ? { attempt: event.attempt ?? null, previousGuard: event.previousGuard ?? null, result: event.result ?? null, budgetConsumed: event.budgetConsumed ?? null, at: event.at ?? null } : null,
+      output
+    };
   }
 
   // TOOLING-045: retryProvision (= answer --unblock + run، idempotent) برای stageهای install | build | worktree-baseline. نام ِ قبلی
@@ -257,6 +282,10 @@ export function createRemoteOpsRoutes(ctx) {
     if (method === 'POST' && (p = route('/api/remote/tasks/:id/recover', pathname))) {
       if (!TASK_ID.test(p.id)) throw bad('شناسه‌ی تسک نامعتبر است.');
       return send(res, 200, await recover(session, repoOf(url), p.id, await readBody(req))), true;
+    }
+    if (method === 'POST' && (p = route('/api/remote/tasks/:id/recheck', pathname))) {
+      if (!TASK_ID.test(p.id)) throw bad('شناسه‌ی تسک نامعتبر است.');
+      return send(res, 200, await recheck(session, repoOf(url), p.id)), true;
     }
     if (method === 'POST' && (p = route('/api/remote/tasks/:id/retry-provision', pathname))) {
       if (!TASK_ID.test(p.id)) throw bad('شناسه‌ی تسک نامعتبر است.');

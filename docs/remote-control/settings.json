@@ -26,6 +26,7 @@
       "Bash(./barsa stop:*)",
       "Bash(./barsa answer:*)",
       "Bash(./barsa recover:*)",
+      "Bash(./barsa recheck:*)",
       "Bash(./barsa set-runtime:*)",
       "Bash(./barsa retry-provision:*)",
       "Bash(./barsa retry-install:*)",

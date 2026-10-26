@@ -60,8 +60,8 @@ const ISSUES = [
 ];
 const OK_CLAUDE = { command: process.execPath, versionArgs: ['--version'], authArgs: ['--version'] };
 
-async function boot(t, { status = STATUS, run, deps = {}, config = {} } = {}) {
-  const fake = makeFakeManagerRepo(t, { status, run });
+async function boot(t, { status = STATUS, run, extra, deps = {}, config = {} } = {}) {
+  const fake = makeFakeManagerRepo(t, { status, run, extra });
   const addr = { value: '127.0.0.1' };
   const { base, config: cfg } = await startAuthedServer(
     t,
@@ -327,7 +327,7 @@ test('task <id>: وضعیت، actions، blocker، بازبینی، release note�
   assert.match(blocked.out, /blocker: budget-exhausted — سقف implementerRuns پر شد/);
   assert.match(blocked.out, /raiseLimit\[implementerRuns,maxAttempts\]/);
   const json = (await s.cli(['task', '7', '--json'])).json();
-  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'runtime', 'attempts', 'waiting']);
+  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'roles', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'runtime', 'attempts', 'waiting']);
   assert.equal(json.actions.approve, true);
   assert.equal((await s.cli(['task', '999'])).code, EXIT.REJECTED, 'تسک ناموجود = رد');
   assert.equal((await s.cli(['task'])).code, EXIT.USAGE);
@@ -682,4 +682,125 @@ test('رابط کاربری: کارهای remote:* با برچسب کوچک در
   const ops = read('client/src/app/task-ops.component.ts');
   for (const source of [health, ops]) assert.match(source, /startsWith\('remote:'\)[\s\S]{0,120}remote-badge/);
   assert.match(read('client/src/styles.css'), /\.remote-badge\{/);
+});
+
+// --- ۰۴۸/۰۴۹: recheck، نقش‌ها، liveness، failedWrites، runMode ---------------------------------------------------------------
+
+const RECHECK_EVENT = { event: 'attempt.rechecked', attempt: '003', previousGuard: 'scope-guard.out-of-scope-uncommitted', result: 'accepted', budgetConsumed: 'none', at: '2026-10-26T10:00:00Z' };
+// manager ِ ساختگی: `recheck` رویداد ِ attempt.rechecked را در events.json می‌نویسد (مثل Manager ِ واقعی)
+const RECHECK_EXTRA = `
+if (cmd === 'recheck') {
+  const result = (() => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'recheck-result.json'), 'utf8')); } catch { return 'accepted'; } })();
+  const existing = (() => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'events.json'), 'utf8')); } catch { return []; } })();
+  if (result !== 'no-event') fs.writeFileSync(path.join(dir, 'events.json'), JSON.stringify([...existing, { event: 'attempt.rechecked', attempt: '003', previousGuard: 'scope-guard.out-of-scope-uncommitted', result, budgetConsumed: 'none', at: '2026-10-26T10:00:00Z' }]));
+}
+`;
+const recheckTask = (id, actions = {}) => ({
+  id: String(id), title: 'رد ِ guard', state: 'implementing', stateSince: '2026-10-26T09:00:00Z', awaitingHuman: null, blocker: null,
+  actions: { ...NO_ACTIONS, recheck: true, ...actions },
+  health: { transitionLock: null, dirtyPaths: [], stuck: false, stuckReasons: [], recovery: { suggested: 'recheck', reason: 'گارد رد کرد؛ worktree عوض نشده', commands: ['recheck'] }, install: null }
+});
+
+test('recheck: پیش‌سنجی از actions.recheck (exit 3، بدون صدا زدن ِ Manager)؛ اجرا فقط شناسه را به Manager می‌دهد؛ نتیجه از attempt.rechecked', async t => {
+  const s = await boot(t, { status: { ...STATUS, tasks: [recheckTask(21), recheckTask(22, { recheck: false })] }, extra: RECHECK_EXTRA });
+
+  const denied = await s.cli(['recheck', '22']);
+  assert.equal(denied.code, EXIT.NOT_ALLOWED);
+  assert.match(denied.err, /recheck/);
+  assert.equal(s.fake.mutations().filter(c => c.args[0] === 'recheck').length, 0, 'Manager اصلاً صدا زده نشد');
+  // سرور هم خودش می‌سنجد (نه فقط CLI): فراخوانی ِ مستقیم ِ endpoint با actions.recheck=false ← 409، بدون اجرا
+  const direct = await jsonPost(s.base, '/api/remote/tasks/22/recheck', s.token, {});
+  assert.equal(direct.status, 409);
+  assert.equal(s.fake.mutations().filter(c => c.args[0] === 'recheck').length, 0);
+
+  const ok = await s.cli(['recheck', '21']);
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.out, /recheck انجام شد — پذیرفته شد/);
+  assert.match(ok.out, /attempt 003 · guard ِ قبلی: scope-guard\.out-of-scope-uncommitted · budget مصرف نشد \(none\)/);
+  assert.deepEqual(s.fake.mutations().filter(c => c.args[0] === 'recheck').map(c => c.args), [['recheck', '21']], 'فقط شناسه در argv');
+
+  for (const [result, text] of [['rejected', /باز هم رد شد/], ['blocked', /مسدود شد/], ['routed', /هدایت شد/]]) {
+    fs.writeFileSync(path.join(s.fake.root, 'recheck-result.json'), JSON.stringify(result));
+    const r = await s.cli(['recheck', '21']);
+    assert.match(r.out, text, result);
+    assert.equal((await s.cli(['recheck', '21', '--json'])).json().result, result);
+  }
+  fs.writeFileSync(path.join(s.fake.root, 'recheck-result.json'), JSON.stringify('no-event'));
+  const none = await s.cli(['recheck', '21']);
+  assert.equal(none.code, 0);
+  assert.match(none.out, /رویداد attempt\.rechecked پیدا نشد/);
+
+  assert.equal((await s.cli(['recheck'])).code, EXIT.USAGE);
+  const rows = s.audit().summaries({ action: 'recheck', limit: 5 });
+  assert.ok(rows.length >= 1 && rows.every(row => row.user === 'remote:remote-phone'), 'ممیزی با actor ِ remote');
+  await s.waitIdle();
+});
+
+test('task: نقش ِ جاری و بعدی (از roles ِ Manager)، liveness ِ قفل، جدول ِ failedWrites، برچسب ِ relay؛ بدون roles بی‌خطا', async t => {
+  const blocked = {
+    id: '31', title: 'خطای ابزار', state: 'blocked', previousState: 'implementing', stateSince: '2026-10-26T09:00:00Z', awaitingHuman: null,
+    roles: { current: 'implementer', next: 'reviewer' },
+    blocker: { kind: 'tooling', stage: 'tool-write-failed', role: 'implementer', attempt: '003', detail: 'Write ناموفق', failedWrites: [{ tool: 'Write', path: 'src/a.ts', error: 'EACCES', kind: 'subagent-report-file' }] },
+    actions: { ...NO_ACTIONS, recheck: true, unblock: true },
+    attempts: [
+      { n: 2, id: '002', role: 'implementer', outcome: 'completed', runtime: { provider: 'claude', requestedModel: 'sonnet', runMode: 'subagent-relay', outerModel: 'claude-opus-5-5' } },
+      { n: 3, id: '003', role: 'implementer', outcome: 'completed', runtime: { provider: 'claude', requestedModel: 'sonnet', runMode: 'main-agent', outerModel: null } }
+    ],
+    health: {
+      transitionLock: { pid: 4242, alive: true, fromState: 'implementing', startedAt: '2026-10-26T08:00:00Z', liveness: 'alive-unverified' }, dirtyPaths: [], stuck: false, stuckReasons: [],
+      recovery: { suggested: 'recheck', reason: 'pid 4242 سنجیده نشد؛ اگر مطمئنی مرده است: unlock --force', commands: ['recheck', 'unlock'] }, install: null
+    }
+  };
+  const old = { id: '32', title: 'قدیمی', state: 'implementing', stateSince: '2026-10-26T09:00:00Z', awaitingHuman: null, blocker: null, actions: { ...NO_ACTIONS } };
+  const s = await boot(t, { status: { ...STATUS, tasks: [blocked, old] } });
+
+  const text = (await s.cli(['task', '31'])).out;
+  assert.match(text, /نقش: جاری implementer → بعدی reviewer/);
+  assert.match(text, /نوشتن‌های ناموفق ِ ابزار \(نقش implementer، attempt 003\):/);
+  assert.match(text, / {2}ابزار \| مسیر نسبی \| خطا/);
+  assert.match(text, / {2}Write \| src\/a\.ts \| EACCES \[subagent-report-file\]/);
+  assert.match(text, /قفل transition: pid 4242 — احتمالاً زنده — سنجیده نشد — pid 4242 سنجیده نشد؛ اگر مطمئنی مرده است: unlock --force/);
+  assert.match(text, /\[قدیمی، relay؛ outer: claude-opus-5-5\]/);
+  assert.equal((text.match(/قدیمی، relay/g) ?? []).length, 1, 'main-agent چیزی اضافه نمی‌کند');
+  const json = (await s.cli(['task', '31', '--json'])).json();
+  assert.deepEqual(json.roles, { current: 'implementer', next: 'reviewer' });
+  assert.equal(json.health.lock.liveness, 'alive-unverified');
+  assert.equal(json.blocker.failedWrites.rows[0].path, 'src/a.ts');
+  assert.equal(json.attempts[0].relay.outerModel, 'claude-opus-5-5');
+  assert.equal(json.attempts[1].relay, null);
+
+  const oldText = await s.cli(['task', '32']);
+  assert.equal(oldText.code, 0, oldText.err);
+  assert.doesNotMatch(oldText.out, /نقش: جاری/);
+  assert.equal((await s.cli(['task', '32', '--json'])).json().roles, null);
+
+  // artifact (بدون نام): همان جدول
+  const art = await s.cli(['artifact', '31']);
+  assert.match(art.out, /نوشتن‌های ناموفق ِ ابزار \(نقش implementer، attempt 003\):/);
+  assert.match(art.out, /Write \| src\/a\.ts \| EACCES/);
+  assert.equal((await s.cli(['artifact', '31', '--json'])).json().failedWrites.rows.length, 1);
+  assert.equal((await s.cli(['artifact', '32', '--json'])).json().failedWrites, null);
+});
+
+test('diag: liveness ِ قفل با دلیل ِ Manager، نقش، جدول ِ failedWrites؛ قفل ِ سراسری (managerLock) هم برچسب دارد', async t => {
+  const task = {
+    id: '41', title: 'قفل نامعلوم', state: 'blocked', stateSince: '2026-10-26T09:00:00Z', awaitingHuman: null, dir: '.agent-work/tasks/41-x', worktree: { status: null, path: null },
+    roles: { current: 'implementer', next: null },
+    blocker: { kind: 'tooling', stage: 'tool-write-failed', role: 'implementer', attempt: '002', detail: 'x', failedWrites: [{ tool: 'Edit', path: 'a/b.ts', error: 'old_string پیدا نشد' }] },
+    actions: { ...NO_ACTIONS },
+    health: {
+      transitionLock: { pid: 77, alive: false, fromState: 'implementing', startedAt: '2026-10-26T08:00:00Z', liveness: 'pid-reused' }, dirtyPaths: [], stuck: true, stuckReasons: ['stale-lock'],
+      recovery: { suggested: 'run', reason: 'قفل ِ مرده', commands: ['run'] }, install: null
+    }
+  };
+  const status = { ...STATUS, repository: { ...STATUS.repository, health: { managerLock: { pid: 88, alive: null, task: '41', startedAt: '2026-10-26T08:00:00Z', liveness: 'other-host' }, unownedDirtyFiles: [], acceptsOperations: true } }, tasks: [task] };
+  const s = await boot(t, { status });
+  const text = (await s.cli(['diag', '41'])).out;
+  assert.match(text, /نقش: جاری implementer → بعدی —/);
+  assert.match(text, /قفل transition: pid 77 مرده \(شماره‌ی فرآیند به برنامه‌ی دیگری رسیده\) · از implementing/);
+  assert.match(text, /── blocker: خطای نوشتن ِ ابزار \(tool-write-failed\)/);
+  assert.match(text, /Edit \| a\/b\.ts \| old_string پیدا نشد/);
+  const system = (await s.cli(['diag', '--system'])).out;
+  assert.match(system, /قفل سراسری Manager: pid 88 روی ماشین دیگر · task 41/);
+  assert.match(system, /تسک #41 \[blocked\]: pid 77 مرده \(شماره‌ی فرآیند به برنامه‌ی دیگری رسیده\)/);
 });

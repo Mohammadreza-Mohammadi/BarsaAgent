@@ -8,7 +8,7 @@
 export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options']);
 
 /** فرمان‌های نوشتنی: هر کدام روی گوشی تأیید می‌خواهد (`ask` در settings.json). */
-export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain']);
+export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain']);
 
 /**
  * فرمان‌هایی که یک شکل ِ فقط‌خواندنی هم دارند. قاعده‌ی ask در settings.json ترتیبش بر allow می‌چربد (deny ← ask ← allow)، پس
@@ -81,6 +81,7 @@ export const REMOTE_ENDPOINTS = Object.freeze([
   ['POST', '/api/repos/:repo/tasks/:id/allow-shared-knowledge-file'],
   ['POST', '/api/remote/tasks/:id/bundle'],
   ['POST', '/api/remote/tasks/:id/recover'],
+  ['POST', '/api/remote/tasks/:id/recheck'],
   ['POST', '/api/remote/tasks/:id/retry-provision'],
   ['POST', '/api/remote/tasks/:id/retry-install'],
   ['POST', '/api/remote/tasks/:id/kill-stuck-install'],
@@ -111,6 +112,7 @@ export const COMMAND_ENDPOINTS = Object.freeze({
   diag: [['GET', '/api/remote/tasks/:id/diag'], ['GET', '/api/remote/diag/system']],
   bundle: [['POST', '/api/remote/tasks/:id/bundle']],
   recover: [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/recover']],
+  recheck: [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/recheck']],
   'retry-provision': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/retry-provision']],
   'retry-install': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/remote/tasks/:id/retry-install']],
   runtime: [['GET', '/api/repos/:repo/tasks/:id'], ['GET', '/api/repos/:repo/running']],

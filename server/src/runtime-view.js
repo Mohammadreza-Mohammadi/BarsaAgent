@@ -2,10 +2,8 @@
 // نباید به type-stripping ِ node برای فایل‌های client وابسته باشد)؛ تست «runtime-view ≡ runtime.ts» روی همان fixtureها دو
 // نسخه را یکی نگه می‌دارد.
 //
-// قاعده‌ها: ردیف‌ها از کلیدهای `runtime.effective`؛ نقش ِ «جاری» از attempt ِ زنده وگرنه lastAttempt؛ «بعدی» را status نمی‌دهد و
-// نشان داده نمی‌شود؛ هیچ نگاشت ِ state ← نقش این‌جا نیست.
-
-const FINISHED = ['integrated', 'cancelled', 'abandoned'];
+// قاعده‌ها: ردیف‌ها از کلیدهای `runtime.effective`؛ نقش ِ «جاری» و «بعدی» از `task.roles` ِ Manager (TOOLING-048) — هیچ حدسی روی
+// attempt ِ آخر و هیچ نگاشت ِ state ← نقش این‌جا نیست؛ `roles` غایب (Manager ِ قدیمی‌تر) ⇒ هیچ برجسته‌سازی.
 
 const SOURCE_LABELS = { default: 'پیش‌فرض', 'task-preset': 'preset', 'task-role': 'تنظیم همین تسک', env: 'env', cli: 'cli' };
 export const sourceLabel = source => (source ? (SOURCE_LABELS[source] ?? source) : '—');
@@ -16,8 +14,11 @@ export function liveAttempt(task) {
 }
 
 export function currentRole(task) {
-  if (!task || FINISHED.includes(task.state)) return null;
-  return liveAttempt(task)?.role ?? task.lastAttempt?.role ?? null;
+  return task?.roles?.current ?? null;
+}
+
+export function nextRole(task) {
+  return task?.roles?.next ?? null;
 }
 
 const differs = (a, b) => !!a && !!b && (a.provider !== b.provider || (a.requestedModel ?? a.model ?? null) !== (b.requestedModel ?? b.model ?? null) || a.effort !== b.effort);
@@ -47,6 +48,7 @@ export function runtimeRows(task, optionRoles) {
   const first = (optionRoles ?? []).filter(role => keys.includes(role));
   const roles = [...first, ...keys.filter(role => !first.includes(role))];
   const current = currentRole(task);
+  const next = nextRole(task);
   return roles.map(role => {
     const entry = effective[role];
     const error = entry?.error ? `${entry.error}${entry.code ? ` (${entry.code})` : ''}` : null;
@@ -59,6 +61,7 @@ export function runtimeRows(task, optionRoles) {
       fieldSources: entry?.fieldSources ?? null,
       error,
       isCurrent: current === role,
+      isNext: next === role && next !== current,
       pending: error ? null : pendingFor(task.runtime, role)
     };
   });
