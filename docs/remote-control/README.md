@@ -15,7 +15,7 @@
 `barsa task <id>` (با بخش «⏳ منتظر تو»: متن کامل سؤال‌ها / خلاصه‌ی AC / تصمیم Reviewer + release note + diff) ·
 `barsa log <id> [--tail N]` · `barsa waiting --since <ISO>` · `barsa runtime <id>` · `barsa runtime-options` ·
 `barsa artifact <id> [name] [--attempt N] [--tail N]` ·
-`barsa diag <id>` · `barsa diag --system` · `barsa bundle <id>` · `barsa sync --dry-run` · `barsa sync --status <execId>`
+`barsa diag <id>` · `barsa diag --system` · `barsa bundle <id>` · `barsa sync --dry-run` · `barsa sync --status <execId>` · `barsa drain --status`
 
 نوشتنی (روی گوشی تأیید می‌خواهند): `barsa create-from-issue <externalId> [--run] [--runtime-preset <name>] [--runtime <role>=<p>:<m>:<e> ...] [--allow-duplicate (--reason "…"|--stdin)]` ·
 `barsa create-task --title <t> (--text-file <f>|--stdin) [--runtime-preset <name>] [--runtime <role>=<p>:<m>:<e> ...]` · `barsa run <id>` · `barsa stop <id>` ·
@@ -23,7 +23,7 @@
 `barsa set-runtime <id> <role|preset|all> --reset --reason "…"` · `barsa retry-provision <id>` (و alias ِ `barsa retry-install <id>`) ·
 `barsa answer <id> --approve | --reject [--route implementer|architect] | --clarify [--respec] | --note | --raise-limit <field>=<n> | --unblock | --allow-shared-knowledge-file <path>`
 (متن از `--text-file <f>` یا `--stdin`) · `barsa recover <id> [--discard-residue]` · `barsa sync` ·
-`barsa kill-stuck-install <id> [--minutes N]`.
+`barsa drain` · `barsa drain --off` · `barsa kill-stuck-install <id> [--minutes N]`.
 
 ### «بدون RDP»: دیدن، تشخیص، رفع گیر
 
@@ -44,6 +44,9 @@
 | `set-runtime` | `POST /api/repos/:repo/tasks/:id/runtime` | `answer --runtime` / `--runtime-preset` / `--runtime-reset` با `--reason-file`؛ فقط attemptهای بعدی (با attempt ِ زنده در صف می‌نشیند). پیش‌سنجی از `actions.setRuntime`؛ اعتبارسنجی ِ معنایی با Manager |
 | `create-* --runtime…` | `POST /api/tasks/create` · `POST /api/issues/import` | flagهای `import-issue` ِ Manager: `--runtime-preset`، `--runtime <role>=<p>:<m>:<e>`، و `--allow-duplicate --reason` (exit 44 ← «این issue قبلاً تسک #N دارد»؛ exit 45 ← runtime نامعتبر، تسکی ساخته نمی‌شود) |
 | `sync` / `sync --dry-run` | `POST /api/remote/sync` + `GET /api/remote/execs/:id` | همان `manager.js sync` ِ کانبان (ff/push/merge، هرگز rebase) با پیام روشن برای exit code ۵۰ تا ۵۷؛ تا ~۱۰۰ ثانیه صبر می‌کند وگرنه `sync --status <execId>` |
+| `drain` | `POST /api/drain` | **ask.** تخلیه روشن: run ِ تازه (دستی و خودکار) شروع نمی‌شود، in-flight ها ادامه می‌دهند، تسک‌های ِ «می‌خواستند شروع شوند» در صف می‌مانند (در `drain.json` ذخیره می‌شود و بعد از restart هم می‌ماند) |
+| `drain --status` | `GET /api/drain` | **allow.** «خالی» یا فهرست ِ run های زنده با state و مدت |
+| `drain --off` | `POST /api/drain/off` | **ask.** برگشت به حالت عادی و شروع ِ صف |
 | `kill-stuck-install <id>` | `POST /api/remote/tasks/:id/kill-stuck-install` | فقط فرزندان مستقیم ِ یک `npm ci` (lifecycle scriptها) در **درخت ِ فرآیند ِ ثبت‌شده در registry ِ کانبان** برای همین تسک، که بیش از N دقیقه (پیش‌فرض ۵) عمر دارند. هیچ جست‌وجوی متنی روی کل سیستم، هیچ pid ِ دلخواه، هیچ ری‌استارت سرویس |
 | `answer --allow-shared-knowledge-file <path>` | `POST /api/repos/:repo/tasks/:id/allow-shared-knowledge-file` | همان endpoint ِ دکمه‌ی رابط کاربری؛ پیش‌سنجی از `actions.allowSharedKnowledgeFile` |
 
@@ -122,7 +125,7 @@ exit code: `0` موفق · `2` آرگومان بد · `3` اکشن مجاز نی
 
 | فرمان | کلیدها |
 |---|---|
-| `health` | `ok, checkedAt, execution{enabled,status,detail}, sync{status,ahead,behind,lastFetchAt,detail}, claude{installed,auth}, problems[{id,status,label,detail,hint}]` |
+| `health` | `ok, checkedAt, execution{enabled,status,detail}, sync{status,ahead,behind,lastFetchAt,detail}, claude{installed,auth}, drain{draining,live,queued}, problems[{id,status,label,detail,hint}]` |
 | `issues` | `issues[{externalId,title,status,labels,importedTaskId,importedRepoId}], hiddenImported` |
 | `tasks` | `repo, filter, generatedAt, total, truncated, execution, tasks[{id,title,state,stateSince,gate{kind,since}\|null,blocker{kind,detail}\|null,running,queued,actions[]}]` |
 | `task` | `id, title, state, stateSince, gate, running{running,queued,exitCode}, actions, blocker, health{stuck,reasons,lock,recovery,install}, review{…}, releaseNote, diff{headCommit,files[]}, externalSources[], budget, waiting{kind,since,artifact,questions\|proposal\|review+releaseNote+diff+external,hint}` |
@@ -130,6 +133,7 @@ exit code: `0` موفق · `2` آرگومان بد · `3` اکشن مجاز نی
 | `diag <id>` | `taskId, repo, generatedAt, state, gate, blocker, health, actions[], summary, events[], log{runId,…,lines[]}, processes[{pid,ppid,name,startedAt,ageSec,cpuSeconds,cmd}], taskDirGit, worktree{path,exists,branch,merged,ownCommits,nodeModulesBin,dirty[]}, queue{state,position,slotsUsed,slotsMax}` |
 | `diag --system` | `service, processes[], locks, slots, repository{sync,execution}, git{status[],worktrees[]}, disk[], errLog{file,lines[]}, tools{node,npm,git,claude,tf}, issues{count}` |
 | `bundle` | `ok, taskId, name, path, bytes, files, skipped` |
+| `drain` | `changed?, draining, since, by, empty, live[{repoId,taskId,runId,user,startedAt,state,durationMs,durationText}], queued[{repoId,taskId,user,queuedAt}], execs[]` |
 | `recover` / `retry-install` / `kill-stuck-install` / `sync` | `ok, taskId, mode, output[]` / `ok, queued, started, duplicate` / `ok, killed[{pid,name,ageMin,cmd}], remaining[], note` / `ok, execId, finished, exitCode, lines[]` |
 | `log` | `taskId, runId, running, queued, startedAt, finishedAt, exitCode, truncated, lines[]` |
 | `waiting` | `repo, since, generatedAt, tasks[{id,title,state,gate,…}]` — `generatedAt` را برای `--since` ِ دفعه‌ی بعد نگه دار |

@@ -72,6 +72,9 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa retry-provision <id>                unblock + run برای شکست ِ نصب / build / baseline (actions.retryProvision)
   barsa retry-install <id>                  همان retry-provision (alias ِ یک نسخه)
   barsa sync                                sync ِ واقعی Manager با origin (ff/push/merge؛ هرگز rebase)
+  barsa drain                               تخلیه: run ِ تازه شروع نمی‌شود (دستی و خودکار)؛ در جریان‌ها ادامه می‌دهند؛ صف می‌ماند
+  barsa drain --status                      «خالی» یا فهرست ِ run های زنده (state، مدت) — فقط‌خواندنی
+  barsa drain --off                         برگشت به حالت عادی و شروع ِ صف
   barsa kill-stuck-install <id> [--minutes N]   فقط lifecycle scriptهای گیرکرده‌ی همان npm ci ِ این تسک (پیش‌فرض ۵ دقیقه)
 
 گزینه‌های مشترک: --json  --repo <id>  --token-file <f>  --url <loopback-url>
@@ -86,7 +89,7 @@ const VALUE_FLAGS = new Set([
 ]);
 const BOOL_FLAGS = new Set([
   '--json', '--all', '--waiting', '--running', '--blocked', '--run', '--stdin', '--help', '-h',
-  '--approve', '--reject', '--clarify', '--note', '--unblock', '--respec', '--system', '--discard-residue', '--dry-run', '--reset', '--allow-duplicate'
+  '--approve', '--reject', '--clarify', '--note', '--unblock', '--respec', '--system', '--discard-residue', '--dry-run', '--reset', '--allow-duplicate', '--off'
 ]);
 
 export function parseArgs(argv) {
@@ -95,6 +98,12 @@ export function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (NOT_REMOTE_ANSWER_FLAGS.includes(arg.split('=')[0])) throw usage(`${arg}: ${NOT_REMOTE_MESSAGE}`);
+    // --status: `sync --status <execId>` مقدار می‌گیرد؛ `drain --status` بولین است. مقدار فقط اگر شکل ِ execId بود.
+    if (arg === '--status') {
+      const next = argv[i + 1];
+      if (next !== undefined && /^[0-9]{14}-[0-9a-f]{8}$/.test(next)) { flags[arg] = next; i += 1; } else flags[arg] = true;
+      continue;
+    }
     if (arg.startsWith('--') && arg.includes('=') && VALUE_FLAGS.has(arg.split('=')[0]) && arg.split('=')[0] !== '--raise-limit') {
       const [name, ...rest] = arg.split('=');
       flags[name] = rest.join('=');
@@ -296,18 +305,21 @@ const commands = {
     const sync = byPrefix('manager-version-');
     const claude = checks.find(c => c.id === 'claude');
     const auth = checks.find(c => c.id === 'claude-auth');
+    const drainCheck = checks.find(c => c.id === 'drain');
     const problems = checks.filter(c => c.status !== 'ok').map(c => ({ id: c.id, status: c.status, label: c.label, detail: clip(c.detail, 200), hint: clip(c.hint, 200) }));
     const out = {
       ok: data.ok === true, checkedAt: data.checkedAt,
       execution: exec ? { enabled: exec.data?.enabled ?? null, status: exec.status, detail: clip(exec.detail, 200) } : null,
       sync: sync ? { status: sync.status, ahead: sync.data?.ahead ?? null, behind: sync.data?.behind ?? null, lastFetchAt: sync.data?.lastFetchAt ?? null, detail: clip(sync.detail, 240) } : null,
       claude: { installed: claude ? claude.status === 'ok' : null, auth: auth ? auth.status === 'ok' : null },
+      drain: drainCheck ? { draining: drainCheck.data?.draining ?? null, live: drainCheck.data?.live ?? null, queued: drainCheck.data?.queued ?? null } : null,
       problems
     };
     if (json) return out;
     const lines = [`${out.ok ? '✅ محیط آماده است' : '❌ محیط ایراد دارد'} (${problems.filter(p => p.status === 'fail').length} خطا · ${problems.filter(p => p.status === 'warn').length} هشدار)`];
     if (exec) lines.push(`اجرا: ${exec.data?.enabled === false ? '⛔ خاموش' : exec.data?.enabled === true ? 'روشن' : clip(exec.detail, 80)}`);
     if (sync) lines.push(`sync: ${sync.data ? `${sync.data.ahead ?? '؟'} جلوتر · ${sync.data.behind ?? '؟'} عقب‌تر · آخرین fetch ${short(sync.data.lastFetchAt)}` : clip(sync.detail, 120)}`);
+    if (drainCheck?.data?.draining) lines.push(`⏳ در حال تخلیه — run ِ تازه شروع نمی‌شود (${drainCheck.data.live} زنده · ${drainCheck.data.queued} در صف)`);
     lines.push(`claude: ${claude ? (claude.status === 'ok' ? 'نصب ✓' : 'مشکل ✗') : '—'} · ورود: ${auth ? (auth.status === 'ok' ? '✓' : '✗') : '—'}`);
     for (const p of problems.slice(0, 8)) lines.push(`${p.status === 'fail' ? '✗' : '!'} ${clip(p.label, 60)}: ${clip(p.detail, 100)}${p.hint ? ` — ${clip(p.hint, 100)}` : ''}`);
     if (problems.length > 8) lines.push(`… و ${problems.length - 8} مورد دیگر`);
@@ -628,6 +640,17 @@ const commands = {
     return [`${dryRun || /sync-preview/.test(view.action ?? '') ? 'پیش‌نمایش sync' : 'sync'} تمام شد (exit 0).`, ...tail].join('\n');
   },
 
+  async drain({ client, flags, positional, json }) {
+    if (positional.length) throw usage('استفاده: barsa drain | barsa drain --status | barsa drain --off');
+    if (flags['--status'] === true && flags['--off']) throw usage('--status و --off با هم معنا ندارند.');
+    if (typeof flags['--status'] === 'string') throw usage('--status مقدار نمی‌گیرد (برای sync: barsa sync --status <execId>).');
+    const status = flags['--status'] === true;
+    const off = flags['--off'] === true;
+    const { data } = status ? await need(client, 'GET', '/api/drain') : await need(client, 'POST', off ? '/api/drain/off' : '/api/drain', { body: {} });
+    if (json) return data;
+    return formatDrain(data, { status, off });
+  },
+
   async 'kill-stuck-install'({ client, flags, positional, repo, json }) {
     const id = needId(positional);
     let minutes;
@@ -730,6 +753,25 @@ const commands = {
     return `تسک #${id}: ${mode} انجام شد.${resumed ? `\nاجرا خودکار ادامه یافت (${data.queued ? 'در صف' : 'شروع شد'}). با «barsa log ${id}» ببین.` : ''}${mode === 'unblock' || mode === 'raise-limit' || mode === 'allow-shared-knowledge-file' ? `\nاجرا خودکار نیست؛ اگر خواستی «barsa run ${id}».` : ''}`;
   }
 };
+
+/** وضعیت ِ تخلیه به متن ِ کوتاه. */
+function formatDrain(d, { status, off }) {
+  const lines = [];
+  if (!status) {
+    if (off) lines.push(d.changed ? `تخلیه خاموش شد؛ ${d.live.length} run ِ زنده و صف ِ نگه‌داشته‌شده شروع شد/می‌شود.` : 'تخلیه از قبل خاموش بود.');
+    else lines.push(d.changed ? 'تخلیه روشن شد: run ِ تازه شروع نمی‌شود (دستی و خودکار)؛ در جریان‌ها ادامه می‌دهند؛ صف می‌ماند (و بعد از restart هم).' : 'تخلیه از قبل روشن بود.');
+  }
+  lines.push(`تخلیه: ${d.draining ? `روشن${d.since ? ` (از ${short(d.since)}` + (d.by ? `، توسط ${clip(d.by, 40)}` : '') + ')' : ''}` : 'خاموش'}`);
+  if (d.live.length === 0) lines.push(d.draining ? '✅ خالی: هیچ run ِ زنده‌ای نیست (می‌توانی sync / به‌روزرسانی کنی).' : 'هیچ run ِ زنده‌ای نیست.');
+  else {
+    lines.push(`${d.live.length} run ِ زنده${d.draining ? ' (صبر کن تا تمام شوند)' : ''}:`);
+    for (const item of d.live) lines.push(`  #${item.taskId} · ${item.state ?? 'state نامعلوم'} · ${item.durationText}`);
+  }
+  if (d.queued.length) lines.push(`در صف${d.draining ? ' (نگه‌داشته‌شده)' : ''}: ${d.queued.map(x => `#${x.taskId}`).join('، ')}`);
+  if (d.execs?.length) lines.push(`اجرای کانبان در جریان: ${d.execs.map(x => clip(x.display || x.action, 50)).join('، ')}`);
+  if (!status && !off && d.draining) lines.push('بعدی: barsa drain --status تا «خالی»، بعد barsa sync، آخرش barsa drain --off');
+  return lines.join('\n');
+}
 
 function needId(positional) {
   const id = positional[0];

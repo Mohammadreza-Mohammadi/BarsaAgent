@@ -8,13 +8,16 @@
 export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options']);
 
 /** فرمان‌های نوشتنی: هر کدام روی گوشی تأیید می‌خواهد (`ask` در settings.json). */
-export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime']);
+export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain']);
 
 /**
  * فرمان‌هایی که یک شکل ِ فقط‌خواندنی هم دارند. قاعده‌ی ask در settings.json ترتیبش بر allow می‌چربد (deny ← ask ← allow)، پس
  * برای این‌ها ask دقیقاً «بدون آرگومان» است و allow فقط همین شکل‌های خواندنی را باز می‌کند.
  */
-export const READ_FORMS = Object.freeze({ sync: ['--dry-run', '--status'] });
+export const READ_FORMS = Object.freeze({ sync: ['--dry-run', '--status'], drain: ['--status'] });
+
+/** شکل‌های نوشتنی ِ صریحِ فرمان‌هایی که شکل خواندنی هم دارند (علاوه بر «بدون آرگومان»): هر کدام یک قاعده‌ی ask ِ دقیق. */
+export const WRITE_FORMS = Object.freeze({ drain: ['--off'] });
 
 /** حالت‌های `barsa answer <id> --…` (دقیقاً همین‌ها؛ هیچ اکشن دیگری از راه دور نیست). */
 export const ANSWER_MODES = Object.freeze(['approve', 'reject', 'clarify', 'note', 'raise-limit', 'unblock', 'allow-shared-knowledge-file']);
@@ -81,7 +84,10 @@ export const REMOTE_ENDPOINTS = Object.freeze([
   ['POST', '/api/remote/tasks/:id/retry-provision'],
   ['POST', '/api/remote/tasks/:id/retry-install'],
   ['POST', '/api/remote/tasks/:id/kill-stuck-install'],
-  ['POST', '/api/remote/sync']
+  ['POST', '/api/remote/sync'],
+  ['GET', '/api/drain'],
+  ['POST', '/api/drain'],
+  ['POST', '/api/drain/off']
 ]);
 
 /** فرمان CLI ← endpointهایی که صدا می‌زند (برای مستند و تست). */
@@ -111,7 +117,10 @@ export const COMMAND_ENDPOINTS = Object.freeze({
   'runtime-options': [['GET', '/api/repos/:repo/runtime-options']],
   'set-runtime': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/runtime']],
   sync: [['POST', '/api/remote/sync'], ['GET', '/api/remote/execs/:id']],
-  'kill-stuck-install': [['POST', '/api/remote/tasks/:id/kill-stuck-install']]
+  'kill-stuck-install': [['POST', '/api/remote/tasks/:id/kill-stuck-install']],
+  drain: [['POST', '/api/drain']],
+  'drain --status': [['GET', '/api/drain']],
+  'drain --off': [['POST', '/api/drain/off']]
 });
 
 /** هم‌خوانی یک مسیر با الگو (`:name` = یک بخش). */
