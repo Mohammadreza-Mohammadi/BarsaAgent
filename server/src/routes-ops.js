@@ -50,7 +50,7 @@ export function resolveTaskDir(repo, task) {
 }
 
 export function createOpsRoutes(ctx) {
-  const { audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor, managerAudited, pipeStream, users, managerInfo, assertExecution } = ctx;
+  const { audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor, managerAudited, pipeStream, users, managerInfo, assertExecution, drain } = ctx;
 
   const defaultRepo = () => config.repos[0];
 
@@ -327,7 +327,7 @@ export function createOpsRoutes(ctx) {
   const execResponse = exec => ({ execId: exec.id });
 
   async function healthPayload() {
-    return runHealthChecks({ config, repos: config.repos, dataDir, managerInfo: config.managerInfo, help, users, updater });
+    return runHealthChecks({ config, repos: config.repos, dataDir, managerInfo: config.managerInfo, help, users, updater, drain });
   }
 
   // ---------------------------------------------------------------------------------------
@@ -393,6 +393,11 @@ export function createOpsRoutes(ctx) {
     if ((p = route('/api/repos/:repo/tasks/:id/retry-rebase', pathname)) && method === 'POST') {
       return send(res, 200, await retryRebase(session, repoFor(p.repo), p.id, await readBody(req))), true;
     }
+
+    // --- تخلیه (drain): run ِ تازه شروع نشود، در جریان‌ها ادامه بدهند، صف بماند (و بعد از restart هم بماند) ---------------
+    if (method === 'GET' && pathname === '/api/drain') return send(res, 200, drain.status()), true;
+    if (method === 'POST' && pathname === '/api/drain') return send(res, 200, drain.enable(session)), true;
+    if (method === 'POST' && pathname === '/api/drain/off') return send(res, 200, drain.disable(session)), true;
 
     if ((p = route('/api/repos/:repo/runtime-options', pathname)) && method === 'GET') {
       return send(res, 200, await runtimeOptions(repoFor(p.repo), url.searchParams.get('refresh') === '1')), true;

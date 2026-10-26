@@ -67,7 +67,7 @@ function freeSpace(dir, statfs = fs.promises.statfs) {
   return statfs(dir).then(s => Number(s.bavail) * Number(s.bsize));
 }
 
-export async function runHealthChecks({ config, repos, dataDir, managerInfo, help, users, updater, deps = {} }) {
+export async function runHealthChecks({ config, repos, dataDir, managerInfo, help, users, updater, drain, deps = {} }) {
   const probe = deps.probeUrl || probeUrl;
   const statfs = deps.statfs || fs.promises.statfs;
   const settings = config.health || {};
@@ -203,6 +203,15 @@ export async function runHealthChecks({ config, repos, dataDir, managerInfo, hel
     }
   }
   await add('disk-data', 'دیسک', 'فضای خالی (داده‌های کانبان)', async () => diskCheck('disk-data', 'فضای خالی (داده‌های کانبان)', dataDir, statfs));
+  if (drain) {
+    await add('drain', 'اجرا', 'حالت تخلیه', async () => {
+      const s = drain.status();
+      const data = { draining: s.draining, live: s.live.length, queued: s.queued.length };
+      return s.draining
+        ? check('drain', 'اجرا', 'حالت تخلیه', 'warn', `روشن — run ِ تازه شروع نمی‌شود · ${s.live.length} run ِ زنده · ${s.queued.length} در صف`, 'بعد از به‌روزرسانی «barsa drain --off» (یا دکمه‌ی خاموش کردن تخلیه) را بزن، وگرنه هیچ تسکی شروع نمی‌شود.', data)
+        : check('drain', 'اجرا', 'حالت تخلیه', 'ok', 'خاموش (عادی)', '', data);
+    });
+  }
   await add('users', 'امنیت', 'حساب‌های ورود', async () => {
     const n = users?.count?.() ?? 0;
     return n > 0 ? check('users', 'امنیت', 'حساب‌های ورود', 'ok', `${n} حساب`) : check('users', 'امنیت', 'حساب‌های ورود', 'fail', 'هیچ حسابی نیست', 'npm run user:add -- <نام>');

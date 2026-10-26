@@ -23,44 +23,18 @@ import { isRemoteAllowed } from './remote-cli-spec.js';
 import { createRemoteRoutes } from './remote-routes.js';
 import { createRuntimeFlags, structuredFailure } from './runtime-args.js';
 import { createRemoteOpsRoutes } from './remote-ops-routes.js';
+import { DrainStore, durationText } from './drain.js';
+import { Lifecycle, SHUTDOWN_SIGNALS, createShutdown } from './shutdown.js';
 
-// علت ریشه‌ای «بازیابی از داخل ابزار» بند ۴ — یک شنونده‌ی SIGINT/SIGTERM
-// سراسری در سطح ماژول (نه داخل createApp)، چون createApp در تست‌ها بارها در
-// همین یک process فراخوانی می‌شود؛ اگر شنونده داخل createApp ثبت می‌شد، هر
-// فراخوانی یکی اضافه می‌کرد (نشتِ listener، هشدار MaxListenersExceeded).
-// همیشه فقط آخرین سرور/registry ثبت‌شده را می‌بندد.
+// یک شنونده‌ی سیگنال در سطح ماژول (نه داخل createApp)، چون createApp در تست‌ها بارها در همین یک process فراخوانی می‌شود؛
+// اگر داخل createApp ثبت می‌شد هر فراخوانی یکی اضافه می‌کرد (نشتِ listener، هشدار MaxListenersExceeded). همیشه فقط آخرین
+// سرور ثبت‌شده را می‌بندد. خود ِ مسیر ِ خاموش‌شدن در shutdown.js است (SIGINT / SIGTERM / SIGBREAK / SIGHUP، مهلت ِ مشخص).
 let activeShutdownTarget = null;
 let shutdownListenersRegistered = false;
 function registerShutdownOnce() {
   if (shutdownListenersRegistered) return;
   shutdownListenersRegistered = true;
-  let shuttingDown = false;
-  const shutdown = signal => {
-    if (!activeShutdownTarget) return;
-    const { server, registry, runner } = activeShutdownTarget;
-    const active = registry.activeCount() + (runner?.activeCount() ?? 0);
-    if (active > 0 && !shuttingDown) {
-      shuttingDown = true;
-      console.warn(
-        `⚠️  ${active} اجرا در حال انجام است — منتظر پایانش می‌مانم (Ctrl+C دوباره برای خروج فوری و کشتن اجرای در جریان).`
-      );
-      const interval = setInterval(() => {
-        if (registry.activeCount() + (runner?.activeCount() ?? 0) === 0) {
-          clearInterval(interval);
-          server.close(() => process.exit(0));
-        }
-      }, 500);
-      process.once(signal, () => {
-        clearInterval(interval);
-        console.warn('⚠️  خروج فوری — اجرای در جریان manager.js کشته می‌شود (احتمال قفل جامانده).');
-        process.exit(1);
-      });
-      return;
-    }
-    server.close(() => process.exit(0));
-  };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  for (const signal of SHUTDOWN_SIGNALS) process.on(signal, () => activeShutdownTarget?.shutdown(signal));
 }
 
 const JSON_TYPE = 'application/json; charset=utf-8';
@@ -205,6 +179,24 @@ export function createApp(config, deps = {}) {
   // توکن‌های remote (CLI ِ barsa): فقط hash روی دیسک؛ هر درخواست از فایل (با کش mtime) می‌خواند ⇒ باطل‌سازی فوری است.
   const remoteTokens = deps.remoteTokens ?? new RemoteTokenStore(dataDir);
   const remoteAddressOf = deps.remoteAddress ?? (req => req.socket.remoteAddress);
+
+  // --- حالت ِ تخلیه (drain) و خاموش‌شدن ---------------------------------------------------------------------------
+  const lifecycle = deps.lifecycle ?? new Lifecycle();
+  const drainStore = deps.drainStore ?? new DrainStore(dataDir);
+  const persistDrain = () => {
+    if (registry.draining) drainStore.save({ draining: true, ...registry.drainInfo, queued: registry.queuedSnapshot() });
+    else drainStore.clear();
+  };
+  {
+    // حالت ِ ذخیره‌شده بعد از restart برمی‌گردد (صف ِ نگه‌داشته‌شده هم)؛ تا برگشتن ذخیره‌ی میانی صف را خالی ننویسد.
+    const saved = drainStore.load();
+    if (saved.draining) {
+      registry.setDraining(true, { by: saved.by, since: saved.since });
+      const restored = registry.restoreQueued(saved.queued, id => repos.get(id));
+      console.log(`[drain] حالت ِ تخلیه از drain.json برگشت (از ${saved.since ?? '؟'}، توسط ${saved.by ?? '؟'}) · ${restored} run ِ صف‌شده نگه داشته شد؛ تا «drain --off» شروع نمی‌شود.`);
+    }
+    registry.onChange = persistDrain;
+  }
 
   const repoFor = id => {
     const repo = repos.get(id);
@@ -375,9 +367,9 @@ export function createApp(config, deps = {}) {
     const onEnd = payload => { res.write(`event: end\ndata: ${JSON.stringify(payload)}\n\n`); res.end(); };
     source.events.on('line', onLine);
     source.events.once('end', onEnd);
-    const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
+    const ping = lifecycle.trackInterval(() => res.write(': ping\n\n'), 15_000);
     req.on('close', () => {
-      clearInterval(ping);
+      lifecycle.clear(ping);
       source.events.off('line', onLine);
       source.events.off('end', onEnd);
     });
@@ -389,12 +381,40 @@ export function createApp(config, deps = {}) {
     updater, dataDir, listProcesses: deps.listProcesses, killTree: deps.killTree,
     issuesCount: async () => (await refreshIssues(false)).length
   });
+  // وضعیت ِ تخلیه: خالی = هیچ run ِ زنده؛ صف ِ نگه‌داشته‌شده «زنده» نیست. state از آخرین board ِ کش‌شده (بدون status ِ تازه).
+  const drain = {
+    status() {
+      const now = Date.now();
+      const live = registry.liveSnapshot().map(item => {
+        const task = lastBoard.get(item.repoId)?.board?.tasks?.find(x => String(x.id) === String(item.taskId));
+        const durationMs = Math.max(0, now - Date.parse(item.startedAt));
+        return { ...item, state: task?.state ?? null, durationMs, durationText: durationText(durationMs) };
+      });
+      const execs = runner.list().filter(x => x.running).map(x => ({ id: x.id, action: x.action, display: x.display, startedAt: x.startedAt }));
+      return { draining: registry.draining, ...registry.drainInfo, empty: live.length === 0, live, queued: registry.queuedSnapshot(), execs };
+    },
+    enable(session) {
+      const changed = registry.setDraining(true, { by: session.user });
+      if (changed) audit.note({ user: session.user, action: 'drain.on', live: registry.liveSnapshot().length, queued: registry.queuedSnapshot().length });
+      return { changed, ...drain.status() };
+    },
+    disable(session) {
+      const queued = registry.queuedSnapshot().length;
+      const changed = registry.setDraining(false);
+      if (changed) audit.note({ user: session.user, action: 'drain.off', started: queued });
+      return { changed, ...drain.status() };
+    }
+  };
   const opsRoutes = createOpsRoutes({
     audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor,
-    managerAudited: collectAction, pipeStream, users: auth.users, assertExecution
+    managerAudited: collectAction, pipeStream, users: auth.users, assertExecution, drain
   });
 
   const server = http.createServer(async (req, res) => {
+    if (lifecycle.closing) {
+      res.writeHead(503, baseHeaders({ 'Content-Type': JSON_TYPE, Connection: 'close', 'Retry-After': '10' }));
+      return res.end(JSON.stringify({ error: 'سرویس در حال خاموش شدن است؛ چند لحظه بعد دوباره امتحان کن.' }));
+    }
     const url = new URL(req.url, 'http://127.0.0.1');
     const pathname = url.pathname;
     const mutating = req.method !== 'GET' && req.method !== 'HEAD';
@@ -793,15 +813,17 @@ export function createApp(config, deps = {}) {
     }
   });
 
-  // علت ریشه‌ای «بازیابی از داخل ابزار» بند ۴ (گزینه‌ی «ب» — حداقلِ قابل‌قبول،
-  // نه detach کامل): بستن/ری‌استارت این سرور بدون این هشدار، فرزندِ در جریانِ
-  // manager.js (اگر task ای همین الان run می‌شود) را وسط یک transition می‌کشد —
-  // دقیقاً همان چیزی که باعث شد یک قفل جامانده بدون هیچ رد پایی در events.jsonl
-  // بماند (رفع شد در manager.js#reclaimStaleTransitionLock: run.abandoned).
-  // این کاملاً علامت را حل نمی‌کند (force-kill/کرش هنوز خطرناک است) ولی مسیر
-  // عادی close/restart را ایمن می‌کند: اگر اجرایی در جریان است صبر می‌کند، نه
-  // این‌که بی‌سروصدا بکشدش.
-  activeShutdownTarget = { server, registry, runner };
+  // shutdown ِ مرتب (shutdown.js): سقف ِ زمان، اتصال‌های باز (SSE/keep-alive)، timerها، و نام ِ run های زنده در لاگ.
+  // config.shutdown: { timeoutMs (۱۰۰۰۰)، runWaitMs (۰)، liveRuns: terminate | leave }. در تست، exit تزریق می‌شود.
+  const shutdownConfig = config.shutdown || {};
+  const shutdown = createShutdown({
+    server, registry, runner, lifecycle, audit,
+    timeoutMs: Number(shutdownConfig.timeoutMs ?? 10_000), runWaitMs: Number(shutdownConfig.runWaitMs ?? 0),
+    liveRuns: shutdownConfig.liveRuns === 'leave' ? 'leave' : 'terminate',
+    exit: deps.exit ?? (code => process.exit(code)), log: deps.shutdownLog
+  });
+  server.barsa = { shutdown, lifecycle, registry, runner, drain };
+  activeShutdownTarget = { shutdown };
   registerShutdownOnce();
 
   return server;
