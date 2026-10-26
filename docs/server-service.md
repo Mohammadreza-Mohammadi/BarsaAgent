@@ -110,11 +110,12 @@ nssm set $svc AppEnvironmentExtra "BARSA_AGENT_CONFIG=$data\barsa-agent.config.y
 nssm set $svc AppExit Default Restart
 nssm set $svc AppRestartDelay 5000
 
-# توقف تمیز: کانبان با Ctrl+C منتظر پایان اجراهای در جریان می‌ماند (app.js، registerShutdownOnce).
-# به NSSM تا ۱۰ دقیقه مهلت بده؛ بعد از آن می‌کشد (ممکن است قفل جامانده بماند → TOOLING-030).
-nssm set $svc AppStopMethodConsole 600000
+# توقف: NSSM یک Ctrl+C به کنسول می‌فرستد (← SIGINT در node)؛ کانبان در حداکثر ۱۰ ثانیه خودش خارج می‌شود.
+# مقدارها و دلیلشان: «توقف تمیز» پایین. (قبلاً ۶۰۰۰۰۰ بود؛ اشتباه بود: با SSE ِ باز هرگز زودتر تمام نمی‌شد.)
+nssm set $svc AppStopMethodConsole 15000
 nssm set $svc AppStopMethodWindow 0
 nssm set $svc AppStopMethodThreads 0
+nssm set $svc AppKillProcessTree 1
 
 nssm start $svc
 ```
@@ -128,15 +129,71 @@ nssm start $svc
 3. اگر `claude` قرمز بود چون فقط `claude.cmd` وجود دارد: مسیر `claude.exe` را در `health.claude.command` بگذار
    (کانبان بدون shell اجرا می‌کند و `.cmd` را بدون shell نمی‌تواند اجرا کند).
 
+### توقف تمیز: NSSM، سیگنال و مقدارهای پیشنهادی
+
+**شاهد ِ مشکل:** `nssm stop BarsaAgent` دو بار در `SERVICE_STOP_PENDING` ماند (یک بار حتی بدون هیچ run ِ زنده). علت ِ ریشه‌ای: کد ِ قبلی
+`server.close(cb)` را صدا می‌زد و `process.exit` فقط در `cb` بود؛ `server.close` تا بسته شدن ِ **همه‌ی** اتصال‌ها صبر می‌کند و
+اتصال ِ SSE ِ لاگ زنده (ping هر ۱۵ ثانیه) هیچ‌وقت نمی‌بندد؛ جدا از آن، با run ِ زنده بی‌پایان صبر می‌کرد.
+
+**NSSM هنگام `stop` چه می‌کند** (`AppStopMethod*` به ترتیب، هر کدام مهلت ِ خودش؛ `0` = آن روش را رد کن):
+
+| روش | کار | برای کانبان |
+|---|---|---|
+| `AppStopMethodConsole` | یک Ctrl+C (`CTRL_C_EVENT`) به کنسول ِ برنامه | **روش ِ اصلی.** node آن را `SIGINT` می‌بیند (`CTRL_BREAK` ← `SIGBREAK`، بستن کنسول/خاموشی ← `SIGHUP`)؛ کانبان هر چهار را می‌گیرد |
+| `AppStopMethodWindow` | `WM_CLOSE` به پنجره‌های برنامه | node پنجره ندارد ← `0` |
+| `AppStopMethodThreads` | `WM_QUIT` به threadها | node حلقه‌ی پیام ندارد ← `0` |
+| (آخر) `TerminateProcess` | کشتن ِ فوری | وقتی سه روش بالا در مهلتشان نتیجه ندهند |
+| `AppKillProcessTree` | کشتن ِ **درخت ِ فرآیند ِ فرزندان** (پیش‌فرض ۱) | طبق مستندات ِ NSSM هنگام ِ stop درخت ِ فرزندان ِ باقی‌مانده را هم می‌بندد (نه فقط node) |
+
+**مقدارهای پیشنهادی و دلیل:**
+
+| تنظیم | مقدار | دلیل |
+|---|---|---|
+| `AppStopMethodConsole` | `15000` | کانبان سقف ِ `shutdown.timeoutMs` (پیش‌فرض ۱۰۰۰۰) خودش را دارد؛ NSSM باید کمی بیشتر صبر کند تا کانبان آن سقف را خودش اعمال و **لاگ ِ handle ِ باز** را بنویسد، نه اینکه NSSM زودتر بکشد. ۶۰۰۰۰۰ (۱۰ دقیقه) غلط بود: صبر برای run ها کار ِ **drain** است (پایین)، نه کار ِ مهلت ِ stop؛ run ِ Manager گاهی ۳۰ دقیقه است. |
+| `AppStopMethodWindow` / `Threads` | `0` | بی‌معنی برای node؛ فقط زمان ِ stop را بی‌دلیل زیاد می‌کنند |
+| `AppKillProcessTree` | `1` (پیش‌فرض؛ **عمداً صریح**) | اگر فرزندی (`claude`، `git`، `npm ci` ِ run) بماند، worktree و پوشه‌ی موقت را قفل نگه می‌دارد (EPERM) و `start` ِ بعدی با اجرای یتیم قاطی می‌شود. با `0` ممکن است اجرای یتیم جلوی `git pull`/`npm ci` ِ به‌روزرسانی را بگیرد |
+| `AppExit Default Restart` | همان قبلی | `nssm stop` را «خرابی» حساب نمی‌کند؛ restart فقط برای خروج ِ ناخواسته است |
+
+```powershell
+nssm set BarsaAgent AppStopMethodConsole 15000
+nssm set BarsaAgent AppStopMethodWindow 0
+nssm set BarsaAgent AppStopMethodThreads 0
+nssm set BarsaAgent AppKillProcessTree 1
+```
+
+**رفتار ِ کانبان بعد از سیگنال** (`server/src/shutdown.js`، لاگ با پیشوند `[shutdown]`، سقف ِ کل ۱۰ ثانیه):
+
+1. درخواست ِ تازه `503` می‌گیرد و هیچ run ِ تازه‌ای از صف شروع نمی‌شود؛
+2. سرور ِ HTTP **همراه با** اتصال‌های باز (SSE، keep-alive) بسته می‌شود؛ timerها (ping ِ SSE و ...) می‌ایستند؛
+3. **run های زنده**: اسم ِ هر کدام (`#id`، مخزن، مدت) و فرمان ِ بازیابی در لاگ می‌آید (`node scripts/manager.js run <id>` یا `barsa run <id>`)؛ سپس
+   درخت ِ فرآیندشان بسته می‌شود و یک ردیف ِ ممیزی `shutdown.run-interrupted` می‌ماند. transition ِ نیمه‌کاره با قفل ِ مرده را
+   Manager در `run` ِ بعدی خودش پس می‌گیرد (TOOLING-030)؛
+4. اگر چیزی جلوی خروج را بگیرد، در مهلت **نام ِ handle ِ باز** (مثل `Timeout×2، TCPSocketWrap×1`) در لاگ می‌آید و خروج ِ اجباری (کد ۱) است؛
+   سیگنال ِ دوم = خروج ِ فوری.
+
+**چه رفتاری برای run ِ زنده پیشنهاد می‌شود؟** *نگذار stop با run ِ زنده روبه‌رو شود.* مسیر ِ عادی ِ به‌روزرسانی `drain` است (پایین): تا «خالی» نشده
+stop نمی‌زنی. اگر با وجود این سرویس وسط ِ run کشته شد (برق، `nssm stop` ِ اضطراری)، پیش‌فرض `shutdown.liveRuns: terminate` درخت ِ run را **تمیز** می‌بندد و
+اسمش را در لاگ می‌نویسد (بهتر از رها کردن ِ فرزند ِ بی‌پدر که تا آخر ِ `AppKillProcessTree` یا reboot می‌ماند). `leave` فقط برای وقتی است که
+عمداً می‌خواهی NSSM (`AppKillProcessTree=1`) خودش درخت را ببندد. نگه‌داشتن ِ سرویس برای پایان ِ run ها (`shutdown.runWaitMs`، پیش‌فرض ۰) فقط تا
+جایی معنی دارد که از (`AppStopMethodConsole` − ۵ ثانیه) کمتر باشد؛ برای مدت ِ طولانی از drain استفاده کن.
+
+```yaml
+# barsa-agent.config.yml (همه اختیاری)
+shutdown:
+  timeoutMs: 10000     # سقف ِ کل ِ خاموش شدن (≥ 1000)؛ باید از AppStopMethodConsole کمتر باشد
+  runWaitMs: 0         # صبر برای پایان ِ طبیعی ِ run های زنده پیش از بستنشان
+  liveRuns: terminate  # terminate | leave
+```
+
 ### توقف، restart، حذف
 
 ```powershell
-nssm stop BarsaAgent        # صبر می‌کند اجراهای در جریان تمام شوند (تا مهلت بالا)
+nssm stop BarsaAgent        # ≤ ۱۰ ثانیه؛ اگر run ِ زنده هست اول drain (پایین)
 nssm restart BarsaAgent
 nssm remove BarsaAgent confirm
 ```
 
-قبل از stop/restart بهتر است در کانبان هیچ task ای در حال اجرا نباشد (نوار «در صف/در حال اجرا»). اگر مجبور شدی وسط
+قبل از stop/restart **تخلیه** کن (`barsa drain` یا دکمه‌ی «تخلیه» در «نگهداری») و صبر کن تا «خالی» شود. اگر مجبور شدی وسط
 اجرا بکشی، همان قفل جامانده را صفحه‌ی task (بخش «بازیابی») نشان می‌دهد و اجرای بعدی Manager خودش پس می‌گیرد.
 
 ## ۳. شبکه و TLS
@@ -183,9 +240,30 @@ nssm remove BarsaAgent confirm
     دیده می‌شود. سرویس را وسط sync stop نکن.
   - **کدها:** `50` پیش‌شرط (باید روی main، درخت تمیز، بدون اجرای زنده)، `51` fetch، `52` برخورد (فهرست فایل‌ها نمایش داده می‌شود،
     هیچ push ای نشده)، `53`/`54` push، `55`/`56` `npm ci`، `57` merge. با `execution.enabled=false` هم کار می‌کند.
-- **خود کانبان**: از داخل کانبان قابل به‌روزرسانی نیست (عمداً). روی سرور، به همین ترتیب:
-  `nssm stop BarsaAgent` ← `git pull --ff-only` ← `npm ci` ← `npm run build` ← `nssm start BarsaAgent`
-  (در `D:\BarsaAgent`).
+- **خود کانبان**: از داخل کانبان قابل به‌روزرسانی نیست (عمداً). روال ِ کامل (در `D:\BarsaAgent`) با **تخلیه**:
+
+  | # | قدم | فرمان |
+  |---|---|---|
+  | ۱ | تخلیه روشن (run ِ تازه، دستی و خودکار، شروع نمی‌شود؛ in-flight ها ادامه می‌دهند؛ تسک‌ها در صف می‌مانند) | دکمه‌ی «تخلیه» در «نگهداری» یا `./barsa drain` |
+  | ۲ | صبر تا «خالی» (فهرست ِ run های زنده با state و مدت) | `./barsa drain --status` را تکرار کن؛ بنویسد «✅ خالی» |
+  | ۳ | توقف | `nssm stop BarsaAgent` |
+  | ۴ | کد | `git pull --ff-only` |
+  | ۵ | وابستگی‌ها | `npm ci` |
+  | ۶ | ساخت | `npm run build` |
+  | ۷ | شروع | `nssm start BarsaAgent` |
+  | ۸ | بعد از بالا آمدن: **حالت تخلیه از `drain.json` برمی‌گردد** (عمداً؛ تا restart ناخواسته صف را شروع نکند). بررسی کن، بعد برگرد به حالت عادی و صف شروع می‌شود | `./barsa health` ← `./barsa drain --off` |
+
+  - حالت و صف ِ نگه‌داشته‌شده در `<dataDir>\drain.json` است و **از restart جان به در می‌برد**؛ `drain --off` فایل را پاک می‌کند.
+  - اگر قدم ۲ زمان‌بر شد (run ِ ۳۰ دقیقه‌ای): صبر کن، یا از رابط کاربری `stop` ِ همان تسک را بزن و بعد `recover`/`run`.
+  - `sync` ِ Manager هم با run ِ زنده رد می‌شود؛ همین دو قدم اول و آخر را بگذار (`drain` ← `sync` ← `drain --off`). با تخلیه روشن، تسک‌های **در صف** مانع ِ sync نیستند (شروع نمی‌شوند).
+  - از گوشی (Remote Control): `barsa drain` ← `barsa drain --status` تا خالی ← `barsa sync` ← `barsa drain --off` (روتین در `docs/remote-control/CLAUDE.md`). به‌روزرسانی ِ **خود کانبان** (قدم ۳ تا ۷) همچنان فقط روی سرور است.
+
+  **بار ِ اول (کانبان ِ فعلی هنوز drain ندارد):** نسخه‌ی در حال اجرا نه `drain` را می‌شناسد، نه خاموش شدن ِ تمیز دارد (با SSE ِ باز در STOP_PENDING می‌ماند). پس:
+  1. در رابط کاربری مطمئن شو هیچ run ِ زنده/در صف نیست (نوار ِ «در صف/در حال اجرا»؛ لازم بود `stop` بزن) و همه‌ی تب‌های مرورگر ِ کانبان (SSE) را ببند؛
+  2. **پیش از stop** مهلت را کم کن تا کانبان ِ قدیمی تا ۱۰ دقیقه آویزان نماند: `nssm set BarsaAgent AppStopMethodConsole 15000`، `AppStopMethodWindow 0`، `AppStopMethodThreads 0`، `AppKillProcessTree 1` (روی سرویس ِ در حال اجرا هم قابل تنظیم است و برای stop ِ بعدی اعمال می‌شود)؛
+  3. `nssm stop BarsaAgent`؛ نسخه‌ی قدیمی در ۱۵ ثانیه خودش خارج نمی‌شود، NSSM می‌کشدش — چون run ِ زنده‌ای نبود اشکالی ندارد؛
+  4. `git pull --ff-only` ← `npm ci` ← `npm run build` ← `nssm start BarsaAgent`؛
+  5. بررسی: `./barsa drain --status` باید «تخلیه: خاموش» بدهد و در «سلامت محیط» ردیف ِ «حالت تخلیه» سبز باشد. از این به بعد روال ِ جدول ِ بالا کار می‌کند.
 
 ## ۶. فهرست بررسی امنیتی قبل از باز کردن به روی شبکه
 
