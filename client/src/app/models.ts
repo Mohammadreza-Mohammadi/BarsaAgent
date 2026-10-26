@@ -400,6 +400,13 @@ export interface ManagerInfoView {
 }
 export interface HealthCheckItem { id: string; group: string; label: string; status: 'ok' | 'warn' | 'fail'; detail: string; hint: string }
 export interface EnvHealthReport { checkedAt: string; ok: boolean; checks: HealthCheckItem[] }
+export interface DrainLiveRun { repoId: string; taskId: string; runId: string | null; user: string | null; startedAt: string; state: string | null; durationMs: number; durationText: string }
+export interface DrainQueuedRun { repoId: string; taskId: string; user: string | null; queuedAt: string | null }
+/** حالت ِ تخلیه (drain): run ِ تازه شروع نمی‌شود؛ in-flight ها ادامه می‌دهند؛ صف می‌ماند. */
+export interface DrainStatus {
+  changed?: boolean; draining: boolean; since: string | null; by: string | null; empty: boolean;
+  live: DrainLiveRun[]; queued: DrainQueuedRun[]; execs: { id: string; action: string; display?: string }[];
+}
 export interface BundleItem { name: string; bytes: number; createdAt: string; }
 export interface BundleResult { ok: boolean; taskId: string; name: string; path: string; bytes: number; files: number; skipped: number; }
 

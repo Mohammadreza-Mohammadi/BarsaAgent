@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import {
-  AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, EnvHealthReport,
+  AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, DrainStatus, EnvHealthReport,
   ExecInfo, GitInventory, GitStatus, HealthResult, Issue, ManagerInfoView, Repo, RunRecord, RunningTask, RuntimeOptions, StopResult, Task
 } from './models';
 
@@ -104,6 +104,9 @@ export class ApiService {
   managerSyncPreview = (repo: string) => this.http.post<{ execId: string }>(`${this.repoPath(repo)}/manager/sync-preview`, {});
   /** `manager.js sync --json` — ff / push / merge ِ واقعی + npm ci ِ مشروط (منطقش در Manager است). */
   managerUpdate = (repo: string) => this.http.post<{ execId: string }>(`${this.repoPath(repo)}/manager/update`, {});
+  drain = () => this.http.get<DrainStatus>('/api/drain');
+  drainOn = () => this.http.post<DrainStatus>('/api/drain', {});
+  drainOff = () => this.http.post<DrainStatus>('/api/drain/off', {});
   envHealth = () => this.http.get<EnvHealthReport>('/api/env-health');
   bundles = () => this.http.get<BundleItem[]>('/api/bundles');
   bundleUrl = (name: string) => `/api/bundles/${encodeURIComponent(name)}`;

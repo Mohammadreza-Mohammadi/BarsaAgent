@@ -16,7 +16,7 @@ import { attemptModelCell, createRuntimePayload, duplicateText, runtimeEventText
 import { ArchiveComponent } from './archive.component';
 import { actionsVersionOf, allowed, can, canAnswerGate } from './task-actions';
 import { BOARD_DONE_STATES, archiveTasks, isFinished, isRecentlyDone, normalizeDoneDays } from './task-archive';
-import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, ExternalSource, HealthResult, Issue, Repo, RunningTask, RuntimeOptions, StructuredFailure, Task } from './models';
+import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, DrainStatus, ExternalSource, HealthResult, Issue, Repo, RunningTask, RuntimeOptions, StructuredFailure, Task } from './models';
 
 const LANES = [
   { title: 'ورودی', states: ['new'] },
@@ -93,6 +93,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly board = signal<Board | null>(null);
   readonly running = signal<Record<string, RunningTask>>({});
   readonly health = signal<HealthResult | null>(null);
+  /** حالت ِ تخلیه (drain) از /api/drain؛ نوار ِ بالای همه‌ی نماها. */
+  readonly drain = signal<DrainStatus | null>(null);
   readonly healthLoading = signal(false);
   readonly healthError = signal('');
   readonly loading = signal(true);
@@ -200,7 +202,9 @@ export class AppComponent implements OnInit, OnDestroy {
     } finally {
       this.loading.set(false);
     }
+    void this.refreshDrain();
     this.poll = window.setInterval(() => {
+      if (this.auth.user()) void this.refreshDrain();
       if (this.panel() === 'task' || this.panel() === 'action' || !this.auth.user() || (this.view() !== 'board' && this.view() !== 'archive')) return;
       void this.refresh(true);
     }, 3000);
@@ -280,6 +284,16 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     await healthPromise;
+  }
+
+  async refreshDrain(): Promise<void> {
+    try { this.drain.set(await firstValueFrom(this.api.drain())); } catch { /* نوار ِ تخلیه اختیاری است؛ خطای شبکه را board نشان می‌دهد */ }
+  }
+
+  draining(): boolean { return this.drain()?.draining === true; }
+
+  async drainOff(): Promise<void> {
+    try { this.drain.set(await firstValueFrom(this.api.drainOff())); await this.refresh(true); } catch (e) { this.fail(e); }
   }
 
   async refreshHealth(force = true, silent = false): Promise<void> {
