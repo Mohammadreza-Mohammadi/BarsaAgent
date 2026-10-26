@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import {
-  AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, DrainStatus, EnvHealthReport,
+  AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, DrainStatus, EnvHealthReport, RecheckResult,
   ExecInfo, GitInventory, GitStatus, HealthResult, Issue, ManagerInfoView, Repo, RunRecord, RunningTask, RuntimeOptions, StopResult, Task
 } from './models';
 
@@ -93,6 +93,8 @@ export class ApiService {
   retryProvision = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`/api/remote/tasks/${encodeURIComponent(id)}/retry-provision`, { reason }, { params: new HttpParams().set('repo', repo) });
   /** recover (process-attempt | discard-residue؛ مورد ِ دوم دلیل می‌خواهد). */
   recoverTask = (repo: string, id: string, body: { discardResidue?: boolean; reason?: string }) => this.http.post<{ ok: boolean; mode: string; output: string[] }>(`/api/remote/tasks/${encodeURIComponent(id)}/recover`, body, { params: new HttpParams().set('repo', repo) });
+  /** TOOLING-048: `manager.js recheck <id>` — بدون agent و بدون مصرف ِ budget؛ نتیجه‌ی رویداد attempt.rechecked برمی‌گردد. */
+  recheckTask = (repo: string, id: string) => this.http.post<RecheckResult>(`/api/remote/tasks/${encodeURIComponent(id)}/recheck`, {}, { params: new HttpParams().set('repo', repo) });
   retryRebase = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`${this.taskPath(repo, id)}/retry-rebase`, { reason });
 
   gitStatus = (repo: string) => this.http.get<GitStatus>(`${this.repoPath(repo)}/git/status`);

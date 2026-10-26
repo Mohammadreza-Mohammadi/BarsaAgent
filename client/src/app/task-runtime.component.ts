@@ -41,12 +41,15 @@ type Mode = 'set' | 'preset' | 'reset-role' | 'reset-all';
           <div class="runtime-live">attempt ِ زنده <b>#{{ a.id }}</b> ({{ a.role || '—' }}) با
             <code dir="ltr">{{ cell(a).model }}</code> · <code dir="ltr">{{ cell(a).effort }}</code> اجرا می‌شود.</div>
         }
+        @if (!task().roles) {
+          <small class="hint">این Manager فیلد <code>roles</code> را نمی‌دهد (قدیمی‌تر از TOOLING-048)؛ نقش ِ جاری/بعدی مشخص نیست و ردیفی برجسته نمی‌شود.</small>
+        }
         <table class="runtime-table">
           <thead><tr><th>نقش</th><th>provider</th><th>مدل</th><th>effort</th><th>منبع</th><th></th></tr></thead>
           <tbody>
             @for (r of rows(); track r.role) {
-              <tr [class.current]="r.isCurrent" [class.has-error]="!!r.error">
-                <td><b>{{ r.role }}</b>@if (r.isCurrent) { <span class="runtime-badge" title="نقش attempt ِ زنده / آخرین attempt">جاری</span> }</td>
+              <tr [class.current]="r.isCurrent" [class.next]="r.isNext" [class.has-error]="!!r.error">
+                <td><b>{{ r.role }}</b>@if (r.isCurrent) { <span class="runtime-badge" title="نقش ِ جاری (roles.current از Manager)">جاری</span> }@if (r.isNext) { <span class="runtime-badge next" title="نقش ِ بعدی (roles.next از Manager)">بعدی</span> }</td>
                 @if (r.error) {
                   <td colspan="4" class="bad">{{ r.error }}</td>
                 } @else {

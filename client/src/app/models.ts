@@ -12,6 +12,8 @@ export interface AttemptRuntime {
   model?: string | null;
   requestedModel?: string | null;
   actualModels?: string[] | null;
+  /** TOOLING-049: main-agent (agent ِ اصلی ِ session) | subagent-relay (attempt ِ قدیمی ِ Claude؛ فقط این‌ها outerModel دارند). */
+  runMode?: 'main-agent' | 'subagent-relay' | null;
   outerModel?: string | null;
   requestedEffort?: string | null;
   effectiveEffort?: string | null;
@@ -66,8 +68,12 @@ export interface ReviewStatus {
   problems: string[];
 }
 
+/** TOOLING-048: چرا `alive` این مقدار است (health.transitionLock.liveness و repository.health.managerLock.liveness). */
+export type LockLiveness = 'dead' | 'pid-reused' | 'alive' | 'alive-unverified' | 'other-host' | 'no-pid';
+
 export interface HealthStatus {
-  transitionLock: { pid: number | null; alive: boolean | null; fromState: string | null; startedAt: string | null } | null;
+  /** liveness (TOOLING-048): چرا alive این مقدار است؛ اختیاری (قفل ِ ساخته‌شده با Manager ِ قدیمی‌تر ندارد). */
+  transitionLock: { pid: number | null; alive: boolean | null; fromState: string | null; startedAt: string | null; liveness?: LockLiveness | null } | null;
   dirtyPaths: string[];
   stuck: boolean;
   // «no-progress» هرگز از status --json نمی‌آید — کد خروج ۳۰ از run است،
@@ -77,7 +83,7 @@ export interface HealthStatus {
   // بازیابی دو نسخه‌ی drift-کننده نداشته باشد. «reset» عمداً در enum نیست:
   // رد شد (0004: run خودش قفل کهنه‌ی pid-مرده را بی‌کمک انسان پس می‌گیرد).
   recovery: {
-    suggested: 'unlock' | 'run' | 'recover' | null; reason: string | null; commands: ('unlock' | 'run' | 'recover')[];
+    suggested: 'unlock' | 'run' | 'recover' | 'recheck' | 'unblock' | null; reason: string | null; commands: ('unlock' | 'run' | 'recover' | 'recheck' | 'unblock')[];
     /** TOOLING-044: recover ِ process-attempt یا discard-residue. */
     mode?: 'process-attempt' | 'discard-residue' | null; attempt?: string | null;
     /** TOOLING-044: commit شکست خورد و چیزی کثیف ماند: چه چیزی، و فرمان ِ دقیق ِ بازیابی. */
@@ -132,6 +138,8 @@ export interface TaskActions {
   retryInstall?: boolean;
   /** TOOLING-046: تغییر ِ runtime (در همه‌ی stateهای غیرپایانی؛ وسط ِ attempt ِ زنده در صف می‌نشیند). */
   setRuntime?: boolean;
+  /** TOOLING-048: سنجش ِ دوباره‌ی attempt ِ ردشده با گارد ِ Manager (یا خطای ابزار ِ نوشتن)؛ بدون agent و بدون مصرف ِ budget. */
+  recheck?: boolean;
 }
 
 // --- TOOLING-046: provider / مدل / effort برای هر نقش ---------------------------------------------------
@@ -209,6 +217,9 @@ export interface Task {
     /** TOOLING-043/045: کدام stage شکست خورد (install | build | worktree-baseline | …) و جزئیاتش. */
     stage?: string | null; detail?: string | null; recoverable?: 'retryable' | 'needs-fix' | null; retryAfter?: string | null;
     step?: string | null; log?: string | null; outputTail?: string[] | null;
+    /** TOOLING-049 (kind=tooling، stage=tool-write-failed): نقش، attempt و هر Write/Edit ِ ناموفق؛ failedWrites: null = رویداد ِ قدیمی. */
+    attempt?: string | null;
+    failedWrites?: Array<{ tool?: string | null; path?: string | null; relPath?: string | null; error?: string | null; kind?: string | null }> | null;
     [key: string]: unknown
   } | null;
   source?: SourceRef | null;
@@ -224,6 +235,8 @@ export interface Task {
   worktree?: { status?: string | null; path?: string | null } | null;
   git?: { base?: string | null; baseCommit?: string | null; headCommit?: string | null; mergeCommit?: string | null; branch?: string | null } | null;
   lastAttempt?: { n?: number; role?: string | null; outcome?: string | null; at?: string | null; runtime?: AttemptRuntime | null } | null;
+  /** TOOLING-048: نقش ِ جاری و بعدی (از manifest)، در سطح ِ تسک؛ مقدار ِ خالی null. غایب = Manager قدیمی‌تر از ۰۴۸ (هیچ برجسته‌سازی). */
+  roles?: { current: string | null; next: string | null } | null;
   /** TOOLING-046: runtime ِ ذخیره‌شده، مؤثر (با منبع)، تغییرهای در صف. غایب = Manager قدیمی‌تر از ۰۴۶. */
   runtime?: TaskRuntime | null;
   attempts?: Attempt[];
@@ -256,7 +269,7 @@ export interface Board {
   // نمی‌شدند. Manager حسابش می‌کند (computeRepositoryHealth)، نه UI.
   repository?: {
     health: {
-      managerLock: { pid: number | null; alive: boolean | null; task: string | null; startedAt: string | null } | null;
+      managerLock: { pid: number | null; alive: boolean | null; task: string | null; startedAt: string | null; liveness?: LockLiveness | null } | null;
       unownedDirtyFiles: string[];
       acceptsOperations: boolean;
     };
@@ -406,6 +419,12 @@ export interface DrainQueuedRun { repoId: string; taskId: string; user: string |
 export interface DrainStatus {
   changed?: boolean; draining: boolean; since: string | null; by: string | null; empty: boolean;
   live: DrainLiveRun[]; queued: DrainQueuedRun[]; execs: { id: string; action: string; display?: string }[];
+}
+/** نتیجه‌ی `recheck`: رویداد ِ attempt.rechecked (result: accepted | rejected | blocked | routed)؛ null اگر رویدادی پیدا نشد. */
+export interface RecheckResult {
+  ok: boolean; taskId: string; result: 'accepted' | 'rejected' | 'blocked' | 'routed' | string | null;
+  event: { attempt?: string | null; previousGuard?: string | null; result?: string | null; budgetConsumed?: string | null; at?: string | null } | null;
+  output: string[];
 }
 export interface BundleItem { name: string; bytes: number; createdAt: string; }
 export interface BundleResult { ok: boolean; taskId: string; name: string; path: string; bytes: number; files: number; skipped: number; }

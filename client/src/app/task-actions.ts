@@ -10,7 +10,7 @@ import type { Task } from './models';
 export type BooleanAction =
   | 'approve' | 'reject' | 'clarify' | 'note' | 'unblock'
   | 'allowPath' | 'allowSharedKnowledgeFile' | 'cancel' | 'abandon' | 'void' | 'unlock'
-  | 'recover' | 'retryProvision' | 'retryInstall' | 'setRuntime';
+  | 'recover' | 'recheck' | 'retryProvision' | 'retryInstall' | 'setRuntime';
 
 /** اکشن‌های «فهرستی»: آرایه‌ی غیرخالی = مجاز (عنصرها: attempt، منبع یا فیلد سقف). */
 export type ListAction = 'closeOrphan' | 'externalAccess' | 'resetExternal' | 'raiseLimit';
@@ -81,7 +81,7 @@ export function conflictFiles(task: Pick<Task, 'blocker'> | null | undefined): s
 
 export type ButtonId =
   | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan' | 'allow-path' | 'allow-shared-knowledge-file'
-  | 'external-access' | 'reset-external' | 'void' | 'unlock' | 'cancel' | 'abandon' | 'recover' | 'retry-provision';
+  | 'external-access' | 'reset-external' | 'void' | 'unlock' | 'cancel' | 'abandon' | 'recover' | 'recheck' | 'retry-provision';
 
 export interface CardButton {
   id: ButtonId;
@@ -96,7 +96,7 @@ export const ACTION_PLACEMENT: Readonly<Record<BooleanAction | ListAction, 'ops'
   approve: 'gate', reject: 'gate', clarify: 'gate', note: 'tools',
   unblock: 'ops', raiseLimit: 'ops', closeOrphan: 'ops', allowPath: 'ops', allowSharedKnowledgeFile: 'ops',
   externalAccess: 'ops', resetExternal: 'ops', cancel: 'ops', abandon: 'ops', void: 'ops', unlock: 'ops',
-  recover: 'ops', retryProvision: 'ops', retryInstall: 'ops', setRuntime: 'runtime'
+  recover: 'ops', recheck: 'ops', retryProvision: 'ops', retryInstall: 'ops', setRuntime: 'runtime'
 };
 
 /**
@@ -121,7 +121,7 @@ export function canRetryProvision(task: Pick<Task, 'actions'> | null | undefined
 export const KNOWN_ACTION_KEYS: readonly string[] = Object.keys(ACTION_PLACEMENT);
 
 const OPS_ORDER: ReadonlyArray<{ key: BooleanAction | ListAction; id: ButtonId }> = [
-  { key: 'recover', id: 'recover' }, { key: 'retryProvision', id: 'retry-provision' },
+  { key: 'recheck', id: 'recheck' }, { key: 'recover', id: 'recover' }, { key: 'retryProvision', id: 'retry-provision' },
   { key: 'unblock', id: 'unblock' }, { key: 'raiseLimit', id: 'raise-limit' }, { key: 'closeOrphan', id: 'close-orphan' },
   { key: 'allowPath', id: 'allow-path' }, { key: 'allowSharedKnowledgeFile', id: 'allow-shared-knowledge-file' },
   { key: 'externalAccess', id: 'external-access' }, { key: 'resetExternal', id: 'reset-external' },

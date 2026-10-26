@@ -463,7 +463,7 @@
 
       <section class="detail-section"><div class="section-head"><div><h3>Timeline</h3><p>رویدادها از Manager</p></div><span class="count">{{events().length}}</span></div><div class="timeline"><div *ngFor="let e of events()"><i></i><div><b>{{eventLabel(e)}}</b><small>{{formatDate(e.at)}}</small><p *ngIf="eventDetails(e)">{{eventDetails(e)}}</p></div></div><div class="timeline-empty" *ngIf="!events().length">رویدادی ثبت نشده است.</div></div></section>
 
-      <section class="detail-section" *ngIf="t.attempts?.length"><div class="section-head"><div><h3>Attemptها</h3><p>result / run-meta / verification</p></div></div><div class="attempt-list"><button *ngFor="let a of t.attempts" [class.active]="selectedAttempt()?.id === a.id" (click)="chooseAttempt(a)"><b>#{{a.id}}</b><span>{{a.role || '—'}}</span><em>{{a.outcome || '—'}}</em><small class="attempt-model" dir="ltr" title="مدل / effort (درخواستی ← واقعی)">{{attemptCell(a).model}} · {{attemptCell(a).effort}}</small></button></div><div class="attempt-view" *ngIf="selectedAttempt() as a"><div class="attempt-meta"><span>شروع: {{formatDate(a.startedAt)}}</span><span>پایان: {{formatDate(a.finishedAt)}}</span><span>transition: {{a.requestedTransition || '—'}}</span><span dir="ltr">مدل / effort: {{attemptCell(a).model}} · {{attemptCell(a).effort}}</span></div><details *ngFor="let entry of attemptArtifactEntries()" [open]="entry[0] === 'result.yaml' || entry[0] === 'verification/summary.yaml'"><summary>{{entry[0]}}</summary><pre>{{entry[1]}}</pre></details></div></section>
+      <section class="detail-section" *ngIf="t.attempts?.length"><div class="section-head"><div><h3>Attemptها</h3><p>result / run-meta / verification</p></div></div><div class="attempt-list"><button *ngFor="let a of t.attempts" [class.active]="selectedAttempt()?.id === a.id" (click)="chooseAttempt(a)"><b>#{{a.id}}</b><span>{{a.role || '—'}}</span><em>{{a.outcome || '—'}}</em><small class="attempt-model" dir="ltr" title="مدل / effort (درخواستی ← واقعی)">{{attemptCell(a).model}} · {{attemptCell(a).effort}}</small><small class="relay-badge" *ngIf="runMode(a) as rm" title="attempt ِ قدیمی: session ِ بیرونی + subagent (runMode=subagent-relay)">{{rm.label}}<ng-container *ngIf="rm.outerModel"> · outer: {{rm.outerModel}}</ng-container></small></button></div><div class="attempt-view" *ngIf="selectedAttempt() as a"><div class="attempt-meta"><span>شروع: {{formatDate(a.startedAt)}}</span><span>پایان: {{formatDate(a.finishedAt)}}</span><span>transition: {{a.requestedTransition || '—'}}</span><span dir="ltr">مدل / effort: {{attemptCell(a).model}} · {{attemptCell(a).effort}}</span><span *ngIf="runMode(a) as rm">{{rm.label}}<ng-container *ngIf="rm.outerModel"> — مدل ِ session ِ بیرونی: <code dir="ltr">{{rm.outerModel}}</code></ng-container></span></div><details *ngFor="let entry of attemptArtifactEntries()" [open]="entry[0] === 'result.yaml' || entry[0] === 'verification/summary.yaml'"><summary>{{entry[0]}}</summary><pre>{{entry[1]}}</pre></details></div></section>
 
       <section class="detail-section"><div class="section-head"><div><h3>Artifactها</h3><p>فقط‌خواندنی</p></div></div><div class="chips"><button *ngFor="let a of t.artifacts" [class.active]="rootArtifactName() === a" (click)="loadRootArtifact(a)">{{a}}</button></div><div class="artifact-card root" *ngIf="rootArtifactName()"><header><b>{{rootArtifactName()}}</b></header><div class="markdown" [innerHTML]="markdown(rootArtifact())"></div></div></section>
 
@@ -490,10 +490,11 @@
         <div class="section-head"><div><h3>قفل transition</h3></div></div>
         <div class="facts">
           <div><small>pid</small><b>{{ lock.pid ?? '—' }}</b></div>
-          <div><small>وضعیت</small><b>{{ lock.alive === true ? 'زنده' : lock.alive === false ? 'مرده' : 'نامشخص' }}</b></div>
+          <div><small>وضعیت</small><b>{{ lockInfo(t)?.label }}</b></div>
           <div><small>fromState</small><b>{{ lock.fromState || '—' }}</b></div>
           <div><small>سن</small><b>{{ elapsed(lock.startedAt) }}</b></div>
         </div>
+        <small class="recovery-hint" *ngIf="lockInfo(t)?.detail">{{ lockInfo(t)?.detail }}</small>
       </section>
 
       <section class="detail-section" *ngIf="t.health?.dirtyPaths?.length">
@@ -512,12 +513,12 @@
         <div class="danger-actions" *ngIf="t.health?.recovery?.commands?.length">
           <ng-container *ngFor="let cmd of t.health.recovery.commands">
           <button
-            *ngIf="cmd === 'run' || (cmd === 'recover' && can(t, 'recover')) || (cmd === 'unlock' && can(t, 'unlock'))"
+            *ngIf="recoveryShown(t, cmd)"
             class="danger-outline"
             [class.recovery-suggested]="cmd === t.health.recovery.suggested"
             [disabled]="busy() || isRunning(t) || isQueued(t) || (cmd === 'run' && executionDisabled())"
-            (click)="cmd === 'run' ? runTask() : cmd === 'recover' ? openTask(t) : openDanger('unlock')">
-            {{ cmd === 'run' ? '▶ دوباره اجرا کن' : cmd === 'recover' ? '🛟 بازیابی (recover) — در جزئیات ِ تسک' : '🔓 آزاد کردن قفل' }}
+            (click)="recoveryClick(t, cmd)">
+            {{ recoveryLabel(cmd) }}
             <em *ngIf="cmd === t.health.recovery.suggested"> — پیشنهاد Manager</em>
           </button>
           </ng-container>
@@ -527,12 +528,12 @@
       <section class="detail-section danger-zone" *ngIf="dangerOpen() === 'unlock'">
         <small>فقط <code>.transition.lock</code> همین task را آزاد می‌کند (<code>unlock --reason-file</code>) — manifest، worktree و تاریخچه دست‌نخورده می‌مانند.</small>
         <textarea [(ngModel)]="dangerReason" placeholder="دلیل آزاد کردن قفل…"></textarea>
-        <label class="force-check" *ngIf="t.health?.transitionLock?.alive === null">
+        <label class="force-check" *ngIf="lockNeedsForce(t)">
           <input type="checkbox" [(ngModel)]="dangerForce" /> مطمئنم — با <code>--force</code> اجرا کن (Manager نمی‌تواند زنده/مرده بودن این قفل را اثبات کند)
         </label>
         <div class="danger-confirm-actions">
           <button class="secondary" (click)="closeDanger()">انصراف</button>
-          <button class="danger" [disabled]="busy() || !dangerReason.trim() || (t.health?.transitionLock?.alive === null && !dangerForce)" (click)="confirmDanger()">تأیید نهایی — آزاد کن</button>
+          <button class="danger" [disabled]="busy() || !dangerReason.trim() || (lockNeedsForce(t) && !dangerForce)" (click)="confirmDanger()">تأیید نهایی — آزاد کن</button>
         </div>
       </section>
     </div>
