@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter, once } from 'node:events';
 import { authedFetch, startAuthedServer } from './helpers.js';
+import { removeDirOnCleanup, waitUntil } from './cleanup.js';
 
 // ورود اجباری است: همه‌ی fetchهای این فایل با نشست واقعی (Cookie + CSRF) می‌روند.
 const fetch = authedFetch;
 
 function makeFakeRepo(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-agent-server-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  removeDirOnCleanup(t, root);
   const manager = path.join(root, 'manager.cjs');
   fs.writeFileSync(manager, String.raw`
 const args = process.argv.slice(2);
@@ -460,19 +461,30 @@ else process.exit(0);
 test('maxConcurrent اضافی‌ها را در queue نگه می‌دارد', async t => {
   const repo = makeFakeRepo(t);
   fs.writeFileSync(path.join(repo.path, repo.managerScript), String.raw`
-const args=process.argv.slice(2); if(args[0]==='run'){ console.log('run '+args[1]); setTimeout(()=>process.exit(10),220); } else process.exit(0);
+const fs=require('node:fs'); const path=require('node:path'); const args=process.argv.slice(2);
+if(args[0]==='run'){
+  // تا فایل ِ release-<id> ساخته نشود زنده می‌ماند (قطعی؛ نه وابسته به زمان). سقف ِ عمر: اگر پاک‌سازی جا ماند یتیم نماند.
+  fs.writeFileSync(path.join(__dirname,'started-'+args[1]),'1'); console.log('run '+args[1]);
+  const t0=Date.now(); const timer=setInterval(()=>{ if(fs.existsSync(path.join(__dirname,'release-'+args[1]))||Date.now()-t0>120000){ clearInterval(timer); process.exit(10); } },20);
+} else process.exit(0);
 `, 'utf8');
+  const release = id => fs.writeFileSync(path.join(repo.path, 'release-' + id), '1');
   const base = await startServer(t, { repos:[repo], server:{}, run:{maxConcurrent:1}, issueSource:{} });
   const first = await fetch(`${base}/api/repos/fake/tasks/1/run`, {method:'POST'});
   const second = await fetch(`${base}/api/repos/fake/tasks/2/run`, {method:'POST'});
   assert.equal(first.status, 202); assert.equal(second.status, 202);
+  // run ِ اول واقعاً شروع شده (فایل ِ started) و تا آزاد نشود تمام نمی‌شود: وضعیت ِ «اولی running، دومی queued» قطعی است.
+  await waitUntil(() => fs.existsSync(path.join(repo.path, 'started-1')), { label: 'شروع ِ run ِ اول' });
   const list = await (await fetch(`${base}/api/repos/fake/running`)).json();
   const one = list.find(x => x.taskId === '1'); const two = list.find(x => x.taskId === '2');
   assert.equal(one.running, true);
   assert.equal(two.queued, true);
   assert.equal(two.queuePosition, 1);
+  assert.equal(fs.existsSync(path.join(repo.path, 'started-2')), false, 'دومی تا آزاد شدن ِ اولی شروع نمی‌شود');
+  release('1');
   const secondRun = await waitForRun(base, '2', value => value.running === true);
   assert.equal(secondRun.running, true);
+  release('2');
   await waitForRun(base, '2', value => value.running === false);
 });
 

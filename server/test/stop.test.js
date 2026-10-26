@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { trackChild } from './cleanup.js';
 import { authedFetch, startAuthedServer } from './helpers.js';
 import { makeFakeManagerRepo } from './fake-manager.js';
 import { AuditLog } from '../src/audit.js';
@@ -33,7 +34,7 @@ setInterval(() => {}, 1000);
 function externalProcess(t) {
   // فرآیندی که کانبان راه نینداخته (مثل ng serve یا سرور MCP): نباید بسته شود.
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-  t.after(() => { try { process.kill(child.pid); } catch { /* already dead */ } });
+  trackChild(t, child, 'فرآیند ِ بیرونی');
   return child;
 }
 

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { createApp } from '../src/app.js';
 import { UserStore } from '../src/auth.js';
+import { closeServerOnCleanup, removeDirOnCleanup } from './cleanup.js';
 
 export const TEST_USER = 'operator';
 export const TEST_PASSWORD = 'correct-horse-battery';
@@ -39,7 +40,7 @@ export async function authedFetch(input, init = {}) {
 export function withDataDir(t, config) {
   if (!config.dataDir) {
     config.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-agent-data-'));
-    t.after(() => fs.rmSync(config.dataDir, { recursive: true, force: true }));
+    removeDirOnCleanup(t, config.dataDir);
   }
   return config;
 }
@@ -54,7 +55,7 @@ export async function startAuthedServer(t, config, deps) {
   const server = createApp(config, deps);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(() => server.close());
+  closeServerOnCleanup(t, server); // run های زنده + SSE + timerها + سرور؛ پیش از پاک شدن ِ dataDir (ترتیب معکوس)
   const base = `http://127.0.0.1:${server.address().port}`;
   return { base, server, config };
 }

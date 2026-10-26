@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeDirOnCleanup } from './cleanup.js';
 
 export const HELP_FIXTURE = fs.readFileSync(new URL('./fixtures/manager-help.txt', import.meta.url), 'utf8');
 
@@ -20,7 +21,7 @@ export const DEFAULT_SYNC = {
 
 export function makeFakeManagerRepo(t, { status, run, extra = '', statusDelayMs = 0, sync } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'barsa-fake-mgr-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  removeDirOnCleanup(t, root);
   fs.writeFileSync(path.join(root, 'help.txt'), HELP_FIXTURE, 'utf8');
   fs.writeFileSync(path.join(root, 'runtime-options.json'), fs.readFileSync(new URL('./fixtures/runtime-options.json', import.meta.url), 'utf8'), 'utf8');
   fs.writeFileSync(path.join(root, 'sync.json'), JSON.stringify(sync || DEFAULT_SYNC), 'utf8');
@@ -144,4 +145,29 @@ export function initGitRepo(root, { files = { 'README.md': '# test\n' } } = {}) 
   }
   g(root, 'add', '-A');
   g(root, 'commit', '-m', 'init');
+}
+
+/**
+ * بدنه‌ی `run` برای manager ِ ساختگی که **تا آزاد شدن** زنده می‌ماند (نه با زمان): وقتی فایل ِ `release-<taskId>` یا
+ * `release-all` کنار manager.cjs ساخته شود با exit 10 تمام می‌شود. تست ِ «زمان ِ ثابت» (setTimeout(…, 220)) روی ماشین ِ
+ * کند یا شلوغ پیش از بررسی ِ تست تمام می‌شد و flaky بود. سقف ِ عمر (۱۲۰ ثانیه) هم هست تا اگر هر چیزی در پاک‌سازی جا ماند، فرزند
+ * ِ یتیم برای همیشه زنده نماند. شروع ِ run هم با فایل ِ `started-<taskId>` اعلام می‌شود تا تست روی حالت صبر کند.
+ */
+export const HELD_RUN = String.raw`
+  fs.writeFileSync(path.join(dir, 'started-' + args[1]), String(process.pid));
+  console.log('run ' + args[1]);
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    if (fs.existsSync(path.join(dir, 'release-' + args[1])) || fs.existsSync(path.join(dir, 'release-all'))) { clearInterval(timer); process.exit(10); }
+    if (Date.now() - startedAt > 120000) { console.error('fake run: سقف ِ عمر'); process.exit(11); }
+  }, 20);
+`;
+
+/** آزاد کردن ِ run های HELD_RUN (taskId یا همه). */
+export function releaseHeldRun(root, taskId = 'all') {
+  fs.writeFileSync(path.join(root, `release-${taskId}`), '1');
+}
+
+export function heldRunStarted(root, taskId) {
+  return fs.existsSync(path.join(root, `started-${taskId}`));
 }
