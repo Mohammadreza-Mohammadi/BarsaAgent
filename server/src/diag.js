@@ -9,6 +9,7 @@ import path from 'node:path';
 import { gitEnv } from './git-ops.js';
 import { environmentSecrets, redact } from './security.js';
 import { failedWrites as failedWritesView } from './task-health-view.js';
+import { extrasEventText } from './task-extras-view.js';
 import { ageMs, interestingProcesses, ownHelperPids, relatedToTask } from './process-list.js';
 import { APP_ROOT } from './config.js';
 
@@ -65,6 +66,8 @@ export function summarizeProcess(proc, now, max = 120) {
 function eventLine(event) {
   if (event?.error) return safe(event.error, 150);
   const at = String(event?.at ?? event?.ts ?? event?.time ?? '').replace('T', ' ').slice(5, 19);
+  const extras = extrasEventText(event); // TOOLING-050: متن ِ کوتاه ِ فارسی برای رویدادهای پیوست/وابستگی/sync
+  if (extras) return safe(`${at} ${extras.label}${extras.details ? ` · ${extras.details}` : ''}`, 220);
   const move = event?.from || event?.to ? ` ${event.from ?? '?'}→${event.to ?? '?'}` : '';
   const extra = event?.reason || event?.kind || event?.detail || event?.message || '';
   return safe(`${at} ${event?.event ?? '?'}${move}${extra ? ` · ${extra}` : ''}`, 150);

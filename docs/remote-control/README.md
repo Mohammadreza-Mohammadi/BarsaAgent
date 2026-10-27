@@ -13,7 +13,7 @@
 
 خواندنی (بدون تأیید): `barsa health` · `barsa issues [--all]` · `barsa tasks [--waiting|--running|--blocked|--all]` ·
 `barsa task <id>` (با بخش «⏳ منتظر تو»: متن کامل سؤال‌ها / خلاصه‌ی AC / تصمیم Reviewer + release note + diff) ·
-`barsa log <id> [--tail N]` · `barsa waiting --since <ISO>` · `barsa runtime <id>` · `barsa runtime-options` ·
+`barsa log <id> [--tail N]` · `barsa waiting --since <ISO>` · `barsa runtime <id>` · `barsa runtime-options` · `barsa deps <id>` · `barsa attachments <id>` ·
 `barsa artifact <id> [name] [--attempt N] [--tail N]` ·
 `barsa diag <id>` · `barsa diag --system` · `barsa bundle <id>` · `barsa sync --dry-run` · `barsa sync --status <execId>` · `barsa drain --status`
 
@@ -22,7 +22,7 @@
 `barsa set-runtime <id> <role> <provider>:<model>:<effort> --reason "…"` · `barsa set-runtime <id> --preset <name> --reason "…"` ·
 `barsa set-runtime <id> <role|preset|all> --reset --reason "…"` · `barsa retry-provision <id>` (و alias ِ `barsa retry-install <id>`) ·
 `barsa answer <id> --approve | --reject [--route implementer|architect] | --clarify [--respec] | --note | --raise-limit <field>=<n> | --unblock | --allow-shared-knowledge-file <path>`
-(متن از `--text-file <f>` یا `--stdin`) · `barsa recover <id> [--discard-residue]` · `barsa recheck <id>` · `barsa sync` ·
+(متن از `--text-file <f>` یا `--stdin`) · `barsa recover <id> [--discard-residue]` · `barsa recheck <id>` · `barsa approve-deps <id> --reason "…"` · `barsa reject-deps <id> --reason "…"` · `barsa sync` ·
 `barsa drain` · `barsa drain --off` · `barsa kill-stuck-install <id> [--minutes N]`.
 
 ### «بدون RDP»: دیدن، تشخیص، رفع گیر
@@ -38,6 +38,9 @@
 | `bundle <id>` | `POST /api/remote/tasks/:id/bundle` | zip ِ **پوشانده‌شده** از پوشه‌ی تسک + `diag.txt` + لاگ آخرین اجرا در `<dataDir>\bundles\<id>-<زمان>.zip`؛ مسیر و حجم چاپ می‌شود. در رابط کاربری: «bundleهای تشخیصی» (دانلود با نام ساده؛ `..`/مسیر مطلق رد می‌شود) |
 | `recover <id>` | `POST /api/remote/tasks/:id/recover` | `manager.js recover` (attempt ِ کامل ولی تفسیرنشده را پردازش می‌کند). `--discard-residue` با دلیل: کثیفی بدون قفل را با نسخه‌ی پشتیبان برمی‌گرداند. پیش‌سنجی از `actions.recover` |
 | `retry-provision <id>` | `POST /api/remote/tasks/:id/retry-provision` | `--unblock` و بعد `run` (idempotent) برای شکست ِ provisioning: `blocker.stage` = install (`npm ci` از نو) · build (buildDependencies + کتابخانه‌های بی‌dist + Baseline) · worktree-baseline (کتابخانه‌های بی‌dist + verify.build/lint). پیش‌سنجی از `actions.retryProvision` (یا alias ِ `retryInstall`) |
+| `deps <id>` | `GET /api/repos/:repo/tasks/:id` | **allow.** دروازه‌ی تأیید ِ وابستگی: نام/نسخه/dev/دلیل/license، جدول ِ peerها، `hasInstallScript`، و وابستگی‌های تأییدشده؛ `info.known=false` ← دلیل |
+| `attachments <id>` | `GET /api/repos/:repo/tasks/:id` | **allow.** فهرست ِ پیوست‌ها (نام، نوع، اندازه، زمان؛ فریم‌ها زیر ویدیو؛ «فقط برای انسان»؛ «فایل روی دیسک نیست»). آپلود از راه دور **نیست** |
+| `approve-deps <id>` / `reject-deps <id>` | `POST /api/repos/:repo/tasks/:id/approve-dependencies` / `…/reject-dependencies` | **ask.** `answer --approve-dependencies\|--reject-dependencies --reason` (reason اجباری، از فایل ِ موقت؛ پیش‌سنجی از `actions.approveDependencies/rejectDependencies`). بعد از تصمیم مثل بقیه‌ی گیت‌ها اگر `run.autoResumeAfterAnswer` روشن است run می‌زند |
 | `recheck <id>` | `POST /api/remote/tasks/:id/recheck` | **ask.** `manager.js recheck <id>` (TOOLING-048): attempt ِ ردشده با گارد ِ Manager (یا خطای ابزار ِ نوشتن، TOOLING-049) دوباره سنجیده می‌شود، **بدون agent، بدون attempt ِ تازه، بدون مصرف ِ budget**. پیش‌سنجی از `actions.recheck`؛ نتیجه از رویداد ِ `attempt.rechecked` (`accepted` · `rejected` · `blocked` · `routed`) |
 | `retry-install <id>` | `POST /api/remote/tasks/:id/retry-install` | alias ِ یک نسخه‌ی `retry-provision` (همیشه هم‌مقدار) |
 | `runtime <id>` | `GET /api/repos/:repo/tasks/:id` + `GET …/running` | جدول ِ مؤثر ِ هر نقش (از کلیدهای `runtime.effective`) با منبع، نقش ِ جاری (attempt ِ زنده، وگرنه lastAttempt)، attempt ِ زنده، و تغییرهای در صف («در انتظار اعمال») |
@@ -134,6 +137,8 @@ exit code: `0` موفق · `2` آرگومان بد · `3` اکشن مجاز نی
 | `diag <id>` | `taskId, repo, generatedAt, state, gate, blocker, health, actions[], summary, events[], log{runId,…,lines[]}, processes[{pid,ppid,name,startedAt,ageSec,cpuSeconds,cmd}], taskDirGit, worktree{path,exists,branch,merged,ownCommits,nodeModulesBin,dirty[]}, queue{state,position,slotsUsed,slotsMax}` |
 | `diag --system` | `service, processes[], locks, slots, repository{sync,execution}, git{status[],worktrees[]}, disk[], errLog{file,lines[]}, tools{node,npm,git,claude,tf}, issues{count}` |
 | `bundle` | `ok, taskId, name, path, bytes, files, skipped` |
+| `deps` | `id, gate{attempt,requestedAt,peersOk,dependencies[{name,version,dev,reason,known,error,license,hasInstallScript,peers[{name,range,installed,satisfied,optional,status}],peersOk}]}\|null, peerProblem, approved[], actions{approveDependencies,rejectDependencies}` |
+| `attachments` | `id, available, items[{id,name,file,kind,ext,size,sha256,addedAt,stage,source,reason,humanOnly,derivedFrom,exists}]` (بدون `path`) |
 | `recheck` | `ok, taskId, result, event{attempt,previousGuard,result,budgetConsumed,at}\|null, output[]` |
 | `drain` | `changed?, draining, since, by, empty, live[{repoId,taskId,runId,user,startedAt,state,durationMs,durationText}], queued[{repoId,taskId,user,queuedAt}], execs[]` |
 | `recover` / `retry-install` / `kill-stuck-install` / `sync` | `ok, taskId, mode, output[]` / `ok, queued, started, duplicate` / `ok, killed[{pid,name,ageMin,cmd}], remaining[], note` / `ok, execId, finished, exitCode, lines[]` |
