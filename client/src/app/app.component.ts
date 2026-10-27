@@ -13,11 +13,16 @@ import { TaskOpsComponent } from './task-ops.component';
 import { TaskRuntimeComponent } from './task-runtime.component';
 import { RuntimePickerComponent } from './runtime-picker.component';
 import { attemptRunMode, lockNeedsForce, lockStatus } from './task-health';
+import { extrasEventText } from './task-extras';
+import { AttachmentPickerComponent } from './attachment-picker.component';
+import { TaskAttachmentsComponent } from './task-attachments.component';
+import { ManualTestsComponent } from './manual-tests.component';
+import { TaskDependenciesComponent } from './task-dependencies.component';
 import { attemptModelCell, createRuntimePayload, duplicateText, runtimeEventText, runtimeInvalidText } from './runtime';
 import { ArchiveComponent } from './archive.component';
 import { actionsVersionOf, allowed, can, canAnswerGate } from './task-actions';
 import { BOARD_DONE_STATES, archiveTasks, isFinished, isRecentlyDone, normalizeDoneDays } from './task-archive';
-import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, DrainStatus, ExternalSource, HealthResult, Issue, Repo, RunningTask, RuntimeOptions, StructuredFailure, Task } from './models';
+import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, DrainStatus, ExternalSource, HealthResult, Issue, Repo, RunningTask, RuntimeOptions, StagedUpload, StructuredFailure, Task } from './models';
 
 const LANES = [
   { title: 'ورودی', states: ['new'] },
@@ -77,7 +82,7 @@ type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 
 @Component({
   selector: 'ba-root',
   standalone: true,
-  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, BundlesComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, TaskRuntimeComponent, RuntimePickerComponent, ArchiveComponent],
+  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, BundlesComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, TaskRuntimeComponent, RuntimePickerComponent, ArchiveComponent, AttachmentPickerComponent, TaskAttachmentsComponent, ManualTestsComponent, TaskDependenciesComponent],
   templateUrl: './app.component.html'
 })
 export class AppComponent implements OnInit, OnDestroy {
@@ -159,6 +164,9 @@ export class AppComponent implements OnInit, OnDestroy {
   checkinSourceId = '';
   checkinChangesets = '';
   noteText = '';
+  /** پیوست ِ آپلودشده‌ی یادداشت / پاسخ ِ clarify (TOOLING-050 د). */
+  readonly noteAttachments = signal<StagedUpload[]>([]);
+  readonly clarifyAttachments = signal<StagedUpload[]>([]);
   stageSourceId = '';
 
   constructor() {
@@ -340,7 +348,7 @@ export class AppComponent implements OnInit, OnDestroy {
   queuedTasks(): RunningTask[] { return Object.values(this.running()).filter(x => x.queued); }
   gateKind(t: Task | null): string { return t?.awaitingHuman?.kind ?? ''; }
   gateLabel(t: Task): string {
-    return ({ 'spec-approval': 'تأیید spec', clarification: 'پاسخ به سؤال', 'merge-approval': 'تأیید merge' } as Record<string, string>)[this.gateKind(t)] ?? 'اقدام انسانی';
+    return ({ 'spec-approval': 'تأیید spec', clarification: 'پاسخ به سؤال', 'merge-approval': 'تأیید merge', 'dependency-approval': 'تأیید وابستگی' } as Record<string, string>)[this.gateKind(t)] ?? 'اقدام انسانی';
   }
 
   // حادثه‌ی ۲۶ سپتامبر، بند «د»: قفل سراسری/کثیفی بی‌صاحب مسائل سطح مخزن‌اند،
@@ -607,9 +615,11 @@ export class AppComponent implements OnInit, OnDestroy {
         route,
         respec: mode === 'clarify' ? this.respec : undefined,
         externalAccess: mode === 'clarify' && this.clarifyAccessSource ? { sourceId: this.clarifyAccessSource, access: this.clarifyAccessLevel } : undefined,
+        attachments: mode === 'clarify' && this.clarifyAttachments().length ? this.clarifyAttachments().map(item => item.id) : undefined,
         releaseNoteText,
         noReleaseNote
       }));
+      this.clarifyAttachments.set([]);
       this.info.set(result.autoResumed ? 'تصمیم ثبت شد؛ task به‌صورت خودکار برای ادامه در صف اجرا قرار گرفت.' : 'تصمیم ثبت شد.');
       this.panel.set(null);
       await this.refresh();
@@ -745,7 +755,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!t || !this.noteText.trim()) return;
     this.busy.set(true); this.error.set('');
     try {
-      await firstValueFrom(this.api.note(this.repoId(), t.id, this.noteText));
+      await firstValueFrom(this.api.note(this.repoId(), t.id, this.noteText, this.noteAttachments().map(item => item.id)));
+      this.noteAttachments.set([]);
       this.info.set('یادداشت ثبت شد؛ اجرای بعدی آن را می‌خواند.');
       this.panel.set(null);
       await this.refresh();
@@ -888,6 +899,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if (e.error) return 'رویداد خراب';
     const runtime = runtimeEventText(e);
     if (runtime) return runtime.label;
+    const extras = extrasEventText(e);
+    if (extras) return extras.label;
     if (e.event === 'state.changed') return `${String(e.from ?? '—')} ← ${String(e.to ?? '—')}`;
     const labels: Record<string, string> = {
       'human.answered': 'پاسخ انسان ثبت شد', 'human.decision': 'تصمیم انسان ثبت شد',
@@ -900,6 +913,8 @@ export class AppComponent implements OnInit, OnDestroy {
   eventDetails(e: AgentEvent): string {
     const runtime = runtimeEventText(e);
     if (runtime) return runtime.details;
+    const extras = extrasEventText(e);
+    if (extras) return extras.details;
     const ignored = new Set(['event', 'at']);
     return Object.entries(e).filter(([key]) => !ignored.has(key)).map(([key, value]) => `${key}: ${this.compact(value)}`).join(' · ');
   }
@@ -997,8 +1012,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.busy.set(true); this.error.set('');
     try {
       // فقط ردیف‌های runtime ِ عوض‌شده (تفاوت با preset) به Manager می‌رود؛ اعتبارسنجی ِ نهایی با Manager است.
-      const payload = items.map(item => ({ ...item, runtime: createRuntimePayload(this.runtimeOptions(), item.runtime) }));
-      const response = await firstValueFrom(this.api.createTasks(payload, this.createStart));
+      const payload = items.map(item => ({ ...item, runtime: createRuntimePayload(this.runtimeOptions(), item.runtime), attachments: item.attachments?.map(upload => upload.id) }));
+      const response = await firstValueFrom(this.api.createTasks(payload as unknown as CreateTaskDraft[], this.createStart));
       this.createResults.set(response.results);
       // پیش‌نویس‌هایی که ساخته شدند دوباره فرستاده نشوند (فرم برای اصلاح ِ بقیه باز می‌ماند).
       const done = new Set(items.filter((_, i) => response.results[i]?.ok));

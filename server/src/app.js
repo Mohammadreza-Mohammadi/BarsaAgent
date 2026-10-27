@@ -24,6 +24,9 @@ import { createRemoteRoutes } from './remote-routes.js';
 import { createRuntimeFlags, structuredFailure } from './runtime-args.js';
 import { createRemoteOpsRoutes } from './remote-ops-routes.js';
 import { DrainStore, durationText } from './drain.js';
+import { UploadStore } from './uploads.js';
+import { createPolicyReader } from './attachment-policy.js';
+import { attachmentHelpers, createAttachmentRoutes } from './attachments-routes.js';
 import { Lifecycle, SHUTDOWN_SIGNALS, createShutdown } from './shutdown.js';
 
 // یک شنونده‌ی سیگنال در سطح ماژول (نه داخل createApp)، چون createApp در تست‌ها بارها در همین یک process فراخوانی می‌شود؛
@@ -182,6 +185,11 @@ export function createApp(config, deps = {}) {
 
   // --- حالت ِ تخلیه (drain) و خاموش‌شدن ---------------------------------------------------------------------------
   const lifecycle = deps.lifecycle ?? new Lifecycle();
+  // آپلود ِ موقت ِ پیوست‌ها (TOOLING-050 د): <dataDir>/uploads؛ فایل بعد از attach/--attach (یا پس از ۲ ساعت) پاک می‌شود.
+  const uploads = deps.uploads ?? new UploadStore(dataDir);
+  const readPolicy = deps.readAttachmentPolicy ?? createPolicyReader();
+  lifecycle.trackInterval(() => uploads.sweep(), 10 * 60_000).unref?.();
+  const { resolveUploads, attachArgs } = attachmentHelpers({ config, uploads });
   const drainStore = deps.drainStore ?? new DrainStore(dataDir);
   const persistDrain = () => {
     if (registry.draining) drainStore.save({ draining: true, ...registry.drainInfo, queued: registry.queuedSnapshot() });
@@ -301,6 +309,8 @@ export function createApp(config, deps = {}) {
       };
     }
 
+    if (session.remote && draft.attachments?.length) throw Object.assign(new Error('پیوست از راه دور مجاز نیست.'), { status: 403 });
+    const attachFiles = resolveUploads(session, draft.attachments);
     const importArgs = ['import-issue', '--file'];
     // بند ب: دسترسی بیرونی هنگام ساخت (فرم import-issue). فقط یک منبع، همان قالب
     // <sourceId>=read|write که manager.js می‌سنجد؛ اینجا فقط شکل را رد می‌کنیم.
@@ -319,6 +329,8 @@ export function createApp(config, deps = {}) {
       // TOOLING-046: provider/مدل/effort ِ هر مرحله هنگام ساخت. فقط ردیف‌های عوض‌شده می‌آیند؛ اعتبارسنجی با Manager (نامعتبر ⇒ exit 45
       // و هیچ تسکی ساخته نمی‌شود).
       importArgs.push(...createRuntimeFlags(draft.runtime));
+      // TOOLING-050 د: `--attach <path>` تکرارشونده؛ Manager فایل را کپی و ثبت می‌کند (کانبان در attachments.root نمی‌نویسد).
+      importArgs.push(...attachArgs(attachFiles));
       // TOOLING-044: import ِ تکراری فقط عمدی و با دلیل (exit 44 در حالت عادی).
       let duplicateReasonFile = null;
       if (draft.allowDuplicate != null) {
@@ -339,6 +351,7 @@ export function createApp(config, deps = {}) {
         if (duplicateReasonFile) fs.rmSync(duplicateReasonFile, { force: true });
       }
       const taskId = parseTaskId(output.stdout);
+      uploads.discardMany(attachFiles.map(file => file.id)); // فقط بعد از موفقیت: با شکست ِ import کاربر می‌تواند دوباره امتحان کند
       const shouldStart = startOverride ?? runConfig.autoStartOnCreate;
       const queue = shouldStart ? queueTask(session, repo, taskId) : { queued: false, started: false };
       return { ok: true, taskId, repoId: repo.id, slug, ...queue };
@@ -409,6 +422,8 @@ export function createApp(config, deps = {}) {
     audit, runner, registry, help, gitOps, updater, config, dataDir, route, send, readBody, repoFor,
     managerAudited: collectAction, pipeStream, users: auth.users, assertExecution, drain
   });
+
+  const attachmentRoutes = createAttachmentRoutes({ config, repoFor, send, route, readBody, collectJson, collectAction, assertExecution, audit, uploads, readPolicy });
 
   const server = http.createServer(async (req, res) => {
     if (lifecycle.closing) {
@@ -482,6 +497,7 @@ export function createApp(config, deps = {}) {
         if (await remoteRoutes(req, res, url, pathname, session)) return;
         if (await remoteOpsRoutes(req, res, url, pathname, session)) return;
         if (await opsRoutes(req, res, url, pathname, session)) return;
+        if (await attachmentRoutes(req, res, url, pathname, session)) return;
       }
       if (req.method === 'GET' && pathname === '/api/repos') {
         return send(res, 200, config.repos.map(({ id, path: repoPath }) => ({
@@ -586,6 +602,9 @@ export function createApp(config, deps = {}) {
         if (input.releaseNoteText && input.noReleaseNote) return send(res, 400, { error: 'releaseNoteText و noReleaseNote با هم معنا ندارند.' });
         if (input.noReleaseNote && !input.reason?.trim()) return send(res, 400, { error: 'برای "برای کاربر دیده نمی‌شود"، دلیل الزامی است.' });
 
+        if (input.attachments?.length && input.mode !== 'clarify') return send(res, 400, { error: 'پیوست فقط کنار clarify (و یادداشت) معنا دارد.' });
+        if (input.attachments?.length && session.remote) return send(res, 403, { error: 'پیوست از راه دور مجاز نیست.' });
+        const attachFiles = resolveUploads(session, input.attachments);
         const repo = repoFor(p.repo);
         const args = ['answer', p.id, `--${input.mode}`];
         let tmp = null;
@@ -598,6 +617,7 @@ export function createApp(config, deps = {}) {
             args.push('--file', tmp);
             if (input.respec) args.push('--respec');
             if (externalAccessArg) args.push('--external-access', externalAccessArg);
+            args.push(...attachArgs(attachFiles));
           }
           if (input.reason) {
             // متن آزاد هرگز argv نمی‌شود — کنسول ویندوز فارسی را به ??? می‌شکند.
@@ -613,6 +633,7 @@ export function createApp(config, deps = {}) {
           }
           if (input.noReleaseNote) args.push('--no-release-note');
           await collectAction(session, repo, args, { action: 'answer', taskId: p.id });
+          uploads.discardMany(attachFiles.map(file => file.id));
         } finally {
           if (tmp) fs.rmSync(tmp, { force: true });
           if (reasonTmp) fs.rmSync(reasonTmp, { force: true });
@@ -655,17 +676,40 @@ export function createApp(config, deps = {}) {
         await collectAction(session, repoFor(p.repo), args, { action: 'external-checked-in', taskId: p.id });
         return send(res, 200, { ok: true });
       }
+      // TOOLING-050 هـ: دروازه‌ی تأیید ِ وابستگی. `answer --approve-dependencies|--reject-dependencies --reason` (reason همیشه از فایل ِ موقت،
+      // نه argv). مجاز بودن را Manager می‌سنجد (actions.approveDependencies/rejectDependencies)؛ بعد از تصمیم، مثل بقیه‌ی گیت‌ها
+      // اگر run.autoResumeAfterAnswer روشن است run می‌زنیم (تأیید: architecture → ready؛ رد: برگشت به Architect).
+      for (const verb of ['approve-dependencies', 'reject-dependencies']) {
+        if (req.method === 'POST' && (p = route(`/api/repos/:repo/tasks/:id/${verb}`, pathname))) {
+          const input = await readBody(req);
+          if (!String(input.reason ?? '').trim()) return send(res, 400, { error: 'دلیل الزامی است (reason را به انگلیسی بنویس).' });
+          const repo = repoFor(p.repo);
+          await assertExecution(repo);
+          const reasonTmp = path.join(os.tmpdir(), `barsa-reason-${process.pid}-${randomUUID()}.txt`);
+          try {
+            fs.writeFileSync(reasonTmp, String(input.reason), { encoding: 'utf8', mode: 0o600 });
+            await collectAction(session, repo, ['answer', p.id, `--${verb}`, '--reason-file', reasonTmp], { action: verb, taskId: p.id });
+          } finally {
+            fs.rmSync(reasonTmp, { force: true });
+          }
+          const resumed = runConfig.autoResumeAfterAnswer ? queueTask(session, repo, p.id) : { queued: false, started: false };
+          return send(res, 200, { ok: true, autoResumed: runConfig.autoResumeAfterAnswer, ...resumed });
+        }
+      }
       // state-محور است، نه awaitingHuman (manager.js، parseAnswerArgs/--note) —
       // در هر state غیرپایانی (برای یادداشت) قابل ارسال است. متن همیشه از فایل
       // موقت UTF-8 می‌رود، هرگز argv خام (همان دلیل --reason-file بالا).
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/note', pathname))) {
         const input = await readBody(req);
         if (!input.text?.trim()) return send(res, 400, { error: 'متن یادداشت الزامی است.' });
+        if (input.attachments?.length && session.remote) return send(res, 403, { error: 'پیوست از راه دور مجاز نیست.' });
+        const attachFiles = resolveUploads(session, input.attachments);
         const repo = repoFor(p.repo);
         const tmp = path.join(os.tmpdir(), `barsa-note-${process.pid}-${randomUUID()}.txt`);
         try {
           fs.writeFileSync(tmp, String(input.text), { encoding: 'utf8', mode: 0o600 });
-          await collectAction(session, repo, ['answer', p.id, '--note', '--file', tmp], { action: 'note', taskId: p.id });
+          await collectAction(session, repo, ['answer', p.id, '--note', '--file', tmp, ...attachArgs(attachFiles)], { action: 'note', taskId: p.id });
+          uploads.discardMany(attachFiles.map(file => file.id));
         } finally {
           fs.rmSync(tmp, { force: true });
         }

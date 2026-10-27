@@ -148,3 +148,27 @@
 .blocker-card .tail-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px}
 .tail-block{max-height:260px;white-space:pre-wrap}
 .unknown-actions button{opacity:.75}
+
+/* TOOLING-050: پیوست، چک‌لیست ِ تست‌های دستی، دروازه‌ی وابستگی */
+.att-picker{border:1px dashed #b9c5d3;border-radius:9px;padding:10px;display:flex;flex-direction:column;gap:6px;background:#fafcfe}
+.att-picker.dragging{border-color:#147d68;background:#edf8f4}.att-picker.disabled{opacity:.55}
+.att-drop{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.att-drop kbd{background:#eef2f6;border:1px solid #d5dce6;border-radius:4px;padding:0 4px;font-size:10px}
+.att-hint{color:#758196;font-size:10px;line-height:1.7}
+.att-row{display:flex;gap:8px;align-items:center;font-size:11px;border-top:1px solid #eef1f5;padding-top:5px}.att-row.err{color:#a32e29}
+.att-name{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.att-ok{color:#147d68}.att-error{flex:1}
+.att-row progress{width:90px;height:8px}
+.att-list,.att-frames{list-style:none;margin:0;padding:0}.att-frames{margin:4px 22px 0 0;border-right:2px solid #dde4ec;padding-right:10px}
+.att-item{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid #eef1f5}.att-item.missing{background:#fff8f0}
+.att-thumb{width:72px;height:56px;object-fit:cover;border-radius:6px;border:1px solid #dde4ec;background:#f3f6fa}
+.att-meta{display:flex;flex-direction:column;gap:3px;font-size:11px}.att-meta small{color:#758196}
+.att-badge{display:inline-block;width:fit-content;padding:0 7px;border-radius:8px;background:#e9eef6;color:#40506a;font-size:9px}.att-badge.warn{background:#fff0d6;color:#8a5a12}
+.att-warn{color:#a35a00;font-size:10px}.att-add{margin-top:14px;display:flex;flex-direction:column;gap:8px}
+.create-attachments{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.manual-tests{border:1px solid #dcc98a;background:#fffaf0;border-radius:9px;padding:10px 12px;margin:12px 0}
+.manual-tests header{display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}.manual-tests header small{color:#8a7a4e;font-size:10px}
+.manual-tests ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:5px}
+.manual-tests label{display:flex;gap:8px;align-items:baseline;font-size:11px;line-height:1.7}.manual-tests .mt-section{color:#8a7a4e;font-size:9px}
+.dep-card{border:1px solid #e1e6ed;border-radius:9px;padding:10px 12px;margin:8px 0;background:#fff}.dep-head{display:flex;gap:8px;align-items:center}
+.dep-reason{font-size:11px;color:#40506a;margin:6px 0}.dep-peers{width:100%;border-collapse:collapse;font-size:11px;margin:6px 0}
+.dep-peers th{text-align:right;color:#758196;font-weight:600;padding:4px 6px;border-bottom:1px solid #e1e6ed}.dep-peers td{padding:5px 6px;border-bottom:1px solid #eef1f5}
+.dep-peers tr.bad td{background:#fff0ef;color:#a32e29}.dep-peer-warning{margin-bottom:8px}

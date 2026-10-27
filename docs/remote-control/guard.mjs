@@ -7,7 +7,7 @@
 // قاعده‌های ask/allow است؛ این hook فقط چیزی را مجاز نمی‌کند، فقط رد می‌کند.
 //
 // فهرست فرمان‌ها باید با server/src/remote-cli-spec.js (READ_COMMANDS/WRITE_COMMANDS) یکی باشد؛ تست مطابقت را می‌سنجد.
-const COMMANDS = ['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options', 'create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain'];
+const COMMANDS = ['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options', 'create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'deps', 'attachments', 'approve-deps', 'reject-deps', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain'];
 // شکل ِ آرگومان‌های runtime (TOOLING-046). اعتبارسنجی ِ **معنایی** (کدام provider/مدل/effort مجاز است) کار ِ Manager است؛
 // این‌جا فقط نویسه‌ها و جایگاه‌ها: نقش هر نامِ [a-z-]+ ، و <provider>:<model>:<effort> فقط حرف/عدد/نقطه/خط (قطعه‌ی خالی مجاز).
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -23,6 +23,8 @@ const RUNTIME_SHAPES = {
   'runtime-options': { value: new Set(['--repo']), bool: new Set(), positional: [] },
   'retry-provision': { value: new Set(['--repo']), bool: new Set(), positional: [ID] },
   recheck: { value: new Set(['--repo']), bool: new Set(), positional: [ID] },
+  deps: { value: new Set(['--repo']), bool: new Set(), positional: [ID] },
+  attachments: { value: new Set(['--repo']), bool: new Set(), positional: [ID] },
   // drain: بدون آرگومان ِ مکانی؛ فقط --status یا --off (نه هر دو)
   drain: { value: new Set(), bool: new Set(['--status', '--off']), positional: [], exclusive: ['--status', '--off'] }
 };
@@ -62,6 +64,23 @@ function setRuntimeShapeError(args) {
   if (preset !== null) return positional.length === 1 && !reset ? null : 'با --preset فقط شناسه‌ی تسک می‌آید.';
   if (reset) return positional.length === 2 && ROLE.test(positional[1]) ? null : 'با --reset: <id> <role|preset|all>';
   return positional.length === 3 && ROLE.test(positional[1]) && SEGMENTS.test(positional[2]) ? null : 'قالب: <id> <role> <provider>:<model>:<effort>';
+}
+
+/** approve-deps / reject-deps <id> (--reason "…" | --stdin | --text-file <f>): فقط شناسه + دقیقاً یک منبع ِ reason (TOOLING-050). */
+function depsDecisionShapeError(name, args) {
+  const positional = [];
+  let reasons = 0;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--json') continue;
+    if (arg === '--stdin') { reasons += 1; continue; }
+    if (arg === '--reason' || arg === '--text-file') { if (!(args[i + 1] ?? '').length) return `${arg} مقدار می‌خواهد.`; reasons += 1; i += 1; continue; }
+    if (arg === '--repo') { if (!ID.test(args[i + 1] ?? '')) return '--repo نامعتبر است.'; i += 1; continue; }
+    if (arg.startsWith('-')) return `گزینه‌ی ${arg} برای ${name} مجاز نیست.`;
+    positional.push(arg);
+  }
+  if (reasons !== 1) return 'دقیقاً یکی از --reason / --stdin / --text-file لازم است.';
+  return positional.length === 1 && ID.test(positional[0]) ? null : 'شناسه‌ی تسک نامعتبر است (فقط یک شناسه).';
 }
 
 /** flagهای runtime روی هر فرمان (create-*): مقدار بعد از --runtime / --runtime-preset باید شکل ِ مجاز داشته باشد. */
@@ -123,7 +142,9 @@ export function evaluate(command) {
 
   const [name, ...commandArgs] = args;
   if (name !== undefined && !COMMANDS.includes(name) && !['--help', '-h', 'help'].includes(name)) return { ok: false, reason: `«${name}» فرمان مجاز barsa نیست.` };
-  const shape = name === 'set-runtime' ? setRuntimeShapeError(commandArgs) : (runtimeShapeError(name, commandArgs) ?? runtimeFlagError(commandArgs));
+  const shape = name === 'set-runtime' ? setRuntimeShapeError(commandArgs)
+    : (name === 'approve-deps' || name === 'reject-deps') ? depsDecisionShapeError(name, commandArgs)
+      : (runtimeShapeError(name, commandArgs) ?? runtimeFlagError(commandArgs));
   if (shape) return { ok: false, reason: shape };
   return { ok: true };
 }

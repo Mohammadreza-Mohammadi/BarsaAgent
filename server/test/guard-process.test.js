@@ -50,6 +50,8 @@ test('guard.mjs به‌صورت فرآیند: فرمان ِ مجاز ← اجا�
   for (const command of [
     './barsa runtime-options', './barsa runtime 10013', './barsa tasks --waiting', './barsa task 10013 --json',
     './barsa set-runtime 10013 implementer ::high --reason "bump effort"',
+    './barsa deps 10024', './barsa attachments 10024 --json', './barsa approve-deps 10024 --reason "needed for charts; peers OK"', './barsa reject-deps 10024 --reason "use existing lib"',
+    './barsa approve-deps 10024 --stdin <<\'EOF\'\nneeded; license MIT\nEOF',
     './barsa recheck 10023', './barsa recheck 10023 --json', './barsa recheck 10023 --repo main',
     './barsa drain', './barsa drain --status', './barsa drain --off', './barsa sync --status 20261026101500-0a1b2c3d',
     './barsa answer 5 --note --stdin <<\'EOF\'\nمتن با $HOME و ; داخل heredoc\nEOF'
@@ -66,6 +68,16 @@ test('guard.mjs به‌صورت فرآیند: whoami، جایگزینی دستو
   expectDeny(runGuard(file, 'ls'), 'ls');
   expectDeny(runGuard(file, './barsa create-task --title x --runtime "bad;spec" --stdin'), 'spec ِ ناجور');
   expectDeny(runGuard(file, ''), 'فرمان ِ خالی');
+  // TOOLING-050: deps / attachments فقط شناسه؛ approve-deps / reject-deps شناسه + دقیقاً یک منبع ِ reason، بدون گزینه‌ی دیگر
+  expectDeny(runGuard(file, './barsa deps'), 'deps بدون شناسه');
+  expectDeny(runGuard(file, './barsa deps 5 6'), 'deps با دو شناسه');
+  expectDeny(runGuard(file, './barsa deps $(id)'), 'deps $(id)');
+  expectDeny(runGuard(file, './barsa attachments 5 --upload x'), 'attachments --upload');
+  expectDeny(runGuard(file, './barsa approve-deps'), 'approve-deps بدون شناسه');
+  expectDeny(runGuard(file, './barsa approve-deps 5'), 'approve-deps بدون reason');
+  expectDeny(runGuard(file, './barsa approve-deps 5 --reason a --stdin'), 'approve-deps با دو منبع ِ reason');
+  expectDeny(runGuard(file, './barsa reject-deps 5 --force --reason x'), 'reject-deps --force');
+  expectDeny(runGuard(file, './barsa approve-deps 5 --reason x; ls'), 'approve-deps با زنجیره');
   // recheck: فقط شناسه (بدون آرگومان ِ دیگر)، بدون زنجیره/جایگزینی
   expectDeny(runGuard(file, './barsa recheck'), 'recheck بدون شناسه');
   expectDeny(runGuard(file, './barsa recheck 5 --force'), 'recheck --force');

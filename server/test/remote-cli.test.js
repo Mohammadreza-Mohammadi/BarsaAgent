@@ -327,7 +327,7 @@ test('task <id>: وضعیت، actions، blocker، بازبینی، release note�
   assert.match(blocked.out, /blocker: budget-exhausted — سقف implementerRuns پر شد/);
   assert.match(blocked.out, /raiseLimit\[implementerRuns,maxAttempts\]/);
   const json = (await s.cli(['task', '7', '--json'])).json();
-  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'roles', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'runtime', 'attempts', 'waiting']);
+  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'roles', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'runtime', 'attempts', 'manualCases', 'testsWarning', 'attachments', 'dependencyGate', 'waiting']);
   assert.equal(json.actions.approve, true);
   assert.equal((await s.cli(['task', '999'])).code, EXIT.REJECTED, 'تسک ناموجود = رد');
   assert.equal((await s.cli(['task'])).code, EXIT.USAGE);
@@ -803,4 +803,139 @@ test('diag: liveness ِ قفل با دلیل ِ Manager، نقش، جدول ِ f
   const system = (await s.cli(['diag', '--system'])).out;
   assert.match(system, /قفل سراسری Manager: pid 88 روی ماشین دیگر · task 41/);
   assert.match(system, /تسک #41 \[blocked\]: pid 77 مرده \(شماره‌ی فرآیند به برنامه‌ی دیگری رسیده\)/);
+});
+
+// --- ۰۵۰: deps / attachments / approve-deps / reject-deps، تست‌های دستی، رویدادها ----------------------------------------------------
+
+const peer050 = (name, satisfied, extra = {}) => ({ name, range: '^18.0.0', installed: satisfied === null ? null : '17.0.2', satisfied, optional: false, ...extra });
+const depGate = (peersOk = false) => ({
+  version: 1, attempt: '003', requestedAt: '2026-10-27T08:00:00Z', peersOk,
+  dependencies: [
+    { name: 'react-charts', version: '3.0.1', dev: false, reason: 'برای نمودار ِ داشبورد', info: { known: true, error: null, version: '3.0.1', license: 'MIT', hasInstallScript: true, peerDependencies: { react: '^18.0.0' }, peers: [peer050('react', false), peer050('react-dom', true)], peersOk } },
+    { name: 'mystery-lib', version: '0.1.0', dev: true, reason: 'ابزار ِ تست', info: { known: false, error: 'registry در دسترس نبود', version: null, license: null, hasInstallScript: null, peerDependencies: {}, peers: [], peersOk: null } }
+  ]
+});
+const att050 = (id, patch = {}) => ({ id, name: `${id}.png`, file: `${id}.png`, kind: 'image', ext: '.png', size: 2048, sha256: 'a'.repeat(64), addedAt: '2026-10-27T08:00:00Z', stage: null, source: 'attach', reason: 'r', humanOnly: false, derivedFrom: null, path: `D:/att/51/${id}.png`, exists: true, ...patch });
+const task050 = (id, extra = {}) => ({ id: String(id), title: `تسک ${id}`, state: 'implementing', stateSince: '2026-10-27T08:00:00Z', awaitingHuman: null, blocker: null, actions: { ...NO_ACTIONS }, ...extra });
+const STATUS_050 = {
+  ...STATUS,
+  tasks: [
+    task050(51, {
+      state: 'architecture', awaitingHuman: { kind: 'dependency-approval', since: '2026-10-27T08:00:00Z' },
+      actions: { ...NO_ACTIONS, approveDependencies: true, rejectDependencies: true },
+      dependencyApproval: depGate(), dependencies: [{ name: 'lodash', version: '4.17.21', dev: false, reason: 'util' }],
+      attachments: { root: 'D:/att', items: [att050('A-1'), att050('V-1', { kind: 'video', name: 'demo.mp4', file: 'demo.mp4', ext: '.mp4', humanOnly: true }), att050('F-1', { derivedFrom: 'V-1', source: 'derived' }), att050('G-1', { exists: false })] }
+    }),
+    task050(52, { dependencyApproval: null, dependencies: [], attachments: { root: null, items: [] } }),
+    task050(53), // Manager ِ قدیمی‌تر از ۰۵۰: هیچ‌کدام از فیلدهای تازه
+    task050(54, {
+      state: 'review', awaitingHuman: { kind: 'merge-approval', since: '2026-10-27T08:00:00Z' }, actions: { ...NO_ACTIONS, approve: true, reject: true },
+      tests: { format: 'canonical', autoCases: ['M1'], manualCases: [{ id: 'TC-R1', section: 'Runtime دستی', summary: 'ضبط ۱۰ ثانیه و ارسال', typeSource: 'canonical' }, { id: 'TC-R2', section: null, summary: 'لغو ضبط', typeSource: 'canonical' }], problems: ['جدول ِ خط 63 ستون ِ شناسه ندارد'] }
+    }),
+    task050(55, { tests: { format: 'canonical', autoCases: [], manualCases: [{ id: 'TC-X', section: null, summary: 'x', typeSource: 'canonical' }], problems: [] } }) // دروازه‌ی merge نیست
+  ]
+};
+
+test('deps: دروازه‌ی وابستگی (نام/نسخه/dev/دلیل/license/peerها/hasInstallScript؛ known=false با دلیل)، peer ِ ناسازگار هشدار؛ دروازه بسته و Manager ِ قدیمی بی‌خطا', async t => {
+  const s = await boot(t, { status: STATUS_050 });
+  const text = (await s.cli(['deps', '51'])).out;
+  assert.match(text, /وابستگی‌های تسک #51:/);
+  assert.match(text, /دروازه‌ی تأیید ِ وابستگی \(attempt 003/);
+  assert.match(text, /• react-charts@3\.0\.1 — برای نمودار ِ داشبورد/);
+  assert.match(text, /license: MIT · hasInstallScript: بله ⚠/);
+  assert.match(text, /peer react \^18\.0\.0 · نصب‌شده: 17\.0\.2 · ✗ نمی‌خواند/);
+  assert.match(text, /peer react-dom .* ✓ می‌خواند/);
+  assert.match(text, /• mystery-lib@0\.1\.0 \(dev\) — ابزار ِ تست\n\s+اطلاعات ِ registry نیست: registry در دسترس نبود/);
+  assert.match(text, /تأییدشده: lodash@4\.17\.21/);
+  assert.match(text, /⚠ peerها نمی‌خوانند؛ تأیید ممکن است نصب را با ERESOLVE بشکند\. فقط با درخواست ِ صریح ِ کاربر تأیید کن\./);
+  assert.match(text, /تأیید: barsa approve-deps 51 --reason/);
+  const json = (await s.cli(['deps', '51', '--json'])).json();
+  assert.deepEqual([json.peerProblem, json.gate.dependencies.length, json.actions.approveDependencies], [true, 2, true]);
+  assert.equal(json.gate.dependencies[0].peers[0].status, 'bad');
+
+  for (const id of ['52', '53']) {
+    const closed = await s.cli(['deps', id]);
+    assert.equal(closed.code, 0, closed.err);
+    assert.match(closed.out, /دروازه‌ی تأیید ِ وابستگی الان باز نیست/);
+    assert.equal((await s.cli(['deps', id, '--json'])).json().gate, null);
+  }
+  assert.equal((await s.cli(['deps'])).code, EXIT.USAGE);
+});
+
+test('attachments: فهرست (فریم‌ها زیر ویدیو، فقط برای انسان، فایل روی دیسک نیست)؛ json بدون path؛ Manager قدیمی پیام ِ روشن', async t => {
+  const s = await boot(t, { status: STATUS_050 });
+  const text = (await s.cli(['attachments', '51'])).out;
+  assert.match(text, /پیوست‌ها \(4\):/);
+  assert.match(text, /A-1 · A-1\.png · تصویر · 2\.0KB/);
+  assert.match(text, /V-1 · demo\.mp4 · ویدیو .* فقط برای انسان\n\s+↳ F-1 · F-1\.png/);
+  assert.match(text, /G-1 .* ⚠ فایل روی دیسک نیست/);
+  const json = (await s.cli(['attachments', '51', '--json'])).json();
+  assert.equal(json.items.length, 4);
+  assert.ok(json.items.every(item => !('path' in item)), 'مسیر ِ مطلق ِ سرور در خروجی نیست');
+  assert.match((await s.cli(['attachments', '52'])).out, /پیوستی ندارد/);
+  const old = await s.cli(['attachments', '53']);
+  assert.equal(old.code, 0);
+  assert.match(old.out, /قدیمی‌تر از TOOLING-050/);
+  assert.equal((await s.cli(['attachments', '53', '--json'])).json().available, false);
+});
+
+test('approve-deps / reject-deps: reason اجباری (2)، پیش‌سنجی از actions (3، بدون صدا زدن ِ Manager)؛ reason از فایل ِ موقت؛ ممیزی با actor ِ remote', async t => {
+  const s = await boot(t, { status: STATUS_050 });
+  assert.equal((await s.cli(['approve-deps', '51'])).code, EXIT.USAGE, 'بدون reason');
+  assert.equal((await s.cli(['approve-deps', '51', '--reason', 'x', '--stdin'])).code, EXIT.USAGE);
+  const denied = await s.cli(['approve-deps', '52', '--reason', 'x']);
+  assert.equal(denied.code, EXIT.NOT_ALLOWED);
+  assert.equal((await s.cli(['reject-deps', '53', '--reason', 'x'])).code, EXIT.NOT_ALLOWED);
+  assert.equal(s.fake.mutations().filter(c => c.args[0] === 'answer').length, 0, 'Manager اصلاً صدا زده نشد');
+
+  const ok = await s.cli(['approve-deps', '51', '--reason', 'Needed for charts; license MIT; peers checked']);
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.out, /وابستگی‌ها تأیید شد/);
+  const call = s.fake.mutations().filter(c => c.args[0] === 'answer').at(-1);
+  assert.deepEqual(call.args.slice(0, 4), ['answer', '51', '--approve-dependencies', '--reason-file']);
+  assert.equal(s.fake.files().at(-1).text, 'Needed for charts; license MIT; peers checked');
+  await s.waitIdle();
+
+  const rejected = await s.cli(['reject-deps', '51', '--stdin'], { stdin: 'Use the existing chart library\nمتن چندخطی' });
+  assert.equal(rejected.code, 0, rejected.err);
+  assert.match(rejected.out, /رد شد؛ تسک به Architect برگشت/);
+  assert.deepEqual(s.fake.mutations().filter(c => c.args[0] === 'answer').at(-1).args.slice(0, 3), ['answer', '51', '--reject-dependencies']);
+  assert.equal(s.fake.files().at(-1).text, 'Use the existing chart library\nمتن چندخطی');
+  await s.waitIdle();
+  const rows = s.audit().summaries({ action: 'approve-dependencies', limit: 5 });
+  assert.ok(rows.length >= 1 && rows.every(row => row.user === 'remote:remote-phone'));
+});
+
+test('task: دروازه‌ی merge فهرست ِ Caseهای دستی (و هشدار ِ tests.problems) را چاپ می‌کند؛ دروازه‌ی وابستگی و پیوست‌ها یک خط', async t => {
+  const s = await boot(t, { status: STATUS_050 });
+  const merge = (await s.cli(['task', '54'])).out;
+  assert.match(merge, /تست‌های دستی \(چک‌لیست ِ دروازه‌ی merge؛ یادآوری است، نه شرط ِ approve\):/);
+  assert.match(merge, /☐ TC-R1 \[Runtime دستی\] — ضبط ۱۰ ثانیه و ارسال/);
+  assert.match(merge, /☐ TC-R2 — لغو ضبط/);
+  assert.match(merge, /⚠ tests\.md: جدول ِ خط 63 ستون ِ شناسه ندارد/);
+  const json = (await s.cli(['task', '54', '--json'])).json();
+  assert.deepEqual(json.manualCases.map(c => c.id), ['TC-R1', 'TC-R2']);
+  assert.equal((await s.cli(['task', '55', '--json'])).json().manualCases, null, 'پشت ِ دروازه‌ی merge نیست ← چک‌لیست ندارد');
+  assert.doesNotMatch((await s.cli(['task', '55'])).out, /تست‌های دستی/);
+
+  const dep = (await s.cli(['task', '51'])).out;
+  assert.match(dep, /⏳ دروازه‌ی تأیید ِ وابستگی باز است — اول barsa deps 51/);
+  assert.match(dep, /پیوست‌ها: 4 \(⚠ 1 فایل روی دیسک نیست\) — barsa attachments 51/);
+  const old = await s.cli(['task', '53', '--json']);
+  assert.deepEqual([old.json().manualCases, old.json().attachments, old.json().dependencyGate], [null, null, false]);
+});
+
+test('diag: رویدادهای ۰۵۰ متن ِ کوتاه ِ فارسی دارند (نه فهرست ِ خام ِ کلیدها)', async t => {
+  const s = await boot(t, { status: STATUS_050 });
+  s.fake.setEvents([
+    { at: '2026-10-27T08:01:00Z', event: 'attachment.added', id: 'A-1', name: 'screen.png', kind: 'image', size: 2048, humanOnly: false, derived: [] },
+    { at: '2026-10-27T08:02:00Z', event: 'external.changed-by-sync', attempt: '003', role: 'implementer', sources: [{ id: 'webiii', reason: 'recorded-sync', mutations: [{ kind: 'tf-get', task: '12' }] }], budgetConsumed: 'none' },
+    { at: '2026-10-27T08:03:00Z', event: 'dependency.installed', dependencies: [{ name: 'echarts', version: '5.5.0', dev: false }], commit: 'abcdef1234' },
+    { at: '2026-10-27T08:04:00Z', event: 'external.snapshot', source: 'webiii', localEdits: null }
+  ]);
+  const out = (await s.cli(['diag', '51'])).out;
+  assert.match(out, /پیوست اضافه شد · «screen\.png» \(تصویر، 2\.0KB\)/);
+  assert.match(out, /منبع بیرونی با sync عوض شد \(به حساب agent نیست\) · منبع بیرونی «webiii» در طول attempt 003 با sync ِ tf-get \(تسک 12\) عوض شد — به حساب agent گذاشته نشد/);
+  assert.match(out, /وابستگی نصب شد · echarts@5\.5\.0 · commit abcdef12/);
+  assert.match(out, /ویرایش ِ دستی ِ محلی: نامعلوم/);
 });

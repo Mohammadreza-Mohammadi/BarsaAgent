@@ -49,6 +49,8 @@ const SCHEMA = [
   ['editor.command', str, 'رشته (مسیر executable)'],
   ['logs.errFile', nonEmptyStr, 'رشته‌ی غیرخالی (مسیر kanban.err.log برای barsa diag --system)'],
   ['health.proxyTestUrl', nonEmptyStr, 'رشته‌ی غیرخالی (URL)'],
+  ['attachments.maxUploadBytes', int(1024), 'عدد صحیح ≥ ۱۰۲۴ (بایت؛ پیش‌فرض ۲۰۰MB = سقف ِ ویدیو در Manager)'],
+  ['attachments.maxFiles', int(1), 'عدد صحیح ≥ ۱ (حداکثر پیوست در یک درخواست؛ پیش‌فرض ۲۰)'],
   ['shutdown.timeoutMs', int(1000), 'عدد صحیح ≥ ۱۰۰۰ (میلی‌ثانیه؛ پیش‌فرض ۱۰۰۰۰)'],
   ['shutdown.runWaitMs', int(0), 'عدد صحیح ≥ ۰ (میلی‌ثانیه؛ پیش‌فرض ۰ = برای run های زنده صبر نکن)'],
   ['shutdown.liveRuns', oneOf('terminate', 'leave'), '"terminate" یا "leave"']

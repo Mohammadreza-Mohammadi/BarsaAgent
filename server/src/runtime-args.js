@@ -109,6 +109,9 @@ export function structuredFailure(error) {
       externalId: json.externalId ?? null, message: String(json.message ?? 'این issue قبلاً تسک دارد.'), hint: json.hint ?? null
     };
   }
+  if (json.error === 'attachment-invalid') {
+    return { kind: 'attachment-invalid', message: String(json.message ?? 'پیوست نامعتبر است؛ تسکی ساخته نشد.') };
+  }
   if (json.error === 'runtime-invalid' || error?.code === 45) {
     const details = json.details && typeof json.details === 'object' ? json.details : {};
     const role = typeof details.role === 'string' ? details.role : typeof details.field === 'string' ? details.field : null;

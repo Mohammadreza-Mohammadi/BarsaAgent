@@ -390,9 +390,9 @@ test('resume ِ خودکار: فقط approve/reject/clarify بعد از answer �
   const mutated = fake.mutations().filter(c => c.args[0] !== 'run').length;
   assert.ok(mutated >= 3 + calls.length, 'خود اکشن‌ها به Manager رسیده‌اند');
 
-  // و صریح: سیاست مستند همان سه تاست
+  // و صریح: سیاست مستند: سه تصمیم ِ گیت + دو تصمیم ِ دروازه‌ی وابستگی (TOOLING-050؛ approve: architecture → ready، reject: برگشت به Architect؛ هر دو بدون run جلو نمی‌روند)
   const { AUTO_RESUME_ACTIONS } = await import('../../client/src/app/task-actions.ts');
-  assert.deepEqual([...AUTO_RESUME_ACTIONS], ['approve', 'reject', 'clarify']);
+  assert.deepEqual([...AUTO_RESUME_ACTIONS], ['approve', 'reject', 'clarify', 'approveDependencies', 'rejectDependencies']);
 });
 
 test('resume ِ خودکار خاموش (run.autoResumeAfterAnswer:false): حتی approve/reject/clarify هم run نمی‌زنند', async t => {

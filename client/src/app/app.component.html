@@ -189,6 +189,13 @@
         </div>
         <label class="request-editor"><span>متن request</span><textarea [ngModel]="d.requestText" (ngModelChange)="updateDraft('requestText',$event)" placeholder="متن خام درخواست…"></textarea><small>این متن عیناً <code>request.md</code> می‌شود. ساده و بدون ساختار بنویس — Acceptance Criteria را Intake می‌سازد، نه تو.</small></label>
         <ba-runtime-picker *ngIf="!d.skipped" [options]="runtimeOptions()" [value]="d.runtime" [errors]="runtimeErrorsFor(d)" [presetError]="presetErrorFor(d)" (valueChange)="updateDraft('runtime', $event)"></ba-runtime-picker>
+        <div class="create-attachments" *ngIf="!d.skipped">
+          <b>پیوست (اختیاری)</b>
+          @for (k of [createIndex()]; track k) {
+            <ba-attachment-picker [repoId]="repoId()" [staged]="d.attachments || []" (stagedChange)="updateDraft('attachments', $event)"></ba-attachment-picker>
+          }
+          <small>تصویر، PDF، متن و ویدیو؛ فایل‌ها همراه ِ ساخت به Manager داده می‌شوند (<code>import-issue --attach</code>) و agentها می‌خوانند.</small>
+        </div>
         <div class="skipped-note" *ngIf="d.skipped">این مورد رد شده و ساخته نمی‌شود. <button class="secondary" (click)="restoreDraft()">برگرداندن</button></div>
         <div class="create-nav" *ngIf="createDrafts().length > 1">
           <button class="secondary" [disabled]="createIndex() === 0" (click)="prevDraft()">قبلی</button>
@@ -231,6 +238,8 @@
       <div class="disabled-gate-warning" *ngIf="taskLocked(t)">
         🔒 این task گیرکرده است — {{stuckReasonsLabel(t)}}<span *ngIf="t.health?.recovery?.reason"> · {{t.health.recovery.reason}}</span>. تأیید/رد تا حل این وضعیت از پنل بازیابی غیرفعال است.
       </div>
+
+      <ba-task-dependencies *ngIf="gateKind(t) === 'dependency-approval'" [repoId]="repoId()" [task]="t" (changed)="closePanel(); refresh(true)"></ba-task-dependencies>
 
       <section class="release-note-card" *ngIf="gateKind(t) === 'spec-approval' || gateKind(t) === 'merge-approval'">
         <header><b>متنی که کاربر بعد از merge می‌بیند</b><button class="secondary" *ngIf="t.releaseNote?.userVisible && !releaseNoteEditing()" (click)="copyReleaseNote(t)">کپی</button></header>
@@ -330,6 +339,8 @@
         <div class="disabled-gate-warning" *ngIf="!hasStatusCapability('verify')">این Manager هنوز نمی‌گوید کدام گیت verification غیرفعال بوده — نمی‌توان مطمئن شد. با نسخه‌ی جدیدتر Manager این هشدار قابل‌اعتماد می‌شود.</div>
         <div class="disabled-gate-warning" *ngFor="let d of t.verify?.disabled">این task بدون گیت <code>{{d.gate}}</code> تأیید می‌شود. <small>{{d.reason}}</small></div>
 
+        <ba-manual-tests [repoId]="repoId()" [task]="t"></ba-manual-tests>
+
         <label class="merge-ack" *ngIf="!managerMerges()"><input type="checkbox" [ngModel]="mergeAck()" (ngModelChange)="mergeAck.set($event)"><span>دستور merge را اجرا کردم</span></label>
       </ng-container>
 
@@ -337,6 +348,10 @@
         <label class="respec-check"><input type="checkbox" [(ngModel)]="respec"><span>این پاسخ مشخصات را عوض می‌کند (<code>--respec</code>)</span></label>
         <small class="budget-note" *ngIf="respec">تیک‌خورده یعنی spec عوض شده؛ Intake از نو اجرا می‌شود و گیت تأیید spec دوباره باز می‌شود.</small>
       </label>
+      <div class="answer-box" *ngIf="can(t, 'clarify')">
+        <span>پیوست همراه ِ پاسخ (اختیاری — <code>--attach</code> کنار <code>--clarify</code>)</span>
+        <ba-attachment-picker [repoId]="repoId()" [(staged)]="clarifyAttachments"></ba-attachment-picker>
+      </div>
       <label class="answer-box" *ngIf="can(t, 'clarify') && externalAccessChoices(t).length">
         <span>تغییر دسترسی منبع بیرونی همراه پاسخ (اختیاری — <code>--external-access</code> کنار <code>--clarify</code>)</span>
         <select [(ngModel)]="clarifyAccessSource"><option value="">بدون تغییر</option><option *ngFor="let s of externalAccessChoices(t)" [value]="s">{{s}}</option></select>
@@ -411,6 +426,8 @@
       </div>
       <div class="disabled-gate-warning" *ngIf="t.artifacts?.includes('human-note.md')">ℹ یک یادداشت مصرف‌نشده از قبل روی دیسک است — اگر الان ثبت کنی، Manager رد می‌کند تا آن یکی مصرف شود.</div>
       <label class="answer-box"><span>متن یادداشت</span><textarea [(ngModel)]="noteText" placeholder="یادداشت برای اجرای بعدی…"></textarea></label>
+      <div class="answer-box"><span>پیوست همراه ِ یادداشت (اختیاری — <code>--attach</code> کنار <code>--note</code>)</span>
+        <ba-attachment-picker [repoId]="repoId()" [(staged)]="noteAttachments"></ba-attachment-picker></div>
     </div>
     <footer class="gate-footer">
       <button class="secondary" (click)="closePanel()">انصراف</button>
@@ -460,6 +477,10 @@
       <ba-task-ops [repoId]="repoId()" [task]="t" [running]="running()[t.id]" [actionsVersion]="actionsVersion()" (changed)="refresh(true)"></ba-task-ops>
 
       <ba-task-runtime [repoId]="repoId()" [task]="t" [running]="running()[t.id]" [events]="events()" (changed)="onRuntimeChanged()"></ba-task-runtime>
+
+      <ba-task-dependencies [repoId]="repoId()" [task]="t" (changed)="refresh(true)"></ba-task-dependencies>
+
+      <ba-task-attachments [repoId]="repoId()" [task]="t" [disabled]="executionDisabled()" (changed)="refresh(true)"></ba-task-attachments>
 
       <section class="detail-section"><div class="section-head"><div><h3>Timeline</h3><p>رویدادها از Manager</p></div><span class="count">{{events().length}}</span></div><div class="timeline"><div *ngFor="let e of events()"><i></i><div><b>{{eventLabel(e)}}</b><small>{{formatDate(e.at)}}</small><p *ngIf="eventDetails(e)">{{eventDetails(e)}}</p></div></div><div class="timeline-empty" *ngIf="!events().length">رویدادی ثبت نشده است.</div></div></section>
 

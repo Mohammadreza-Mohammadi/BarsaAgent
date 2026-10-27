@@ -14,6 +14,7 @@ import { environmentSecrets, redact } from './security.js';
 import { formatSystemDiag, formatTaskDiag } from './diag-format.js';
 import { buildWaiting, formatWaiting } from './remote-waiting.js';
 import { attemptModelCell, currentRole, liveAttempt, nextRole, parseRuntimeSpec, runtimeRows, sourceLabel } from './runtime-view.js';
+import { attachmentLines, dependencyLabel, dependencyLines, dependencyView, hasPeerProblem, manualChecklist, testsProblemsWarning } from './task-extras-view.js';
 import { attemptRunMode, failedWrites, failedWritesLines, lockStatus } from './task-health-view.js';
 import {
   ANSWER_MODES, DEFAULT_TOKEN_NAME, DEFAULT_URL, EXIT, NOT_REMOTE_ANSWER_FLAGS, NOT_REMOTE_COMMANDS, NOT_REMOTE_MESSAGE,
@@ -67,6 +68,10 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa answer <id> --unblock (--text-file <f> | --stdin)
   barsa answer <id> --allow-shared-knowledge-file <path> (--text-file <f> | --stdin)
   barsa recover <id> [--discard-residue (--text-file <f> | --stdin)]
+  barsa deps <id>                           دروازه‌ی تأیید ِ وابستگی: نام/نسخه/dev/دلیل/license، peerها، hasInstallScript؛ و وابستگی‌های تأییدشده
+  barsa attachments <id>                    فهرست ِ پیوست‌های تسک (نام، نوع، اندازه، زمان؛ فریم‌ها زیر ویدیو)
+  barsa approve-deps <id> (--reason "…" | --stdin)   تأیید ِ وابستگی (reason به انگلیسی؛ اول deps را ببین)
+  barsa reject-deps <id> (--reason "…" | --stdin)    رد ِ وابستگی (برگشت به Architect، بدون مصرف ِ budget)
   barsa recheck <id>                        سنجش ِ دوباره‌ی attempt ِ ردشده با گارد ِ Manager (یا خطای ابزار ِ نوشتن)؛ بدون agent و بدون مصرف ِ budget
   barsa set-runtime <id> <role> <provider>:<model>:<effort> (--reason "…" | --stdin)   قطعه‌ی خالی = دست نزن (مثلاً ::high)
   barsa set-runtime <id> --preset <name> (--reason "…" | --stdin)
@@ -398,6 +403,11 @@ const commands = {
       // TOOLING-046: یک خط runtime (فقط اگر با پیش‌فرض فرق دارد) و ستون «مدل / effort» ِ attemptها
       runtime: t.runtime ? { summary: t.runtime.summary ?? null, preset: t.runtime.stored?.preset ?? null, pending: (t.runtime.pending || []).length } : null,
       attempts: (t.attempts || []).slice(-6).map(a => ({ n: a.n ?? null, id: a.id ?? null, role: a.role ?? null, outcome: a.outcome ?? null, ...attemptModelCell(a), relay: attemptRunMode(a) })),
+      // TOOLING-050: Caseهای دستی (فقط در دروازه‌ی merge)، هشدار ِ tests.problems، پیوست‌ها، دروازه‌ی وابستگی
+      manualCases: manualChecklist(t)?.items.map(item => ({ id: item.id, section: item.section ?? null, summary: clip(item.summary ?? '', 300) })) ?? null,
+      testsWarning: testsProblemsWarning(t),
+      attachments: t.attachments ? { count: (t.attachments.items ?? []).length, missing: (t.attachments.items ?? []).filter(item => item.exists === false).length } : null,
+      dependencyGate: t.awaitingHuman?.kind === 'dependency-approval',
       waiting
     };
     if (json) return out;
@@ -413,6 +423,10 @@ const commands = {
     if (out.blocker) lines.push(`blocker: ${out.blocker.kind} — ${clip(out.blocker.detail, 240)}`);
     if (out.blocker?.failedWrites) lines.push(...failedWritesLines(out.blocker.failedWrites));
     if (health?.lock) lines.push(`قفل transition: pid ${health.lock.pid ?? '؟'} — ${health.lock.label}${health.lock.detail ? ` — ${clip(health.lock.detail, 300)}` : ''}`);
+    if (out.manualCases) lines.push('تست‌های دستی (چک‌لیست ِ دروازه‌ی merge؛ یادآوری است، نه شرط ِ approve):', ...out.manualCases.map(item => `  ☐ ${item.id}${item.section ? ` [${clip(item.section, 60)}]` : ''} — ${item.summary}`));
+    if (out.testsWarning) lines.push(`⚠ tests.md: ${clip(out.testsWarning, 220)}`);
+    if (out.dependencyGate) lines.push(`⏳ دروازه‌ی تأیید ِ وابستگی باز است — اول barsa deps ${out.id}`);
+    if (out.attachments?.count) lines.push(`پیوست‌ها: ${out.attachments.count}${out.attachments.missing ? ` (⚠ ${out.attachments.missing} فایل روی دیسک نیست)` : ''} — barsa attachments ${out.id}`);
     if (health?.stuck) lines.push(`گیرکرده: ${health.reasons.join('+')}${health.recovery ? ` — پیشنهاد Manager: ${health.recovery.suggested}${health.recovery.mode ? ` [${health.recovery.mode}]` : ''}` : ''} (جزئیات: barsa diag ${out.id})`);
     if (health?.install) lines.push(`نصب وابستگی‌ها: ${health.install.phase ?? '؟'}${health.install.alive === true ? ' (زنده)' : health.install.alive === false ? ' (مرده)' : ''} از ${short(health.install.startedAt)}`);
     const mergeGate = waiting?.kind === 'merge-approval';
@@ -522,6 +536,36 @@ const commands = {
     if (json) return data;
     return [`تسک #${id}: recover${discard ? ' --discard-residue' : ''} انجام شد.`, ...data.output.map(line => `  ${clip(line, 300)}`), `اجرا خودکار نیست؛ اگر خواستی «barsa run ${id}».`].join('\n');
   },
+
+  async deps({ client, positional, repo, json }) {
+    const id = needId(positional);
+    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    const view = dependencyView(task);
+    const approved = (task.dependencies ?? []).map(dep => ({ name: dep.name, version: dep.version, dev: dep.dev === true, reason: dep.reason }));
+    const out = {
+      id: String(task.id), gate: view, peerProblem: hasPeerProblem(task), approved,
+      actions: { approveDependencies: task.actions?.approveDependencies === true, rejectDependencies: task.actions?.rejectDependencies === true }
+    };
+    if (json) return out;
+    const lines = [`وابستگی‌های تسک #${out.id}:`];
+    if (view) lines.push(...dependencyLines(task));
+    else lines.push('دروازه‌ی تأیید ِ وابستگی الان باز نیست.');
+    if (approved.length) lines.push(`تأییدشده: ${approved.map(dependencyLabel).join('، ')}`);
+    if (view) lines.push(out.peerProblem ? '⚠ peerها نمی‌خوانند؛ تأیید ممکن است نصب را با ERESOLVE بشکند. فقط با درخواست ِ صریح ِ کاربر تأیید کن.' : 'peerها خوانده شدند.', `تأیید: barsa approve-deps ${out.id} --reason "…" · رد: barsa reject-deps ${out.id} --reason "…" (reason به انگلیسی)`);
+    return lines.join('\n');
+  },
+
+  async attachments({ client, positional, repo, json }) {
+    const id = needId(positional);
+    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    const items = task.attachments?.items ?? [];
+    if (json) return { id: String(task.id), available: task.attachments !== undefined, items: items.map(({ path: _path, ...item }) => item) };
+    if (task.attachments === undefined) return `این Manager بلوک attachments را در status --json نمی‌دهد (قدیمی‌تر از TOOLING-050).`;
+    return [`تسک #${task.id}:`, ...attachmentLines(task.attachments)].join('\n');
+  },
+
+  async 'approve-deps'({ client, flags, positional, io, repo, json }) { return depsDecision({ client, flags, positional, io, repo, json }, 'approve'); },
+  async 'reject-deps'({ client, flags, positional, io, repo, json }) { return depsDecision({ client, flags, positional, io, repo, json }, 'reject'); },
 
   async recheck({ client, positional, repo, json }) {
     const id = needId(positional);
@@ -799,6 +843,21 @@ function needId(positional) {
   if (!id || positional.length > 1) throw usage('شناسه‌ی تسک لازم است (دقیقاً یکی).');
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) throw usage('شناسه‌ی تسک نامعتبر است.');
   return id;
+}
+
+/** approve-deps / reject-deps: reason اجباری؛ پیش‌سنجی از actions (exit 3)؛ Manager تصمیم ِ نهایی را می‌سنجد. */
+async function depsDecision({ client, flags, positional, io, repo, json }, mode) {
+  const id = needId(positional);
+  const reason = await reasonOf(flags, io, { required: true });
+  const label = `${mode}-deps`;
+  const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+  assertAllowed(task, mode === 'approve' ? 'approveDependencies' : 'rejectDependencies', label);
+  const { data } = await need(client, 'POST', `/api/repos/${enc(repo)}/tasks/${enc(id)}/${mode}-dependencies`, { body: { reason } });
+  if (json) return data;
+  const resumed = data.autoResumed ? (data.queued ? ' و در صف اجرا رفت' : data.started ? ' و اجرا شروع شد' : ' (اجرا از قبل در جریان/صف بود)') : '';
+  return mode === 'approve'
+    ? `تسک #${id}: وابستگی‌ها تأیید شد${resumed}. Manager در provisioning بعد از npm ci نصبشان می‌کند.`
+    : `تسک #${id}: وابستگی‌ها رد شد؛ تسک به Architect برگشت (بدون مصرف ِ budget)${resumed}.`;
 }
 
 /** { label, detail } ِ قفل برای نمایش (liveness ِ Manager؛ بدون آن از alive). */

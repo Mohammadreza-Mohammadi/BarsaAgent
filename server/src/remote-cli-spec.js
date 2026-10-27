@@ -5,10 +5,10 @@
 // نشست‌های `remote:*`، app.js) و تست‌ها (قالب settings.json، «بیرون از فهرست وجود ندارد»).
 
 /** فرمان‌های خواندنی: بدون تأیید روی گوشی. */
-export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options']);
+export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options', 'deps', 'attachments']);
 
 /** فرمان‌های نوشتنی: هر کدام روی گوشی تأیید می‌خواهد (`ask` در settings.json). */
-export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain']);
+export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'approve-deps', 'reject-deps', 'drain']);
 
 /**
  * فرمان‌هایی که یک شکل ِ فقط‌خواندنی هم دارند. قاعده‌ی ask در settings.json ترتیبش بر allow می‌چربد (deny ← ask ← allow)، پس
@@ -77,6 +77,8 @@ export const REMOTE_ENDPOINTS = Object.freeze([
   ['POST', '/api/repos/:repo/tasks/:id/note'],
   ['POST', '/api/repos/:repo/tasks/:id/raise-limit'],
   ['POST', '/api/repos/:repo/tasks/:id/unblock'],
+  ['POST', '/api/repos/:repo/tasks/:id/approve-dependencies'],
+  ['POST', '/api/repos/:repo/tasks/:id/reject-dependencies'],
   ['POST', '/api/repos/:repo/tasks/:id/runtime'],
   ['POST', '/api/repos/:repo/tasks/:id/allow-shared-knowledge-file'],
   ['POST', '/api/remote/tasks/:id/bundle'],
@@ -107,6 +109,10 @@ export const COMMAND_ENDPOINTS = Object.freeze({
   'answer --note': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/note']],
   'answer --raise-limit': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/raise-limit']],
   'answer --unblock': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/unblock']],
+  deps: [['GET', '/api/repos/:repo/tasks/:id']],
+  attachments: [['GET', '/api/repos/:repo/tasks/:id']],
+  'approve-deps': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/approve-dependencies']],
+  'reject-deps': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/reject-dependencies']],
   'answer --allow-shared-knowledge-file': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/allow-shared-knowledge-file']],
   artifact: [['GET', '/api/remote/tasks/:id/artifact']],
   diag: [['GET', '/api/remote/tasks/:id/diag'], ['GET', '/api/remote/diag/system']],

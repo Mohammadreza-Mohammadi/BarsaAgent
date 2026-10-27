@@ -15,6 +15,8 @@
       "Bash(./barsa runtime-options:*)",
       "Bash(./barsa sync --dry-run:*)",
       "Bash(./barsa sync --status:*)",
+      "Bash(./barsa deps:*)",
+      "Bash(./barsa attachments:*)",
       "Bash(./barsa drain --status:*)",
       "Bash(./barsa --help)",
       "Bash(./barsa help)"
@@ -27,6 +29,8 @@
       "Bash(./barsa answer:*)",
       "Bash(./barsa recover:*)",
       "Bash(./barsa recheck:*)",
+      "Bash(./barsa approve-deps:*)",
+      "Bash(./barsa reject-deps:*)",
       "Bash(./barsa set-runtime:*)",
       "Bash(./barsa retry-provision:*)",
       "Bash(./barsa retry-install:*)",

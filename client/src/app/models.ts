@@ -1,8 +1,43 @@
 export interface HumanGate {
-  kind: 'spec-approval' | 'clarification' | 'merge-approval' | string;
+  kind: 'spec-approval' | 'clarification' | 'merge-approval' | 'dependency-approval' | string;
   artifact?: string | null;
   since?: string | null;
 }
+
+// --- TOOLING-050: tests / پیوست / تأیید ِ وابستگی -----------------------------------------------------------
+
+/** Case ِ دستی از tests.md (چک‌لیست ِ انسانی در دروازه‌ی merge؛ هرگز attempt را نمی‌بندد). */
+export interface ManualCase { id: string; section: string | null; summary: string; typeSource?: string | null }
+/** null = tests.md نیست. autoCases فقط شناسه‌اند. problems: آنچه parser نفهمید. */
+export interface TestsInfo { format: 'canonical' | 'legacy' | 'mixed' | 'none' | string; autoCases: string[]; manualCases: ManualCase[]; problems: string[] }
+
+export interface AttachmentItem {
+  id: string; name: string; file: string; kind: 'image' | 'pdf' | 'text' | 'video' | string; ext: string; size: number; sha256: string; addedAt: string;
+  stage: string | null; source: string; reason: string; humanOnly: boolean; derivedFrom: string | null;
+  /** مسیر ِ مطلق روی ماشین ِ Manager؛ null اگر attachments.root تنظیم نیست. */
+  path: string | null;
+  /** false = فایل از دیسک رفته (پشتیبان را برگردان). */
+  exists: boolean;
+}
+export interface TaskAttachments { root: string | null; items: AttachmentItem[] }
+
+export interface DependencyPeerInfo { name: string; range: string; installed: string | null; satisfied: boolean | null; optional: boolean }
+export interface DependencyInfo {
+  known: boolean; error: string | null; version: string | null; license: string | null; hasInstallScript: boolean | null;
+  peerDependencies: Record<string, string>; peers: DependencyPeerInfo[]; peersOk: boolean | null;
+}
+export interface DependencyApprovalItem { name: string; version: string; dev: boolean; reason: string; info: DependencyInfo }
+/** فقط وقتی awaitingHuman.kind = dependency-approval؛ وگرنه null. */
+export interface DependencyApproval { version: number; attempt: string; requestedAt: string; peersOk: boolean | null; dependencies: DependencyApprovalItem[] }
+export interface ApprovedDependency { name: string; version: string; dev: boolean; reason: string }
+
+/** سیاست ِ پیوست از Manager (GET /api/attachments/policy). available=false: Manager قدیمی‌تر؛ فقط سقف ِ سرور اعمال می‌شود. */
+export interface AttachmentPolicy {
+  available: boolean; configured: boolean | null;
+  kinds: Record<string, { extensions: string[]; maxBytes: number }> | null; forbidden: string[] | null;
+  maxUploadBytes: number; maxFiles: number;
+}
+export interface StagedUpload { id: string; name: string; size: number; ext: string; kind: string | null }
 
 export interface BudgetItem { used: number; max: number }
 
@@ -140,6 +175,9 @@ export interface TaskActions {
   setRuntime?: boolean;
   /** TOOLING-048: سنجش ِ دوباره‌ی attempt ِ ردشده با گارد ِ Manager (یا خطای ابزار ِ نوشتن)؛ بدون agent و بدون مصرف ِ budget. */
   recheck?: boolean;
+  /** TOOLING-050 هـ: دروازه‌ی تأیید ِ وابستگی (answer --approve-dependencies / --reject-dependencies، با reason). */
+  approveDependencies?: boolean;
+  rejectDependencies?: boolean;
 }
 
 // --- TOOLING-046: provider / مدل / effort برای هر نقش ---------------------------------------------------
@@ -237,6 +275,14 @@ export interface Task {
   lastAttempt?: { n?: number; role?: string | null; outcome?: string | null; at?: string | null; runtime?: AttemptRuntime | null } | null;
   /** TOOLING-048: نقش ِ جاری و بعدی (از manifest)، در سطح ِ تسک؛ مقدار ِ خالی null. غایب = Manager قدیمی‌تر از ۰۴۸ (هیچ برجسته‌سازی). */
   roles?: { current: string | null; next: string | null } | null;
+  /** TOOLING-050 ب: Caseهای tests.md (دستی/خودکار) و مشکلات ِ parser؛ null = tests.md نیست؛ غایب = Manager قدیمی‌تر. */
+  tests?: TestsInfo | null;
+  /** TOOLING-050 د: پیوست‌ها (فایل‌ها بیرون از git، زیر attachments.root ِ Manager). */
+  attachments?: TaskAttachments | null;
+  /** TOOLING-050 هـ: فقط وقتی دروازه باز است؛ وگرنه null. */
+  dependencyApproval?: DependencyApproval | null;
+  /** وابستگی‌های ِ تأییدشده (manifest.dependencies.add). */
+  dependencies?: ApprovedDependency[];
   /** TOOLING-046: runtime ِ ذخیره‌شده، مؤثر (با منبع)، تغییرهای در صف. غایب = Manager قدیمی‌تر از ۰۴۶. */
   runtime?: TaskRuntime | null;
   attempts?: Attempt[];
@@ -342,6 +388,8 @@ export interface CreateTaskDraft {
   runtime?: { preset: string; roles: Record<string, RuntimeSelection> };
   /** TOOLING-044: import ِ تکراری ِ عمدی (دلیل اجباری). */
   allowDuplicate?: { reason: string };
+  /** TOOLING-050: آپلودهای موقت؛ به سرور فقط شناسه‌ها می‌روند (import-issue --attach). */
+  attachments?: StagedUpload[];
 }
 
 export interface CreateTaskResult {
