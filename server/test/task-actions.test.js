@@ -174,8 +174,8 @@ test('نگهبان قالب: دکمه‌های کارت از opsButtons می‌�
   for (const k of ['approve', 'reject', 'clarify']) assert.match(html, new RegExp(`can\\(t, '${k}'\\)`), k);
 });
 
-test('resume ِ خودکار فقط برای approve/reject/clarify (سیاست مستند)', () => {
-  assert.deepEqual([...AUTO_RESUME_ACTIONS], ['approve', 'reject', 'clarify']);
+test('resume ِ خودکار فقط برای approve/reject/clarify و تصمیم‌های دروازه‌ی وابستگی (سیاست مستند)', () => {
+  assert.deepEqual([...AUTO_RESUME_ACTIONS], ['approve', 'reject', 'clarify', 'approveDependencies', 'rejectDependencies']);
 });
 
 // --- TOOLING-038: actions.raiseLimit فهرست است (actionsVersion: 2) ----------------------------------------

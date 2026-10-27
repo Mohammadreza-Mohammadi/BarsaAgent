@@ -1,7 +1,8 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpEvent, HttpParams } from '@angular/common/http';
+import { Observable } from 'rxjs';
 import {
-  AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, CreateTasksResponse, DrainStatus, EnvHealthReport, RecheckResult,
+  AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, AttachmentPolicy, CreateTasksResponse, DrainStatus, EnvHealthReport, RecheckResult, StagedUpload,
   ExecInfo, GitInventory, GitStatus, HealthResult, Issue, ManagerInfoView, Repo, RunRecord, RunningTask, RuntimeOptions, StopResult, Task
 } from './models';
 
@@ -26,7 +27,7 @@ export class ApiService {
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/open-editor`, {}
   );
   run = (repo: string, id: string) => this.http.post<{ accepted: boolean; queued?: boolean; queuePosition?: number | null }>(`/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/run`, {});
-  answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect'; respec?: boolean; releaseNoteText?: string; noReleaseNote?: boolean; externalAccess?: { sourceId: string; access: 'read' | 'write' } }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
+  answer = (repo: string, id: string, body: { mode: string; reason?: string; text?: string; route?: 'implementer' | 'architect'; respec?: boolean; releaseNoteText?: string; noReleaseNote?: boolean; externalAccess?: { sourceId: string; access: 'read' | 'write' }; attachments?: string[] }) => this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/answer`, body
   );
   // الحاقیه‌ی ۱، بند ب: فقط وقتی actions.canStageExternal === true (از
@@ -39,8 +40,8 @@ export class ApiService {
   externalCheckedIn = (repo: string, id: string, body: { sourceId: string; changesets: string[] }) => this.http.post<{ ok: boolean }>(
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/external-checked-in`, body
   );
-  note = (repo: string, id: string, text: string) => this.http.post<{ ok: boolean }>(
-    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/note`, { text }
+  note = (repo: string, id: string, text: string, attachments?: string[]) => this.http.post<{ ok: boolean }>(
+    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/note`, { text, ...(attachments?.length ? { attachments } : {}) }
   );
   voidTask = (repo: string, id: string, reason: string) => this.http.post<{ ok: boolean }>(
     `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/void`, { reason }
@@ -93,6 +94,21 @@ export class ApiService {
   retryProvision = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`/api/remote/tasks/${encodeURIComponent(id)}/retry-provision`, { reason }, { params: new HttpParams().set('repo', repo) });
   /** recover (process-attempt | discard-residue؛ مورد ِ دوم دلیل می‌خواهد). */
   recoverTask = (repo: string, id: string, body: { discardResidue?: boolean; reason?: string }) => this.http.post<{ ok: boolean; mode: string; output: string[] }>(`/api/remote/tasks/${encodeURIComponent(id)}/recover`, body, { params: new HttpParams().set('repo', repo) });
+  // --- TOOLING-050: پیوست ِ فایل و تأیید ِ وابستگی ---
+  attachmentPolicy = (repo: string) => this.http.get<AttachmentPolicy>('/api/attachments/policy', { params: new HttpParams().set('repo', repo) });
+  /** آپلود ِ موقت (بدنه‌ی خام؛ سقف و پسوند را سرور و Manager می‌سنجند). پیشرفت ِ آپلود هم گزارش می‌شود. */
+  uploadFile = (repo: string, file: Blob, name: string): Observable<HttpEvent<StagedUpload>> =>
+    this.http.post<StagedUpload>('/api/uploads', file, { params: new HttpParams().set('repo', repo).set('name', name), headers: { 'Content-Type': 'application/octet-stream' }, observe: 'events', reportProgress: true });
+  discardUpload = (id: string) => this.http.delete<{ ok: boolean }>(`/api/uploads/${encodeURIComponent(id)}`);
+  attachFiles = (repo: string, id: string, uploads: string[]) =>
+    this.http.post<{ ok: boolean; added: string[]; failed: Array<{ name: string; error: string }> }>(`${this.taskPath(repo, id)}/attach`, { uploads });
+  attachmentUrl = (repo: string, id: string, attachmentId: string, download = false) =>
+    `${this.taskPath(repo, id)}/attachments/${encodeURIComponent(attachmentId)}/file${download ? '?download=1' : ''}`;
+  approveDependencies = (repo: string, id: string, reason: string) =>
+    this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(`${this.taskPath(repo, id)}/approve-dependencies`, { reason });
+  rejectDependencies = (repo: string, id: string, reason: string) =>
+    this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(`${this.taskPath(repo, id)}/reject-dependencies`, { reason });
+
   /** TOOLING-048: `manager.js recheck <id>` — بدون agent و بدون مصرف ِ budget؛ نتیجه‌ی رویداد attempt.rechecked برمی‌گردد. */
   recheckTask = (repo: string, id: string) => this.http.post<RecheckResult>(`/api/remote/tasks/${encodeURIComponent(id)}/recheck`, {}, { params: new HttpParams().set('repo', repo) });
   retryRebase = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`${this.taskPath(repo, id)}/retry-rebase`, { reason });

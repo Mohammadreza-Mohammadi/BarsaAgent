@@ -10,7 +10,7 @@ import type { Task } from './models';
 export type BooleanAction =
   | 'approve' | 'reject' | 'clarify' | 'note' | 'unblock'
   | 'allowPath' | 'allowSharedKnowledgeFile' | 'cancel' | 'abandon' | 'void' | 'unlock'
-  | 'recover' | 'recheck' | 'retryProvision' | 'retryInstall' | 'setRuntime';
+  | 'recover' | 'recheck' | 'retryProvision' | 'retryInstall' | 'setRuntime' | 'approveDependencies' | 'rejectDependencies';
 
 /** اکشن‌های «فهرستی»: آرایه‌ی غیرخالی = مجاز (عنصرها: attempt، منبع یا فیلد سقف). */
 export type ListAction = 'closeOrphan' | 'externalAccess' | 'resetExternal' | 'raiseLimit';
@@ -31,7 +31,7 @@ export function hasActions(task: Pick<Task, 'actions'> | null | undefined): bool
 
 /** یکی از سه اکشن گیت انسانی مجاز است؟ (برای دکمه‌ی «اقدام» روی کارت.) */
 export function canAnswerGate(task: Pick<Task, 'actions'> | null | undefined): boolean {
-  return can(task, 'approve') || can(task, 'reject') || can(task, 'clarify');
+  return can(task, 'approve') || can(task, 'reject') || can(task, 'clarify') || can(task, 'approveDependencies') || can(task, 'rejectDependencies');
 }
 
 /** هر اکشن مجاز (برای تصمیم «پنل اکشن‌ها اصلاً چیزی دارد؟»). */
@@ -96,7 +96,7 @@ export const ACTION_PLACEMENT: Readonly<Record<BooleanAction | ListAction, 'ops'
   approve: 'gate', reject: 'gate', clarify: 'gate', note: 'tools',
   unblock: 'ops', raiseLimit: 'ops', closeOrphan: 'ops', allowPath: 'ops', allowSharedKnowledgeFile: 'ops',
   externalAccess: 'ops', resetExternal: 'ops', cancel: 'ops', abandon: 'ops', void: 'ops', unlock: 'ops',
-  recover: 'ops', recheck: 'ops', retryProvision: 'ops', retryInstall: 'ops', setRuntime: 'runtime'
+  recover: 'ops', recheck: 'ops', retryProvision: 'ops', retryInstall: 'ops', setRuntime: 'runtime', approveDependencies: 'gate', rejectDependencies: 'gate'
 };
 
 /**
@@ -178,7 +178,7 @@ export function renderedActionKeys(task: Pick<Task, 'actions'> | null | undefine
  * معمولاً چند تا را پشت‌سرهم می‌زند و بعد خودش اجرا می‌کند. تنها استثنا «دوباره امتحان کن» ِ rebase-conflict است که
  * اسمش و پنجره‌ی تأییدش صریحاً می‌گوید unblock + run.
  */
-export const AUTO_RESUME_ACTIONS: readonly string[] = ['approve', 'reject', 'clarify'];
+export const AUTO_RESUME_ACTIONS: readonly string[] = ['approve', 'reject', 'clarify', 'approveDependencies', 'rejectDependencies'];
 
 /**
  * اکشن‌هایی که **خودشان** unblock + run هستند (فرمان ِ ثبت‌شده‌ی Manager): «دوباره امتحان کن» ِ rebase-conflict و ِ provisioning.
