@@ -223,6 +223,7 @@ nssm remove BarsaAgent confirm
 | `outputs/<id>.log` | خروجی کامل هر اجرا (با زمان) |
 | `users.json` | کاربران و hash ِ گذرواژه (scrypt) |
 | `isolation-proofs.json` | آخرین نتیجه‌ی «آزمون جداسازی» هر شاخه و commit |
+| `uploads\<uuid>\<نام>` + `uploads\<uuid>.json` | **آپلود ِ موقت ِ پیوست‌ها** (پایین)؛ بعد از `attach`/`--attach` پاک می‌شود، وگرنه بعد از ۲ ساعت (و هنگام ِ شروع) |
 
 - از کل پوشه بک‌آپ بگیر. `audit.jsonl` را هرگز ویرایش نکن؛ برای آرشیو، سرویس را stop کن، فایل را به یک پوشه‌ی آرشیو
   منتقل کن و دوباره start کن.
@@ -274,3 +275,26 @@ nssm remove BarsaAgent confirm
 - [ ] `npm run user:list` فقط حساب‌های لازم را نشان می‌دهد
 - [ ] `dataDir` بیرون از مخزن‌ها و فقط برای حساب سرویس قابل نوشتن است
 - [ ] صفحه‌ی «سلامت محیط» کاملاً سبز است
+
+### پیوست ِ فایل (TOOLING-050 د)
+
+- **پیش‌نیاز در Manager:** `attachments.root` را **فقط** در `.agent-work/config/repository.local.yaml` ِ همین دستگاه بگذار (بیرون از git؛ پشتیبان بگیر)، مثلاً
+  `attachments: { root: "D:/barsa-agent-data/attachments" }`. بدون آن `attach` / `--attach` با پیام ِ روشن رد می‌شود و پیش‌نمایش/دانلود هم نیست.
+  فهرست ِ مجاز ِ پسوند و سقف ِ اندازه‌ی هر نوع (`attachments.kinds`) را خود ِ Manager دارد؛ کانبان همان را (فقط‌خواندنی) از
+  `scripts/lib/attachments.js` می‌خواند و پیش از آپلود می‌سنجد. تصمیم ِ نهایی همیشه با Manager است.
+- **مسیر ِ آپلود:** مرورگر فایل را با `POST /api/uploads` (بدنه‌ی خام، نه base64) می‌فرستد ← کانبان در `<dataDir>\uploads\<uuid>\` می‌گذارد ←
+  Manager را با `attach <id> --file … --name … --reason "added from Kanban console"` (تسک ِ موجود) یا `--attach <مسیر>` (ساخت با `import-issue`،
+  `answer --note`، `answer --clarify`) صدا می‌زند ← فایل ِ موقت پاک می‌شود. **کانبان هرگز در `attachments.root` نمی‌نویسد**؛ Manager صاحب ِ آن است
+  (کپی، sha256، `attachments.json`، commit). پیش‌نمایش/دانلود فقط از مسیری است که Manager در `status` می‌دهد و بعد از `realpath` باید زیر
+  `<root>\<taskId>\` باشد؛ فقط تصویر inline نشان داده می‌شود (`nosniff` + CSP ِ sandbox)، بقیه دانلود.
+- **سقف‌ها:** (۱) هر فایل: کمینه‌ی «سقف ِ نوع در Manager» (پیش‌فرض: تصویر ۱۰MB، PDF ۲۵MB، متن ۲MB، ویدیو ۲۰۰MB) و `attachments.maxUploadBytes`
+  ِ کانبان (پیش‌فرض ۲۰۰MB)؛ سقف هنگام ِ دریافت اعمال می‌شود (بایت‌شماری در جریان، نه بعد از ذخیره)؛ (۲) `attachments.maxFiles` (پیش‌فرض ۲۰) فایل در هر
+  درخواست و هر کاربر ۲۰ آپلود ِ مصرف‌نشده؛ (۳) پسوندهای اجرایی/اسکریپت/`.svg`/`.html` را **هیچ config ای** مجاز نمی‌کند (فهرست ِ Manager).
+  آپلود از گوشی (Remote Control) نیست؛ `barsa attachments <id>` فقط فهرست می‌دهد.
+
+```yaml
+# barsa-agent.config.yml (همه اختیاری)
+attachments:
+  maxUploadBytes: 209715200   # سقف ِ هر فایل در سرور (بایت)؛ سقف ِ نوع در Manager هم جدا اعمال می‌شود
+  maxFiles: 20                # حداکثر پیوست در یک درخواست
+```
