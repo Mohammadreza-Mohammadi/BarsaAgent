@@ -260,7 +260,7 @@ test('همه‌ی اکشن‌های شناخته‌شده‌ی Manager در جد
   assert.ok(MANAGER_ACTION_KEYS.includes('setRuntime') && MANAGER_ACTION_KEYS.includes('retryProvision'));
   for (const key of MANAGER_ACTION_KEYS) {
     assert.ok(KNOWN_ACTION_KEYS.includes(key), `${key} در ACTION_PLACEMENT نیست`);
-    assert.ok(['ops', 'gate', 'tools', 'runtime'].includes(ACTION_PLACEMENT[key]), key);
+    assert.ok(['ops', 'gate', 'tools', 'runtime', 'run'].includes(ACTION_PLACEMENT[key]), key); // 'run' = دکمه‌ی «اجرا / ادامه» (فقط actions.run)
   }
   // هر کلید ِ فعال ِ شناخته‌شده یک رندر دارد (دکمه‌ی ops/gate/tools یا بخش ِ «مدل‌ها»)
   for (const key of MANAGER_ACTION_KEYS) {

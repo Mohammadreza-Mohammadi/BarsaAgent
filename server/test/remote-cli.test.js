@@ -7,6 +7,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import { startAuthedServer } from './helpers.js';
+import { waitUntil } from './cleanup.js';
 import { makeFakeManagerRepo } from './fake-manager.js';
 import { AuditLog } from '../src/audit.js';
 import { RemoteTokenStore } from '../src/remote-tokens.js';
@@ -327,7 +328,7 @@ test('task <id>: وضعیت، actions، blocker، بازبینی، release note�
   assert.match(blocked.out, /blocker: budget-exhausted — سقف implementerRuns پر شد/);
   assert.match(blocked.out, /raiseLimit\[implementerRuns,maxAttempts\]/);
   const json = (await s.cli(['task', '7', '--json'])).json();
-  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'roles', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'runtime', 'attempts', 'manualCases', 'testsWarning', 'attachments', 'dependencyGate', 'waiting']);
+  assert.deepEqual(Object.keys(json), ['id', 'title', 'state', 'stateSince', 'gate', 'running', 'actions', 'roles', 'blocker', 'health', 'review', 'releaseNote', 'diff', 'externalSources', 'budget', 'runtime', 'attempts', 'manualCases', 'testsWarning', 'attachments', 'dependencyGate', 'run', 'spdd', 'needsHuman', 'externalChangesets', 'waiting']);
   assert.equal(json.actions.approve, true);
   assert.equal((await s.cli(['task', '999'])).code, EXIT.REJECTED, 'تسک ناموجود = رد');
   assert.equal((await s.cli(['task'])).code, EXIT.USAGE);
@@ -938,4 +939,166 @@ test('diag: رویدادهای ۰۵۰ متن ِ کوتاه ِ فارسی دار�
   assert.match(out, /منبع بیرونی با sync عوض شد \(به حساب agent نیست\) · منبع بیرونی «webiii» در طول attempt 003 با sync ِ tf-get \(تسک 12\) عوض شد — به حساب agent گذاشته نشد/);
   assert.match(out, /وابستگی نصب شد · echarts@5\.5\.0 · commit abcdef12/);
   assert.match(out, /ویرایش ِ دستی ِ محلی: نامعلوم/);
+});
+
+// --- ۰۵۱: actions.run، reevaluate-review، changeset، needs-human، SPDD ----------------------------------------------------------------
+
+const task051 = (id, extra = {}) => ({ id: String(id), title: `تسک ${id}`, state: 'implementing', stateSince: '2026-10-28T08:00:00Z', awaitingHuman: null, blocker: null, actions: { ...NO_ACTIONS }, ...extra });
+const webiii = (patch = {}) => ({ id: 'webiii', access: 'write', delivery: 'apply', staged: null, checkedIn: { changesets: ['C17792'], at: '2026-10-17T13:44:38.594Z' }, declaredChangesets: ['17792'], diff: null, actions: { canStageExternal: false, canMarkCheckedIn: false, canDeclareChangeset: true }, ...patch });
+const STATUS_051 = {
+  ...STATUS,
+  tasks: [
+    task051(61, { actions: { ...NO_ACTIONS, run: true, reevaluateReview: false } }),
+    task051(62, { state: 'ready', actions: { ...NO_ACTIONS, run: false }, runBlocked: { code: 'awaiting-human', reason: 'منتظر ِ تصمیم ِ انسان است؛ اول جواب بده.' } }),
+    task051(63, { actions: { ...NO_ACTIONS, run: false }, runBlocked: { code: 'execution-disabled', reason: 'اجرا روی این دستگاه خاموش است.' } }),
+    task051(64), // Manager ِ قدیمی: بدون actions.run
+    task051(65, {
+      state: 'blocked', previousState: 'review', blocker: { kind: 'needs-human', stage: 'reviewer-clarification', attempt: '004', detail: 'آیا TC-R1 را باید انسان بسنجد؟' },
+      actions: { ...NO_ACTIONS, run: false, unblock: true, note: true }, runBlocked: { code: 'blocked', reason: 'تسک blocked است.' }
+    }),
+    task051(66, {
+      state: 'blocked', previousState: 'rejected', blocker: { kind: 'needs-human', stage: 'rejection-loop', detail: 'Reviewer دو بار پشت‌سرهم (attempt 005 و 006) با ِ همان مشکل رد کرد (AC-1، TC-R2).' },
+      actions: { ...NO_ACTIONS, run: false, unblock: true, note: true, reevaluateReview: true }, runBlocked: { code: 'blocked', reason: 'تسک blocked است.' }
+    }),
+    task051(67, { state: 'integrated', externalSources: [webiii()], spdd: [{ project: 'barsa-sap-ui', code: 'BSUI-026', number: 26, slug: 'feature-x', dir: 'ai-context/spdd/barsa-sap-ui/BSUI-026-feature-x' }] }),
+    task051(68, { state: 'integrated', externalSources: [webiii({ declaredChangesets: [], checkedIn: { changesets: [], at: null }, actions: { canStageExternal: false, canMarkCheckedIn: false, canDeclareChangeset: false } })] }),
+    task051(69, { state: 'blocked', blocker: { kind: 'environment', detail: 'خطای محیط' }, actions: { ...NO_ACTIONS, unblock: true } })
+  ]
+};
+
+test('run: پیش‌سنجی فقط از actions.run (3 با reason ِ Manager؛ execution-disabled = 41؛ Manager ِ قدیمی بدون کلید = رفتار ِ قبلی)؛ هیچ درخواستی برای رد نمی‌رود', async t => {
+  const s = await boot(t, { status: STATUS_051 });
+  const blocked = await s.cli(['run', '62']);
+  assert.equal(blocked.code, EXIT.NOT_ALLOWED);
+  assert.match(blocked.err, /اجرای تسک #62 ممکن نیست — منتظر ِ تصمیم ِ انسان است؛ اول جواب بده\. \(awaiting-human\)/);
+  const off = await s.cli(['run', '63']);
+  assert.equal(off.code, EXIT.EXECUTION_OFF);
+  assert.match(off.err, /اجرا روی این دستگاه خاموش است/);
+  assert.equal(s.fake.mutations().filter(c => c.args[0] === 'run').length, 0, 'برای ِ رد هیچ run ای به Manager نرسید');
+  assert.equal(s.fake.calls().filter(c => c.args[0] === 'run').length, 0);
+
+  const ok = await s.cli(['run', '61']);
+  assert.equal(ok.code, 0, ok.err);
+  assert.equal((await s.cli(['run', '64'])).code, 0, 'Manager ِ قدیمی (بدون actions.run): مثل ِ قبل');
+  await waitUntil(() => s.fake.calls().filter(c => c.args[0] === 'run').length >= 2, { label: 'دو run' });
+  await s.waitIdle();
+});
+
+test('task: خط ِ «اجرا: ممکن / ممکن نیست — reason» و story ِ SPDD؛ Manager ِ قدیمی بدون خط ِ اجرا؛ json', async t => {
+  const s = await boot(t, { status: STATUS_051 });
+  assert.match((await s.cli(['task', '61'])).out, /^اجرا: ممکن$/m);
+  assert.match((await s.cli(['task', '62'])).out, /^اجرا: ممکن نیست — منتظر ِ تصمیم ِ انسان است؛ اول جواب بده\.$/m);
+  assert.doesNotMatch((await s.cli(['task', '64'])).out, /^اجرا:/m, 'Manager ِ قدیمی: خط ِ اجرا نیست، بدون خطا');
+  const story = (await s.cli(['task', '67'])).out;
+  assert.match(story, /^story: BSUI-026 \(feature-x\) — ai-context\/spdd\/barsa-sap-ui\/BSUI-026-feature-x$/m);
+  assert.doesNotMatch((await s.cli(['task', '61'])).out, /story:/);
+  const json = (await s.cli(['task', '62', '--json'])).json();
+  assert.deepEqual(json.run, { allowed: false, code: 'awaiting-human', reason: 'منتظر ِ تصمیم ِ انسان است؛ اول جواب بده.' });
+  assert.equal((await s.cli(['task', '64', '--json'])).json().run, null);
+  assert.equal((await s.cli(['task', '67', '--json'])).json().spdd[0].code, 'BSUI-026');
+});
+
+test('needs-human: کارت/خروجی «منتظر ِ انسان» با راهنما؛ در tasks --waiting و waiting می‌آید (نه blocked ِ فنی)؛ diag همین را نشان می‌دهد', async t => {
+  const s = await boot(t, { status: STATUS_051 });
+  const clarification = (await s.cli(['task', '65'])).out;
+  assert.match(clarification, /⏳ Reviewer سؤال دارد \(منتظر ِ انسان، نه خطای فنی\):/);
+  assert.match(clarification, /آیا TC-R1 را باید انسان بسنجد؟/);
+  assert.match(clarification, /جواب: barsa answer 65 --note --stdin {2}← بعد: barsa answer 65 --unblock/);
+  assert.doesNotMatch(clarification, /^blocker: needs-human/m, 'به‌عنوان blocker ِ فنی چاپ نمی‌شود');
+
+  const loop = (await s.cli(['task', '66'])).out;
+  assert.match(loop, /⏳ Reviewer دو بار پشت‌سرهم با همان مشکل رد کرد/);
+  assert.match(loop, /barsa reevaluate-review 66 --reason/, 'actions.reevaluateReview درست است');
+  assert.doesNotMatch(clarification, /reevaluate-review/, 'بدون actions.reevaluateReview پیشنهاد نمی‌شود');
+  assert.equal((await s.cli(['task', '66', '--json'])).json().needsHuman.stage, 'rejection-loop');
+  assert.match((await s.cli(['task', '69'])).out, /^blocker: environment — خطای محیط$/m, 'blocker ِ فنی مثل قبل');
+
+  const waiting = (await s.cli(['tasks', '--waiting', '--json'])).json();
+  assert.deepEqual(waiting.tasks.map(x => x.id).sort(), ['65', '66']);
+  assert.deepEqual(waiting.tasks.find(x => x.id === '65').gate, { kind: 'needs-human', since: '2026-10-28T08:00:00Z', stage: 'reviewer-clarification' });
+  assert.deepEqual((await s.cli(['waiting', '--json'])).json().tasks.map(x => x.id).sort(), ['65', '66']);
+  assert.deepEqual((await s.cli(['waiting', '--since', '2030-01-01T00:00:00Z', '--json'])).json().tasks, []);
+
+  const diag = (await s.cli(['diag', '66'])).out;
+  assert.match(diag, /── blocker: منتظر ِ انسان \(needs-human\)/);
+  assert.match(diag, /AC\/Case|Reviewer دو بار پشت‌سرهم/);
+  assert.match(diag, /barsa reevaluate-review 66/);
+  assert.match(diag, /^اجرا: ممکن نیست — تسک blocked است\. \(blocked\)$/m);
+});
+
+test('reevaluate-review: reason اجباری (2)، پیش‌سنجی از actions (3)، reason از فایل ِ موقت؛ run ِ خودکار ندارد', async t => {
+  const s = await boot(t, { status: STATUS_051 });
+  assert.equal((await s.cli(['reevaluate-review', '66'])).code, EXIT.USAGE);
+  assert.equal((await s.cli(['reevaluate-review', '66', '--reason', 'x', '--stdin'])).code, EXIT.USAGE);
+  assert.equal((await s.cli(['reevaluate-review', '65', '--reason', 'x'])).code, EXIT.NOT_ALLOWED);
+  assert.equal((await s.cli(['reevaluate-review', '64', '--reason', 'x'])).code, EXIT.NOT_ALLOWED, 'Manager ِ قدیمی (کلید نیست)');
+  assert.equal(s.fake.mutations().filter(c => c.args[0] === 'answer').length, 0);
+
+  const ok = await s.cli(['reevaluate-review', '66', '--reason', 'tool-only rejections; TC-R2 is manual']);
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.out, /review بدون اجرای Implementer دوباره سنجیده شد/);
+  const call = s.fake.mutations().filter(c => c.args[0] === 'answer').at(-1);
+  assert.deepEqual(call.args.slice(0, 4), ['answer', '66', '--reevaluate-review', '--reason-file']);
+  assert.equal(call.args.length, 5);
+  assert.equal(s.fake.files().at(-1).text, 'tool-only rejections; TC-R2 is manual');
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(s.fake.calls().filter(c => c.args[0] === 'run').length, 0, 'Implementer اجرا نمی‌شود و run ِ خودکار هم نیست');
+  const rows = s.audit().summaries({ action: 'reevaluate-review', limit: 5 });
+  assert.ok(rows.length >= 1 && rows.every(row => row.user === 'remote:remote-phone'));
+
+  const direct = await jsonPost(s.base, '/api/repos/fake/tasks/66/reevaluate-review', s.token, {});
+  assert.equal(direct.status, 400, 'بدون reason در سرور هم رد');
+});
+
+test('changeset: شکل ِ ورودی (2)، پیش‌سنجی از canDeclareChangeset (3)، فرمان ِ دقیق ِ Manager با --reason-file و --replace؛ هر منبع ِ ناموجود (3)', async t => {
+  const s = await boot(t, { status: STATUS_051 });
+  assert.equal((await s.cli(['changeset', '67', 'webiii', '17800'])).code, EXIT.USAGE, 'بدون reason');
+  assert.equal((await s.cli(['changeset', '67', 'webiii', 'abc', '--reason', 'x'])).code, EXIT.USAGE, 'شماره‌ی نامعتبر');
+  assert.equal((await s.cli(['changeset', '67', 'we$b', '17800', '--reason', 'x'])).code, EXIT.USAGE, 'نام ِ منبع ِ نامعتبر');
+  assert.equal((await s.cli(['changeset', '67', 'webiii'])).code, EXIT.USAGE);
+  assert.equal((await s.cli(['changeset', '68', 'webiii', '17800', '--reason', 'x'])).code, EXIT.NOT_ALLOWED, 'canDeclareChangeset=false');
+  assert.equal((await s.cli(['changeset', '67', 'nosuch', '17800', '--reason', 'x'])).code, EXIT.NOT_ALLOWED, 'منبع ِ ناموجود');
+  assert.equal(s.fake.mutations().filter(c => c.args[0] === 'answer').length, 0, 'Manager اصلاً صدا زده نشد');
+
+  const ok = await s.cli(['changeset', '67', 'webiii', '17800, C17803', '--reason', 'Checked in later as C17800 and C17803', '--replace']);
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.out, /changeset ِ «webiii» ثبت شد: C17800، C17803 \(قبلی: C17792، جایگزین شد\)/);
+  const call = s.fake.mutations().filter(c => c.args[0] === 'answer').at(-1);
+  assert.deepEqual(call.args.slice(0, 6), ['answer', '67', '--external-changeset', 'webiii', 'C17800,C17803', '--reason-file']);
+  assert.deepEqual(call.args.slice(7), ['--replace']);
+  assert.equal(s.fake.files().at(-1).text, 'Checked in later as C17800 and C17803');
+
+  const plain = await s.cli(['changeset', '67', 'webiii', 'C17900', '--stdin'], { stdin: 'because\nمتن' });
+  assert.equal(plain.code, 0, plain.err);
+  const plainCall = s.fake.mutations().filter(c => c.args[0] === 'answer').at(-1);
+  assert.equal(plainCall.args.includes('--replace'), false);
+  assert.equal(plainCall.args[4], 'C17900');
+
+  // سرور ِ مستقیم: ورودی ِ بد ← 400 و Manager صدا نمی‌خورد
+  const before = s.fake.mutations().length;
+  for (const body of [{ changesets: '17800', reason: 'x' }, { sourceId: 'webiii', changesets: 'bad', reason: 'x' }, { sourceId: 'webiii', changesets: '17800', reason: ' ' }, { sourceId: 'we;b', changesets: '17800', reason: 'x' }]) {
+    assert.equal((await jsonPost(s.base, '/api/repos/fake/tasks/67/external-changeset', s.token, body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal(s.fake.mutations().length, before);
+
+  // task: changeset ِ مؤثر و راهنمای ِ فرمان؛ ثبت‌نشده با canDeclare=false خط ندارد
+  const text = (await s.cli(['task', '67'])).out;
+  assert.match(text, /changeset ِ «webiii»: C17792 — barsa changeset 67 webiii <C…> --reason "…" \[--replace\]/);
+  assert.doesNotMatch((await s.cli(['task', '68'])).out, /changeset ِ/);
+  assert.deepEqual((await s.cli(['task', '67', '--json'])).json().externalChangesets, [{ id: 'webiii', declared: ['C17792'], canDeclare: true }]);
+});
+
+test('diag: رویدادهای ۰۵۱ متن ِ کوتاه ِ فارسی دارند', async t => {
+  const s = await boot(t, { status: STATUS_051 });
+  s.fake.setEvents([
+    { at: '2026-10-28T08:01:00Z', event: 'baseline.lint-debt-in-scope', totalErrors: 3, files: [{ file: 'a.ts', errors: [] }], budgetConsumed: 'none' },
+    { at: '2026-10-28T08:02:00Z', event: 'base.refreshed', oldBase: 'aaaaaaaa11112222', newBase: 'bbbbbbbb33334444', installInputsChanged: false },
+    { at: '2026-10-28T08:03:00Z', event: 'review.re-evaluated', attempt: '004', manualCases: ['TC-R1'], implementerRan: false, reason: 'tool-only' },
+    { at: '2026-10-28T08:04:00Z', event: 'budget.refunded', field: 'implementerRuns', amount: 1, from: 0, to: 1 }
+  ]);
+  const out = (await s.cli(['diag', '66'])).out;
+  assert.match(out, /بدهی ِ lint ِ داخل scope به Implementer داده شد · خطاهای lint ِ از قبل موجود در فایل‌های داخل scope به کار ِ Implementer اضافه شد \(3 خطا در 1 فایل\)/);
+  assert.match(out, /worktree به base ِ تازه رفت · worktree به base ِ تازه رفت: aaaaaaaa → bbbbbbbb/);
+  assert.match(out, /review بدون اجرای Implementer دوباره سنجیده شد · attempt 004 · Implementer اجرا نشد · Case ِ دستی: TC-R1 · tool-only/);
+  assert.match(out, /budget ِ سوخته برگشت · implementerRuns: 0 → 1 \(1 برگشت\)/);
 });

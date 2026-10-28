@@ -221,3 +221,150 @@ test('رابط کاربری: picker (انتخاب/کشیدن/Ctrl+V)، بخش پ
   assert.match(appTs, /extrasEventText\(e\)/);
   assert.match(appTs, /attachments: item\.attachments\?\.map\(upload => upload\.id\)/, 'به سرور فقط شناسه‌ها می‌رود');
 });
+
+// --- TOOLING-051 ------------------------------------------------------------------------------------------------------
+
+test('actions.run: تنها منبع ِ «می‌شود اجرا کرد»؛ reason ِ Manager؛ Manager ِ قدیمی (بدون کلید) ← null؛ هر دو نسخه یکی', () => {
+  const blocked = { actions: { run: false }, runBlocked: { code: 'awaiting-human', reason: 'منتظر ِ تصمیم ِ انسان است — اول جواب بده.' } };
+  const fixtures = [
+    { actions: { run: true } }, blocked, { actions: { run: false } },
+    { actions: { approve: true } }, // Manager ِ قدیمی: کلید ِ run نیست
+    {}, null, { actions: null }
+  ];
+  for (const t of fixtures) {
+    assert.deepEqual(view.runInfo(t), ts.runInfo(t));
+    assert.equal(view.runLine(t), ts.runLine(t));
+  }
+  assert.deepEqual(ts.runInfo({ actions: { run: true } }), { allowed: true, code: null, reason: null });
+  assert.deepEqual(ts.runInfo(blocked), { allowed: false, code: 'awaiting-human', reason: 'منتظر ِ تصمیم ِ انسان است — اول جواب بده.' });
+  assert.equal(ts.runInfo({ actions: { run: false } }).reason, 'Manager دلیلی برای ِ ممکن‌نبودن ِ اجرا نداد', 'بدون runBlocked هم بی‌خطا');
+  assert.equal(ts.runInfo({ actions: { approve: true } }), null, 'Manager ِ قدیمی ← رفتار ِ قبلی');
+  assert.equal(ts.runLine({ actions: { run: true } }), 'اجرا: ممکن');
+  assert.equal(ts.runLine(blocked), 'اجرا: ممکن نیست — منتظر ِ تصمیم ِ انسان است — اول جواب بده.');
+  assert.equal(ts.runLine({}), null);
+});
+
+test('story ِ SPDD، changeset ِ مؤثر (با پیشوند C و ورودی ِ کاربر)، و هشدار ِ «ثبت نشده»', () => {
+  const task = { spdd: [{ project: 'barsa-sap-ui', code: 'BSUI-026', number: 26, slug: 'feature-x', dir: 'ai-context/spdd/barsa-sap-ui/BSUI-026-feature-x' }, { code: 7 }] };
+  assert.deepEqual(view.spddStories(task), ts.spddStories(task));
+  assert.equal(ts.spddStories(task).length, 1, 'ورودی ِ ناقص نادیده');
+  assert.equal(ts.spddText(ts.spddStories(task)[0]), 'story: BSUI-026 (feature-x)');
+  assert.deepEqual(ts.spddStories({}), []);
+
+  assert.deepEqual(['17792', 'c17792', 'C17792', ' 17792 ', '', null].map(ts.changesetLabel), ['C17792', 'C17792', 'C17792', 'C17792', '', '']);
+  for (const v of ['17792', 'C1', null, '']) assert.equal(view.changesetLabel(v), ts.changesetLabel(v));
+  assert.equal(ts.parseChangesetInput('17800'), 'C17800');
+  assert.equal(ts.parseChangesetInput('C17800, 17803 17800'), 'C17800,C17803');
+  assert.equal(ts.parseChangesetInput('17800،C17803'), 'C17800,C17803', 'کامای فارسی هم');
+  for (const bad of ['', 'abc', '17800;ls', '1'.repeat(10), '$(id)', null, Array.from({ length: 21 }, (_, i) => String(i + 1)).join(',')]) {
+    assert.equal(ts.parseChangesetInput(bad), null, String(bad));
+    assert.equal(view.parseChangesetInput(bad), null);
+  }
+  assert.equal(view.parseChangesetInput('C17800, 17803'), ts.parseChangesetInput('C17800, 17803'));
+
+  const src = (id, patch = {}) => ({ id, access: 'write', delivery: 'apply', staged: null, checkedIn: null, declaredChangesets: [], actions: { canStageExternal: false, canMarkCheckedIn: false, canDeclareChangeset: true }, ...patch });
+  const integrated = { state: 'integrated', externalSources: [src('webiii', { declaredChangesets: ['17792', '17794'], checkedIn: { changesets: ['C17792', 'C17794'], at: 't' } }), src('other'), src('ro', { access: 'read', actions: { canDeclareChangeset: false } }), { id: 'broken', error: 'x' }] };
+  assert.deepEqual(view.externalChangesets(integrated), ts.externalChangesets(integrated));
+  const rows = ts.externalChangesets(integrated);
+  assert.deepEqual(rows.map(r => [r.id, r.declared, r.canDeclare, r.missing]), [['webiii', ['C17792', 'C17794'], true, false], ['other', [], true, true], ['ro', [], false, false]]);
+  assert.deepEqual(rows[0].checkedIn, ['C17792', 'C17794']);
+  assert.equal(ts.externalChangesets({ state: 'implementing', externalSources: [src('x')] })[0].missing, false, 'فقط integrated هشدار می‌دهد');
+  assert.deepEqual(ts.externalChangesets({}), []);
+});
+
+test('blocker ِ needs-human: reviewer-clarification (متن ِ سؤال از رویداد) و rejection-loop (AC/Case ِ تکراری)؛ هر دو منتظر ِ انسان', () => {
+  const clarification = { blocker: { kind: 'needs-human', stage: 'reviewer-clarification', detail: 'سؤال ِ خلاصه‌شده' } };
+  const loop = { blocker: { kind: 'needs-human', stage: 'rejection-loop', detail: 'Reviewer دو بار پشت‌سرهم با ِ همان مشکل رد کرد (AC-1، TC-R2).' } };
+  const events = [{ event: 'review.needs-clarification', attempt: '004', question: 'آیا TC-R1 را باید انسان بسنجد؟' }, { event: 'review.rejection-loop', failures: ['AC-1', 'TC-R2'], attempt: '006', previousAttempt: '005' }];
+  for (const [t, ev] of [[clarification, null], [clarification, events], [loop, events], [loop, null], [{ blocker: { kind: 'needs-human', stage: 'other' } }, null], [{ blocker: { kind: 'environment' } }, null], [{}, null]]) {
+    assert.deepEqual(view.needsHumanInfo(t, ev), ts.needsHumanInfo(t, ev));
+  }
+  assert.equal(ts.needsHuman(clarification), true);
+  assert.equal(ts.needsHuman({ blocker: { kind: 'environment' } }), false);
+  assert.equal(ts.needsHumanInfo({ blocker: { kind: 'environment' } }), null);
+
+  const c = ts.needsHumanInfo(clarification, events);
+  assert.equal(c.title, 'Reviewer سؤال دارد');
+  assert.equal(c.text, 'آیا TC-R1 را باید انسان بسنجد؟', 'متن ِ کامل از رویداد');
+  assert.match(c.guide, /یادداشت بنویس \(note\) و بعد unblock/);
+  assert.equal(ts.needsHumanInfo(clarification, null).text, 'سؤال ِ خلاصه‌شده', 'بدون رویداد: detail ِ blocker');
+  const l = ts.needsHumanInfo(loop, events);
+  assert.match(l.title, /دو بار پشت‌سرهم با همان مشکل رد کرد/);
+  assert.deepEqual(l.failures, ['AC-1', 'TC-R2']);
+  assert.equal(ts.needsHumanInfo(loop, null).failures, null);
+
+  const lines = view.needsHumanLines(view.needsHumanInfo(loop, events), '10024', { reevaluate: true }).join('\n');
+  assert.match(lines, /منتظر ِ انسان، نه خطای فنی/);
+  assert.match(lines, /AC\/Case ِ تکراری: AC-1، TC-R2/);
+  assert.match(lines, /barsa reevaluate-review 10024 --reason/);
+  assert.match(lines, /barsa answer 10024 --note --stdin · بازگشایی: barsa answer 10024 --unblock/);
+  assert.doesNotMatch(view.needsHumanLines(view.needsHumanInfo(loop, null), '10024').join('\n'), /reevaluate-review/, 'بدون actions.reevaluateReview پیشنهاد نمی‌شود');
+  assert.match(view.needsHumanLines(view.needsHumanInfo(clarification, null), '5').join('\n'), /جواب: barsa answer 5 --note --stdin {2}← بعد: barsa answer 5 --unblock/);
+  assert.deepEqual(view.needsHumanLines(null, '5'), []);
+});
+
+test('رویدادهای ۰۵۱: متن ِ کوتاه ِ فارسی (lint، base، changeset، review، budget)؛ هر دو نسخه یکی', () => {
+  const events = [
+    { event: 'baseline.lint-debt-in-scope', totalErrors: 7, commands: ['ng lint x'], files: [{ file: 'a.ts', errors: [] }, { file: 'b.ts', errors: [] }], budgetConsumed: 'none' },
+    { event: 'base.refreshed', branch: 'agent/7', oldBase: 'aaaaaaaa11112222', newBase: 'bbbbbbbb33334444', reason: 'retry-at-worktree-baseline', installInputsChanged: true },
+    { event: 'base.refreshed', oldBase: 'aaaaaaaa11112222', newBase: 'bbbbbbbb33334444', installInputsChanged: false },
+    { event: 'base.refresh-skipped', branch: 'agent/7', oldBase: 'a', currentBase: 'b', reason: 'شاخه commit ِ منحصربه‌فرد دارد' },
+    { event: 'external.changeset-declared', source: 'webiii', changesets: ['C17800', 'C17803'], previous: ['C17792'], replaced: true, reason: 'checked in later' },
+    { event: 'external.changeset-declared', source: 'webiii', changesets: ['17800'], previous: null, replaced: false },
+    { event: 'review.needs-clarification', attempt: '004', question: 'آیا TC-R1 دستی است؟', budgetConsumed: 'none' },
+    { event: 'review.rejection-loop', attempt: '006', previousAttempt: '005', failures: ['AC-1', 'TC-R2'], route: 'implementer', budgetConsumed: 'none' },
+    { event: 'review.outcome-inconsistent', attempt: '004', outcome: 'approved', requestedTransition: 'rejected', budgetConsumed: 'reviewerRuns', problems: ['خروجی ناسازگار'] },
+    { event: 'review.manual-case-by-reviewer', attempt: '004', cases: ['TC-R1', 'TC-R2'] },
+    { event: 'budget.refunded', field: 'implementerRuns', amount: 2, from: 0, to: 2, attempts: ['003', '004'] },
+    { event: 'review.re-evaluated', attempt: '004', decision: 'approved', refundedAttempts: ['003'], manualCases: ['TC-R1'], implementerRan: false, reason: 'tool-only rejections' }
+  ];
+  for (const e of events) assert.deepEqual(view.extrasEventText(e), ts.extrasEventText(e), e.event);
+  const [lint, refreshed, refreshedPlain, skipped, declared, declaredNew, clarification, loop, inconsistent, manual, refunded, reevaluated] = events.map(e => ts.extrasEventText(e));
+  assert.match(lint.details, /^خطاهای lint ِ از قبل موجود در فایل‌های داخل scope به کار ِ Implementer اضافه شد \(7 خطا در 2 فایل\)$/);
+  assert.equal(refreshed.details, 'worktree به base ِ تازه رفت: aaaaaaaa → bbbbbbbb · نصب ِ وابستگی‌ها دوباره انجام می‌شود');
+  assert.equal(refreshedPlain.details, 'worktree به base ِ تازه رفت: aaaaaaaa → bbbbbbbb');
+  assert.match(skipped.details, /base ِ worktree جلو نرفت: شاخه commit ِ منحصربه‌فرد دارد/);
+  assert.equal(declared.details, '«webiii»: C17800، C17803 (جایگزین ِ C17792) · checked in later');
+  assert.equal(declaredNew.details, '«webiii»: C17800');
+  assert.match(clarification.details, /attempt 004 · budget مصرف نشد · آیا TC-R1 دستی است؟/);
+  assert.equal(loop.details, 'attempt 005 و 006 · AC-1، TC-R2 · budget مصرف نشد');
+  assert.match(inconsistent.details, /outcome=approved با requestedTransition=rejected نمی‌خواند؛ دوباره سنجیده می‌شود · خروجی ناسازگار/);
+  assert.match(manual.details, /^TC-R1، TC-R2 — رد حساب نشد/);
+  assert.equal(refunded.details, 'implementerRuns: 0 → 2 (2 برگشت)');
+  assert.match(reevaluated.details, /^attempt 004 · Implementer اجرا نشد · Case ِ دستی: TC-R1 · tool-only rejections$/);
+  assert.match(reevaluated.label, /بدون اجرای Implementer/);
+  // typeSource ِ تازه‌ی Caseهای دستی فقط رشته‌اند؛ چک‌لیست رفتار ِ قبلی را دارد
+  const legacy = { awaitingHuman: { kind: 'merge-approval' }, tests: { format: 'legacy', autoCases: [], manualCases: [{ id: 'TC-R1', section: null, summary: 'x', typeSource: 'legacy-alias' }, { id: 'TC-R2', section: null, summary: 'y', typeSource: 'override' }, { id: 'TC-R3', section: null, summary: 'z', typeSource: 'legacy-row' }], problems: [] } };
+  assert.equal(ts.manualChecklist(legacy).items.length, 3);
+});
+
+test('actions ِ تازه: run و reevaluateReview شناخته‌شده‌اند؛ دکمه‌ی reevaluate-review در ops؛ run در ops نیست (فوتر)', () => {
+  assert.ok(KNOWN_ACTION_KEYS.includes('run') && KNOWN_ACTION_KEYS.includes('reevaluateReview'));
+  assert.equal(ACTION_PLACEMENT.run, 'run');
+  assert.equal(ACTION_PLACEMENT.reevaluateReview, 'ops');
+  const t = { actions: { run: true, reevaluateReview: true, unblock: true } };
+  assert.deepEqual(unknownActionKeys(t), [], 'run نباید «ناشناخته» حساب شود');
+  assert.deepEqual(opsButtons(t).map(b => b.id), ['reevaluate-review', 'unblock']);
+});
+
+test('رابط کاربری ۰۵۱: دکمه‌ی اجرا فقط از actions.run؛ needs-human در «منتظر انسان»؛ سنجش ِ دوباره‌ی review؛ story؛ changeset', () => {
+  const html = read('../../client/src/app/app.component.html');
+  assert.match(html, /\|\| !runOk\(t\)" \[title\]="runTitle\(t\)" \(click\)="runTask\(\)"/);
+  assert.match(html, /class="run-blocked"[^>]*>اجرا ممکن نیست — \{\{ runReason\(t\) \}\}/);
+  assert.match(html, /openTask\(t, !isNeedsHuman\(t\)\)/);
+  assert.match(html, /<ba-external-changeset /);
+  const app = read('../../client/src/app/app.component.ts');
+  assert.match(app, /filter\(t => \(!!t\.awaitingHuman \|\| needsHuman\(t\)\) && !t\.error\)/, 'human strip');
+  assert.match(app, /t\.state === 'blocked' && !t\.error && !needsHuman\(t\)/, 'مسدود ِ فنی ِ بدون needs-human');
+  assert.match(app, /runOk\(t: Task \| null\): boolean \{ return !t \|\| \(runInfo\(t\)\?\.allowed \?\? true\); \}/, 'Manager ِ قدیمی: رفتار ِ قبلی');
+  const ops = read('../../client/src/app/task-ops.component.ts');
+  assert.match(ops, /سنجش دوباره‌ی review \(بدون اجرای Implementer\)/);
+  assert.match(ops, /اگر ردهای اخیر فقط به‌خاطر Case ِ دستی یا یک خطای ابزاری بوده، تسک بدون اجرای دوباره‌ی Implementer به review یا دروازه‌ی merge می‌رسد، و budget ِ سوخته برمی‌گردد\./);
+  assert.match(ops, /spdd-line/);
+  assert.match(ops, /منتظر ِ تو \(خطای فنی نیست\)/);
+  const cs = read('../../client/src/app/external-changeset.component.ts');
+  assert.match(cs, /--replace/);
+  assert.match(cs, /\[disabled\]="!f\.declared\.length"/, 'جایگزینی فقط با مقدار ِ قبلی');
+  assert.match(cs, /confirmReplace/, 'تأیید ِ دوم');
+  assert.match(cs, /changeset ثبت نشده/);
+});

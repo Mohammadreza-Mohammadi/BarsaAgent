@@ -14,7 +14,7 @@ import { environmentSecrets, redact } from './security.js';
 import { formatSystemDiag, formatTaskDiag } from './diag-format.js';
 import { buildWaiting, formatWaiting } from './remote-waiting.js';
 import { attemptModelCell, currentRole, liveAttempt, nextRole, parseRuntimeSpec, runtimeRows, sourceLabel } from './runtime-view.js';
-import { attachmentLines, dependencyLabel, dependencyLines, dependencyView, hasPeerProblem, manualChecklist, testsProblemsWarning } from './task-extras-view.js';
+import { changesetLabel, needsHumanInfo, needsHumanLines, parseChangesetInput, runInfo, runLine, spddStories, spddText, attachmentLines, dependencyLabel, dependencyLines, dependencyView, hasPeerProblem, manualChecklist, testsProblemsWarning } from './task-extras-view.js';
 import { attemptRunMode, failedWrites, failedWritesLines, lockStatus } from './task-health-view.js';
 import {
   ANSWER_MODES, DEFAULT_TOKEN_NAME, DEFAULT_URL, EXIT, NOT_REMOTE_ANSWER_FLAGS, NOT_REMOTE_COMMANDS, NOT_REMOTE_MESSAGE,
@@ -72,6 +72,8 @@ export const HELP = `barsa — کنترل کانبان از راه دور (فق�
   barsa attachments <id>                    فهرست ِ پیوست‌های تسک (نام، نوع، اندازه، زمان؛ فریم‌ها زیر ویدیو)
   barsa approve-deps <id> (--reason "…" | --stdin)   تأیید ِ وابستگی (reason به انگلیسی؛ اول deps را ببین)
   barsa reject-deps <id> (--reason "…" | --stdin)    رد ِ وابستگی (برگشت به Architect، بدون مصرف ِ budget)
+  barsa reevaluate-review <id> (--reason "…" | --stdin)   سنجش ِ دوباره‌ی review بدون اجرای Implementer؛ budget ِ سوخته برمی‌گردد (فقط اگر actions.reevaluateReview)
+  barsa changeset <id> <source> <C1[,C2…]> (--reason "…" | --stdin) [--replace]   اعلام ِ changeset ِ منبع ِ بیرونی بعد از integrated
   barsa recheck <id>                        سنجش ِ دوباره‌ی attempt ِ ردشده با گارد ِ Manager (یا خطای ابزار ِ نوشتن)؛ بدون agent و بدون مصرف ِ budget
   barsa set-runtime <id> <role> <provider>:<model>:<effort> (--reason "…" | --stdin)   قطعه‌ی خالی = دست نزن (مثلاً ::high)
   barsa set-runtime <id> --preset <name> (--reason "…" | --stdin)
@@ -96,7 +98,7 @@ const VALUE_FLAGS = new Set([
 ]);
 const BOOL_FLAGS = new Set([
   '--json', '--all', '--waiting', '--running', '--blocked', '--run', '--stdin', '--help', '-h',
-  '--approve', '--reject', '--clarify', '--note', '--unblock', '--respec', '--system', '--discard-residue', '--dry-run', '--reset', '--allow-duplicate', '--off'
+  '--approve', '--reject', '--clarify', '--note', '--unblock', '--respec', '--system', '--discard-residue', '--dry-run', '--reset', '--allow-duplicate', '--off', '--replace'
 ]);
 
 export function parseArgs(argv) {
@@ -389,7 +391,7 @@ const commands = {
       running: { running: run?.running === true, queued: run?.queued === true, exitCode: run?.exitCode ?? null },
       actions: t.actions ?? null,
       roles: t.roles ? { current: t.roles.current ?? null, next: t.roles.next ?? null } : null,
-      blocker: t.blocker ? { kind: t.blocker.kind ?? null, detail: clip(t.blocker.detail ?? t.blocker.reason ?? '', 500), failedWrites: failedWritesText(t.blocker) } : null,
+      blocker: t.blocker ? { kind: t.blocker.kind ?? null, stage: t.blocker.stage ?? null, detail: clip(t.blocker.detail ?? t.blocker.reason ?? '', 500), failedWrites: failedWritesText(t.blocker) } : null,
       health,
       review: t.review ? {
         decision: t.review.decision ?? null, evidenceStatus: t.review.evidenceStatus ?? null,
@@ -408,19 +410,31 @@ const commands = {
       testsWarning: testsProblemsWarning(t),
       attachments: t.attachments ? { count: (t.attachments.items ?? []).length, missing: (t.attachments.items ?? []).filter(item => item.exists === false).length } : null,
       dependencyGate: t.awaitingHuman?.kind === 'dependency-approval',
+      // TOOLING-051: «run الان کاری می‌کند؟»، story ِ SPDD، و تغییر ِ blocker ِ needs-human
+      run: runInfo(t),
+      spdd: spddStories(t),
+      needsHuman: needsHumanInfo(t),
+      externalChangesets: (t.externalSources ?? []).filter(s => s && !s.error).map(s => ({ id: s.id, declared: (s.declaredChangesets ?? []).map(changesetLabel), canDeclare: s.actions?.canDeclareChangeset === true })),
       waiting
     };
     if (json) return out;
     const lines = [`#${out.id} · ${out.title}`, `وضعیت: ${out.state}${out.gate ? ` · منتظر ${out.gate.kind} (از ${short(out.gate.since)})` : ''}${out.running.running ? ' · در حال اجرا' : out.running.queued ? ' · در صف' : ''}`];
     const active = activeActions(t);
     lines.push(`اکشن‌های مجاز: ${active.length ? active.join('، ') : (t.actions ? 'هیچ' : 'نامشخص (Manager قدیمی)')}`);
+    const runText = runLine(t);
+    if (runText) lines.push(runText);
+    for (const story of out.spdd) lines.push(`${spddText(story)}${story.dir ? ` — ${story.dir}` : ''}`);
     if (out.roles) lines.push(`نقش: جاری ${out.roles.current ?? '—'} → بعدی ${out.roles.next ?? '—'}`);
     if (out.runtime?.summary) lines.push(`runtime: ${clip(out.runtime.summary, 200)}${out.runtime.pending ? ` · ${out.runtime.pending} تغییر در انتظار اعمال` : ''}`);
     if (out.attempts.length) {
       lines.push('attemptها (مدل / effort):');
       for (const a of out.attempts) lines.push(`  #${a.id ?? a.n} ${a.role ?? '—'} → ${a.outcome ?? 'در جریان'} · ${clip(a.model, 70)} · ${a.effort}${a.relay ? ` · [${a.relay.label}${a.relay.outerModel ? `؛ outer: ${clip(a.relay.outerModel, 40)}` : ''}]` : ''}`);
     }
-    if (out.blocker) lines.push(`blocker: ${out.blocker.kind} — ${clip(out.blocker.detail, 240)}`);
+    if (out.blocker && out.blocker.kind !== 'needs-human') lines.push(`blocker: ${out.blocker.kind} — ${clip(out.blocker.detail, 240)}`);
+    if (out.needsHuman) lines.push(...needsHumanLines(out.needsHuman, out.id, { reevaluate: t.actions?.reevaluateReview === true }).map(line => (line.length > 400 ? `${line.slice(0, 399)}…` : line)));
+    for (const source of out.externalChangesets) {
+      if (source.declared.length || source.canDeclare) lines.push(`changeset ِ «${source.id}»: ${source.declared.length ? source.declared.join('، ') : 'ثبت نشده'}${source.canDeclare ? ` — barsa changeset ${out.id} ${source.id} <C…> --reason "…"${source.declared.length ? ' [--replace]' : ''}` : ''}`);
+    }
     if (out.blocker?.failedWrites) lines.push(...failedWritesLines(out.blocker.failedWrites));
     if (health?.lock) lines.push(`قفل transition: pid ${health.lock.pid ?? '؟'} — ${health.lock.label}${health.lock.detail ? ` — ${clip(health.lock.detail, 300)}` : ''}`);
     if (out.manualCases) lines.push('تست‌های دستی (چک‌لیست ِ دروازه‌ی merge؛ یادآوری است، نه شرط ِ approve):', ...out.manualCases.map(item => `  ☐ ${item.id}${item.section ? ` [${clip(item.section, 60)}]` : ''} — ${item.summary}`));
@@ -566,6 +580,34 @@ const commands = {
 
   async 'approve-deps'({ client, flags, positional, io, repo, json }) { return depsDecision({ client, flags, positional, io, repo, json }, 'approve'); },
   async 'reject-deps'({ client, flags, positional, io, repo, json }) { return depsDecision({ client, flags, positional, io, repo, json }, 'reject'); },
+
+  async 'reevaluate-review'({ client, flags, positional, io, repo, json }) {
+    const id = needId(positional);
+    const reason = await reasonOf(flags, io, { required: true });
+    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    assertAllowed(task, 'reevaluateReview', 'reevaluate-review');
+    const { data } = await need(client, 'POST', `/api/repos/${enc(repo)}/tasks/${enc(id)}/reevaluate-review`, { body: { reason } });
+    if (json) return data;
+    return `تسک #${id}: review بدون اجرای Implementer دوباره سنجیده شد؛ budget ِ سوخته برمی‌گردد. وضعیت ِ تازه: barsa task ${id}`;
+  },
+
+  async changeset({ client, flags, positional, io, repo, json }) {
+    const [id, sourceId, list, ...rest] = positional;
+    needId(id ? [id] : []);
+    if (!sourceId || !list || rest.length) throw usage('استفاده: barsa changeset <id> <source> <C1[,C2…]> (--reason "…" | --stdin) [--replace]');
+    if (!/^[a-z0-9][a-z0-9-]*$/i.test(sourceId)) throw usage('نام ِ منبع ِ بیرونی نامعتبر است.');
+    const changesets = parseChangesetInput(list);
+    if (!changesets) throw usage('changeset باید یک یا چند شماره باشد (مثلاً 17800 یا C17800,C17803؛ حداکثر ۲۰).');
+    const reason = await reasonOf(flags, io, { required: true });
+    const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    const source = (task.externalSources ?? []).find(s => s && !s.error && s.id === sourceId);
+    if (!source) throw new CliError(EXIT.NOT_ALLOWED, `تسک #${id} منبع ِ بیرونی «${sourceId}» ندارد.`);
+    if (source.actions?.canDeclareChangeset !== true) throw new CliError(EXIT.NOT_ALLOWED, `اعلام ِ changeset برای «${sourceId}» الان مجاز نیست (actions.canDeclareChangeset = false؛ فقط در integrated یا awaiting-external-checkin).`);
+    const { data } = await need(client, 'POST', `/api/repos/${enc(repo)}/tasks/${enc(id)}/external-changeset`, { body: { sourceId, changesets, reason, replace: flags['--replace'] === true } });
+    if (json) return data;
+    const before = (source.declaredChangesets ?? []).map(changesetLabel);
+    return `تسک #${id}: changeset ِ «${sourceId}» ثبت شد: ${changesets.split(',').join('، ')}${before.length ? ` (قبلی: ${before.join('، ')}${flags['--replace'] === true ? '، جایگزین شد' : ''})` : ''}.`;
+  },
 
   async recheck({ client, positional, repo, json }) {
     const id = needId(positional);
@@ -756,6 +798,11 @@ const commands = {
   async run({ client, positional, repo, json }) {
     const id = needId(positional);
     const { data: task } = await need(client, 'GET', `/api/repos/${enc(repo)}/tasks/${enc(id)}`);
+    // TOOLING-051: «run الان کاری می‌کند؟» فقط از actions.run (Manager ِ قدیمی بدون این کلید: رفتار ِ قبلی). با همان reason ِ Manager رد می‌شود.
+    const runState = runInfo(task);
+    if (runState && !runState.allowed) {
+      throw new CliError(runState.code === 'execution-disabled' ? EXIT.EXECUTION_OFF : EXIT.NOT_ALLOWED, `اجرای تسک #${id} ممکن نیست — ${runState.reason}${runState.code ? ` (${runState.code})` : ''}`);
+    }
     if (FINISHED.includes(task.state)) throw new CliError(EXIT.NOT_ALLOWED, `تسک #${id} پایان‌یافته است (${task.state}) و اجرا نمی‌شود.`);
     if (task.error) throw new CliError(EXIT.NOT_ALLOWED, `تسک #${id} خطا دارد: ${clip(task.error, 200)}`);
     const { data } = await need(client, 'POST', `/api/repos/${enc(repo)}/tasks/${enc(id)}/run`);

@@ -31,6 +31,8 @@
       "Bash(./barsa recheck:*)",
       "Bash(./barsa approve-deps:*)",
       "Bash(./barsa reject-deps:*)",
+      "Bash(./barsa reevaluate-review:*)",
+      "Bash(./barsa changeset:*)",
       "Bash(./barsa set-runtime:*)",
       "Bash(./barsa retry-provision:*)",
       "Bash(./barsa retry-install:*)",

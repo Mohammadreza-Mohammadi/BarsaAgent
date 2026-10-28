@@ -7,7 +7,7 @@
 // قاعده‌های ask/allow است؛ این hook فقط چیزی را مجاز نمی‌کند، فقط رد می‌کند.
 //
 // فهرست فرمان‌ها باید با server/src/remote-cli-spec.js (READ_COMMANDS/WRITE_COMMANDS) یکی باشد؛ تست مطابقت را می‌سنجد.
-const COMMANDS = ['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options', 'create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'deps', 'attachments', 'approve-deps', 'reject-deps', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain'];
+const COMMANDS = ['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options', 'create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'deps', 'attachments', 'approve-deps', 'reject-deps', 'reevaluate-review', 'changeset', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'drain'];
 // شکل ِ آرگومان‌های runtime (TOOLING-046). اعتبارسنجی ِ **معنایی** (کدام provider/مدل/effort مجاز است) کار ِ Manager است؛
 // این‌جا فقط نویسه‌ها و جایگاه‌ها: نقش هر نامِ [a-z-]+ ، و <provider>:<model>:<effort> فقط حرف/عدد/نقطه/خط (قطعه‌ی خالی مجاز).
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -83,6 +83,25 @@ function depsDecisionShapeError(name, args) {
   return positional.length === 1 && ID.test(positional[0]) ? null : 'شناسه‌ی تسک نامعتبر است (فقط یک شناسه).';
 }
 
+/** changeset <id> <source> <C1[,C2…]> (--reason "…" | --stdin | --text-file <f>) [--replace] (TOOLING-051 و). */
+function changesetShapeError(args) {
+  const positional = [];
+  let reasons = 0;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--json' || arg === '--replace') continue;
+    if (arg === '--stdin') { reasons += 1; continue; }
+    if (arg === '--reason' || arg === '--text-file') { if (!(args[i + 1] ?? '').length) return `${arg} مقدار می‌خواهد.`; reasons += 1; i += 1; continue; }
+    if (arg === '--repo') { if (!ID.test(args[i + 1] ?? '')) return '--repo نامعتبر است.'; i += 1; continue; }
+    if (arg.startsWith('-')) return `گزینه‌ی ${arg} برای changeset مجاز نیست.`;
+    positional.push(arg);
+  }
+  if (reasons !== 1) return 'دقیقاً یکی از --reason / --stdin / --text-file لازم است.';
+  const [id, source, list] = positional;
+  if (positional.length !== 3 || !ID.test(id) || !/^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/.test(source) || !/^[Cc]?\d{1,9}(,[Cc]?\d{1,9}){0,19}$/.test(list)) return 'قالب: changeset <id> <source> <C1[,C2…]> (فقط شماره، با C اختیاری).';
+  return null;
+}
+
 /** flagهای runtime روی هر فرمان (create-*): مقدار بعد از --runtime / --runtime-preset باید شکل ِ مجاز داشته باشد. */
 function runtimeFlagError(args) {
   for (let i = 0; i < args.length; i += 1) {
@@ -143,8 +162,9 @@ export function evaluate(command) {
   const [name, ...commandArgs] = args;
   if (name !== undefined && !COMMANDS.includes(name) && !['--help', '-h', 'help'].includes(name)) return { ok: false, reason: `«${name}» فرمان مجاز barsa نیست.` };
   const shape = name === 'set-runtime' ? setRuntimeShapeError(commandArgs)
-    : (name === 'approve-deps' || name === 'reject-deps') ? depsDecisionShapeError(name, commandArgs)
-      : (runtimeShapeError(name, commandArgs) ?? runtimeFlagError(commandArgs));
+    : (name === 'approve-deps' || name === 'reject-deps' || name === 'reevaluate-review') ? depsDecisionShapeError(name, commandArgs)
+      : name === 'changeset' ? changesetShapeError(commandArgs)
+        : (runtimeShapeError(name, commandArgs) ?? runtimeFlagError(commandArgs));
   if (shape) return { ok: false, reason: shape };
   return { ok: true };
 }

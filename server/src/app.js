@@ -25,6 +25,7 @@ import { createRuntimeFlags, structuredFailure } from './runtime-args.js';
 import { createRemoteOpsRoutes } from './remote-ops-routes.js';
 import { DrainStore, durationText } from './drain.js';
 import { UploadStore } from './uploads.js';
+import { parseChangesetInput } from './task-extras-view.js';
 import { createPolicyReader } from './attachment-policy.js';
 import { attachmentHelpers, createAttachmentRoutes } from './attachments-routes.js';
 import { Lifecycle, SHUTDOWN_SIGNALS, createShutdown } from './shutdown.js';
@@ -679,7 +680,9 @@ export function createApp(config, deps = {}) {
       // TOOLING-050 هـ: دروازه‌ی تأیید ِ وابستگی. `answer --approve-dependencies|--reject-dependencies --reason` (reason همیشه از فایل ِ موقت،
       // نه argv). مجاز بودن را Manager می‌سنجد (actions.approveDependencies/rejectDependencies)؛ بعد از تصمیم، مثل بقیه‌ی گیت‌ها
       // اگر run.autoResumeAfterAnswer روشن است run می‌زنیم (تأیید: architecture → ready؛ رد: برگشت به Architect).
-      for (const verb of ['approve-dependencies', 'reject-dependencies']) {
+      // TOOLING-051 (ح-۵): reevaluate-review هم همین شکل (answer --reevaluate-review --reason)؛ ولی run ِ خودکار ندارد: Manager تسک را
+      // بدون Implementer به review/دروازه‌ی merge می‌برد.
+      for (const verb of ['approve-dependencies', 'reject-dependencies', 'reevaluate-review']) {
         if (req.method === 'POST' && (p = route(`/api/repos/:repo/tasks/:id/${verb}`, pathname))) {
           const input = await readBody(req);
           if (!String(input.reason ?? '').trim()) return send(res, 400, { error: 'دلیل الزامی است (reason را به انگلیسی بنویس).' });
@@ -692,9 +695,30 @@ export function createApp(config, deps = {}) {
           } finally {
             fs.rmSync(reasonTmp, { force: true });
           }
-          const resumed = runConfig.autoResumeAfterAnswer ? queueTask(session, repo, p.id) : { queued: false, started: false };
-          return send(res, 200, { ok: true, autoResumed: runConfig.autoResumeAfterAnswer, ...resumed });
+          const resume = verb !== 'reevaluate-review' && runConfig.autoResumeAfterAnswer;
+          const resumed = resume ? queueTask(session, repo, p.id) : { queued: false, started: false };
+          return send(res, 200, { ok: true, autoResumed: resume, ...resumed });
         }
+      }
+      // TOOLING-051 (و): اعلام ِ changeset ِ منبع ِ بیرونی بعد از ِ integrated (answer --external-changeset <source> <C1[,C2…]> --reason [--replace]).
+      // شکل ِ ورودی اینجا سنجیده می‌شود؛ مجاز بودن (state، تفاوت با مقدار ِ ثبت‌شده، تاریخچه‌ی TFVC) با Manager.
+      if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/external-changeset', pathname))) {
+        const input = await readBody(req);
+        const sourceId = String(input.sourceId ?? '');
+        if (!/^[a-z0-9][a-z0-9-]*$/i.test(sourceId)) return send(res, 400, { error: 'منبع بیرونی نامعتبر است.' });
+        const list = parseChangesetInput(Array.isArray(input.changesets) ? input.changesets.join(',') : input.changesets);
+        if (!list) return send(res, 400, { error: 'changeset باید یک یا چند شماره باشد (مثلاً 17800 یا C17800,C17803؛ حداکثر ۲۰).' });
+        if (!String(input.reason ?? '').trim()) return send(res, 400, { error: 'دلیل الزامی است (reason را به انگلیسی بنویس).' });
+        const repo = repoFor(p.repo);
+        await assertExecution(repo);
+        const reasonTmp = path.join(os.tmpdir(), `barsa-reason-${process.pid}-${randomUUID()}.txt`);
+        try {
+          fs.writeFileSync(reasonTmp, String(input.reason), { encoding: 'utf8', mode: 0o600 });
+          await collectAction(session, repo, ['answer', p.id, '--external-changeset', sourceId, list, '--reason-file', reasonTmp, ...(input.replace === true ? ['--replace'] : [])], { action: 'external-changeset', taskId: p.id });
+        } finally {
+          fs.rmSync(reasonTmp, { force: true });
+        }
+        return send(res, 200, { ok: true, sourceId, changesets: list.split(',') });
       }
       // state-محور است، نه awaitingHuman (manager.js، parseAnswerArgs/--note) —
       // در هر state غیرپایانی (برای یادداشت) قابل ارسال است. متن همیشه از فایل

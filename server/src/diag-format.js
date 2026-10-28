@@ -1,6 +1,7 @@
 // قالب‌بندی متنی ِ diag — «یک بلوک منسجم با سرتیترهای کوتاه» که روی گوشی کپی‌شدنی باشد (≈۱۵۰ خط).
 // هم CLI (barsa diag) و هم bundle (diag.txt داخل zip) از همین استفاده می‌کنند تا دو شکل ِ متفاوت از یک چیز نباشد.
 import { failedWritesLines, lockStatus, moreLine } from './task-health-view.js';
+import { needsHumanInfo, needsHumanLines, spddText } from './task-extras-view.js';
 
 const yes = value => (value === true ? 'بله' : value === false ? 'خیر' : '؟');
 const when = iso => (iso ? String(iso).replace('T', ' ').slice(0, 19) : '—');
@@ -44,12 +45,15 @@ function healthLines(health) {
 export function formatTaskDiag(d) {
   const out = [];
   out.push(`═══ diag تسک #${d.taskId} · مخزن ${d.repo} · ${when(d.generatedAt)} ═══`);
+  if (d.runInfo) out.push(d.runInfo.allowed ? 'اجرا: ممکن' : `اجرا: ممکن نیست — ${d.runInfo.reason}${d.runInfo.code ? ` (${d.runInfo.code})` : ''}`);
+  for (const story of d.spdd ?? []) out.push(`${spddText(story)}${story.dir ? ` — ${story.dir}` : ''}`);
   if (d.roles) out.push(`نقش: جاری ${d.roles.current ?? '—'} → بعدی ${d.roles.next ?? '—'}`);
   out.push(`وضعیت: ${d.state ?? '؟'} از ${when(d.stateSince)}${d.gate ? ` · منتظر ${d.gate.kind}` : ''}${d.blocker ? ` · blocker ${d.blocker.kind}: ${d.blocker.detail}` : ''}${d.waitingFor ? ` · منتظر تسک ${d.waitingFor.task ?? JSON.stringify(d.waitingFor)}` : ''}`);
   out.push(`اکشن‌های مجاز: ${d.actions?.length ? d.actions.join('، ') : 'هیچ'}`);
   if (d.runtime?.summary) out.push(`runtime: ${d.runtime.summary}${d.runtime.pending ? ` · ${d.runtime.pending} تغییر در انتظار اعمال` : ''}`);
+  if (d.blocker?.kind === 'needs-human') out.push('', '── blocker: منتظر ِ انسان (needs-human)', ...needsHumanLines(needsHumanInfo({ blocker: d.blocker }), d.taskId, { reevaluate: (d.actions ?? []).includes('reevaluateReview') }).map(line => `  ${line}`));
   if (d.blocker?.failedWrites) out.push('', '── blocker: خطای نوشتن ِ ابزار (tool-write-failed)', ...failedWritesLines(d.blocker.failedWrites).map(line => `  ${line}`));
-  if (d.blocker && (d.blocker.stage || d.blocker.step || d.blocker.log || d.blocker.outputTail?.length)) {
+  if (d.blocker && d.blocker.kind !== 'needs-human' && (d.blocker.stage || d.blocker.step || d.blocker.log || d.blocker.outputTail?.length)) {
     out.push('', `── blocker: ${d.blocker.kind ?? '؟'}${d.blocker.stage ? ` · stage ${d.blocker.stage}` : ''}${d.blocker.step ? ` · گام ${d.blocker.step}` : ''}`);
     if (d.blocker.log) out.push(`  لاگ کامل: ${d.blocker.log}`);
     if (d.blocker.outputTail?.length) out.push(`  ۴۰ خط ِ آخر ِ خروجی (outputTail):`, ...d.blocker.outputTail.map(line => `    ${line}`));

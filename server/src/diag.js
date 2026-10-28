@@ -9,7 +9,7 @@ import path from 'node:path';
 import { gitEnv } from './git-ops.js';
 import { environmentSecrets, redact } from './security.js';
 import { failedWrites as failedWritesView } from './task-health-view.js';
-import { extrasEventText } from './task-extras-view.js';
+import { extrasEventText, runInfo, spddStories } from './task-extras-view.js';
 import { ageMs, interestingProcesses, ownHelperPids, relatedToTask } from './process-list.js';
 import { APP_ROOT } from './config.js';
 
@@ -159,6 +159,9 @@ export async function collectTaskDiag(ctx) {
     } : null,
     // TOOLING-048: نقش ِ جاری و بعدی از Manager (نه حدس)
     roles: task.roles ?? null,
+    // TOOLING-051: «run الان کاری می‌کند؟» (actions.run + runBlocked) و story ِ SPDD
+    runInfo: runInfo(task),
+    spdd: spddStories(task),
     // TOOLING-044: commit شکست خورد و چیزی کثیف مانده؛ چه چیزی و فرمان ِ دقیق ِ بازیابی
     commitFailure: commitFailureOf(task),
     // TOOLING-046: خلاصه‌ی یک‌خطی ِ runtime (فقط وقتی با پیش‌فرض فرق دارد) و تعداد تغییر ِ در صف
