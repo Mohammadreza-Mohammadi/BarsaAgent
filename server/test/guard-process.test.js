@@ -52,6 +52,8 @@ test('guard.mjs به‌صورت فرآیند: فرمان ِ مجاز ← اجا�
     './barsa set-runtime 10013 implementer ::high --reason "bump effort"',
     './barsa deps 10024', './barsa attachments 10024 --json', './barsa approve-deps 10024 --reason "needed for charts; peers OK"', './barsa reject-deps 10024 --reason "use existing lib"',
     './barsa approve-deps 10024 --stdin <<\'EOF\'\nneeded; license MIT\nEOF',
+    './barsa reevaluate-review 10024 --reason "tool-only rejections; manual case TC-R1"', './barsa changeset 10021 webiii C17800,C17803 --reason "checked in"', './barsa changeset 10021 webiii 17800 --reason "x" --replace',
+    './barsa changeset 10021 webiii C17800 --stdin <<\'EOF\'\nchecked in as C17800\nEOF',
     './barsa recheck 10023', './barsa recheck 10023 --json', './barsa recheck 10023 --repo main',
     './barsa drain', './barsa drain --status', './barsa drain --off', './barsa sync --status 20261026101500-0a1b2c3d',
     './barsa answer 5 --note --stdin <<\'EOF\'\nمتن با $HOME و ; داخل heredoc\nEOF'
@@ -68,6 +70,16 @@ test('guard.mjs به‌صورت فرآیند: whoami، جایگزینی دستو
   expectDeny(runGuard(file, 'ls'), 'ls');
   expectDeny(runGuard(file, './barsa create-task --title x --runtime "bad;spec" --stdin'), 'spec ِ ناجور');
   expectDeny(runGuard(file, ''), 'فرمان ِ خالی');
+  // TOOLING-051: reevaluate-review (id + دقیقاً یک reason)، changeset (id، منبع، فهرست ِ شماره، reason، --replace اختیاری)
+  expectDeny(runGuard(file, './barsa reevaluate-review'), 'reevaluate-review بدون شناسه');
+  expectDeny(runGuard(file, './barsa reevaluate-review 5'), 'reevaluate-review بدون reason');
+  expectDeny(runGuard(file, './barsa reevaluate-review 5 --force --reason x'), 'reevaluate-review --force');
+  expectDeny(runGuard(file, './barsa changeset 5 webiii --reason x'), 'changeset بدون فهرست');
+  expectDeny(runGuard(file, './barsa changeset 5 webiii abc --reason x'), 'changeset با شماره‌ی نامعتبر');
+  expectDeny(runGuard(file, './barsa changeset 5 we$biii 17800 --reason x'), 'changeset با منبع ِ مشکوک');
+  expectDeny(runGuard(file, './barsa changeset 5 webiii 17800 --reason x --force'), 'changeset --force');
+  expectDeny(runGuard(file, './barsa changeset 5 webiii 17800'), 'changeset بدون reason');
+  expectDeny(runGuard(file, './barsa changeset 5 webiii 17800 --reason a --stdin'), 'changeset با دو منبع ِ reason');
   // TOOLING-050: deps / attachments فقط شناسه؛ approve-deps / reject-deps شناسه + دقیقاً یک منبع ِ reason، بدون گزینه‌ی دیگر
   expectDeny(runGuard(file, './barsa deps'), 'deps بدون شناسه');
   expectDeny(runGuard(file, './barsa deps 5 6'), 'deps با دو شناسه');

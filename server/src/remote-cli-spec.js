@@ -8,7 +8,7 @@
 export const READ_COMMANDS = Object.freeze(['health', 'issues', 'tasks', 'task', 'log', 'waiting', 'artifact', 'diag', 'bundle', 'runtime', 'runtime-options', 'deps', 'attachments']);
 
 /** فرمان‌های نوشتنی: هر کدام روی گوشی تأیید می‌خواهد (`ask` در settings.json). */
-export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'approve-deps', 'reject-deps', 'drain']);
+export const WRITE_COMMANDS = Object.freeze(['create-from-issue', 'create-task', 'run', 'stop', 'answer', 'recover', 'recheck', 'retry-provision', 'retry-install', 'sync', 'kill-stuck-install', 'set-runtime', 'approve-deps', 'reject-deps', 'reevaluate-review', 'changeset', 'drain']);
 
 /**
  * فرمان‌هایی که یک شکل ِ فقط‌خواندنی هم دارند. قاعده‌ی ask در settings.json ترتیبش بر allow می‌چربد (deny ← ask ← allow)، پس
@@ -78,6 +78,8 @@ export const REMOTE_ENDPOINTS = Object.freeze([
   ['POST', '/api/repos/:repo/tasks/:id/raise-limit'],
   ['POST', '/api/repos/:repo/tasks/:id/unblock'],
   ['POST', '/api/repos/:repo/tasks/:id/approve-dependencies'],
+  ['POST', '/api/repos/:repo/tasks/:id/reevaluate-review'],
+  ['POST', '/api/repos/:repo/tasks/:id/external-changeset'],
   ['POST', '/api/repos/:repo/tasks/:id/reject-dependencies'],
   ['POST', '/api/repos/:repo/tasks/:id/runtime'],
   ['POST', '/api/repos/:repo/tasks/:id/allow-shared-knowledge-file'],
@@ -110,6 +112,8 @@ export const COMMAND_ENDPOINTS = Object.freeze({
   'answer --raise-limit': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/raise-limit']],
   'answer --unblock': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/unblock']],
   deps: [['GET', '/api/repos/:repo/tasks/:id']],
+  'reevaluate-review': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/reevaluate-review']],
+  changeset: [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/external-changeset']],
   attachments: [['GET', '/api/repos/:repo/tasks/:id']],
   'approve-deps': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/approve-dependencies']],
   'reject-deps': [['GET', '/api/repos/:repo/tasks/:id'], ['POST', '/api/repos/:repo/tasks/:id/reject-dependencies']],

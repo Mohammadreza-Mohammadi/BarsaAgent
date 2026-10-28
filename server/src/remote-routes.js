@@ -24,14 +24,17 @@ export function activeActionKeys(task) {
   return Object.keys(actions).filter(key => actions[key] === true || (Array.isArray(actions[key]) && actions[key].length > 0));
 }
 
+/** blocker ِ needs-human (TOOLING-051): منتظر ِ انسان است (سؤال ِ Reviewer / حلقه‌ی رد) نه «مسدود ِ فنی»؛ در فهرست ِ waiting می‌آید. */
+const needsHumanGate = task => (task.blocker?.kind === 'needs-human' ? { kind: 'needs-human', since: task.stateSince ?? null, stage: task.blocker.stage ?? null } : null);
+
 export function summarizeTask(task, run) {
   return {
     id: String(task.id),
     title: clip(task.title ?? task.slug ?? '', 160),
     state: task.state ?? null,
     stateSince: task.stateSince ?? null,
-    gate: task.awaitingHuman ? { kind: task.awaitingHuman.kind ?? null, since: task.awaitingHuman.since ?? null } : null,
-    blocker: task.blocker ? { kind: task.blocker.kind ?? null, detail: clip(task.blocker.detail ?? task.blocker.reason ?? '', 200) } : null,
+    gate: task.awaitingHuman ? { kind: task.awaitingHuman.kind ?? null, since: task.awaitingHuman.since ?? null } : needsHumanGate(task),
+    blocker: task.blocker ? { kind: task.blocker.kind ?? null, stage: task.blocker.stage ?? null, detail: clip(task.blocker.detail ?? task.blocker.reason ?? '', 200) } : null,
     running: run?.running === true,
     queued: run?.queued === true,
     actions: activeActionKeys(task),
@@ -124,7 +127,10 @@ export function createRemoteRoutes({ registry, audit, repoFor, config, send, rou
       // از کش ِ status (تا ۶۰ ثانیه)، نه یک status --json ِ کامل در هر بار. generatedAt را CLI برای دفعه‌ی بعد نگه می‌دارد.
       const board = await boardCached(repo, WAITING_CACHE_MS);
       const tasks = (board.tasks || [])
-        .filter(task => task.awaitingHuman && (!task.awaitingHuman.since || Date.parse(task.awaitingHuman.since) >= sinceMs))
+        .filter(task => {
+          const gate = task.awaitingHuman ?? needsHumanGate(task);
+          return gate && (!gate.since || Date.parse(gate.since) >= sinceMs);
+        })
         .map(task => summarizeTask(task, undefined));
       return send(res, 200, { repo: repo.id, since: since || null, generatedAt: board.generatedAt ?? null, tasks }), true;
     }

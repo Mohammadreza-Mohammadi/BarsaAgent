@@ -13,7 +13,8 @@ import { TaskOpsComponent } from './task-ops.component';
 import { TaskRuntimeComponent } from './task-runtime.component';
 import { RuntimePickerComponent } from './runtime-picker.component';
 import { attemptRunMode, lockNeedsForce, lockStatus } from './task-health';
-import { extrasEventText } from './task-extras';
+import { extrasEventText, needsHuman, runInfo } from './task-extras';
+import { ExternalChangesetComponent } from './external-changeset.component';
 import { AttachmentPickerComponent } from './attachment-picker.component';
 import { TaskAttachmentsComponent } from './task-attachments.component';
 import { ManualTestsComponent } from './manual-tests.component';
@@ -66,6 +67,7 @@ const BLOCKER_LABELS: Record<string, { label: string; hint: string }> = {
   'unsatisfiable-gate': { label: 'گیت غیرقابل‌عبور', hint: 'شرط verification با تنظیمات فعلی repository.yaml قابل برآورده‌شدن نیست.' },
   'rebase-conflict': { label: 'تداخل rebase', hint: 'rebase خودکار conflict داد — نیاز به rebase دستی یا بررسی انسانی دارد.' },
   'spec-churn': { label: 'نوسان spec', hint: 'چرخه‌ی respec زیاد تکرار شده — spec را مستقیم بررسی کن.' },
+  'needs-human': { label: 'منتظر ِ تصمیم ِ انسان', hint: 'Reviewer سؤال دارد یا دو بار با همان مشکل رد کرده — خطای فنی نیست.' },
   'attempts-exhausted': { label: 'سقف تلاش‌ها', hint: 'شمارنده‌ی سراسری attempts پر شده — task را ببند یا بودجه را دستی زیاد کن.' }
 };
 
@@ -82,7 +84,7 @@ type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 
 @Component({
   selector: 'ba-root',
   standalone: true,
-  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, BundlesComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, TaskRuntimeComponent, RuntimePickerComponent, ArchiveComponent, AttachmentPickerComponent, TaskAttachmentsComponent, ManualTestsComponent, TaskDependenciesComponent],
+  imports: [CommonModule, FormsModule, LoginComponent, ConsoleComponent, MaintenanceComponent, BundlesComponent, EnvHealthComponent, AuditComponent, TaskOpsComponent, TaskRuntimeComponent, RuntimePickerComponent, ArchiveComponent, AttachmentPickerComponent, TaskAttachmentsComponent, ManualTestsComponent, TaskDependenciesComponent, ExternalChangesetComponent],
   templateUrl: './app.component.html'
 })
 export class AppComponent implements OnInit, OnDestroy {
@@ -338,16 +340,19 @@ export class AppComponent implements OnInit, OnDestroy {
   archiveCount(): number { return archiveTasks(this.board()?.tasks ?? []).length; }
   finished(t: Task): boolean { return isFinished(t); }
   /** بخش جدای برد: فقط blocked (تصمیم انسان لازم است). cancelled/abandoned فقط در آرشیواند. */
-  terminalTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => t.state === 'blocked' && !t.error); }
+  terminalTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => t.state === 'blocked' && !t.error && !needsHuman(t)); }
   errorTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => !!t.error || t.state === '__error__'); }
   // بند الف کانبان-اکشن‌های-وب‌تری: هر state ای که نه در lanes، نه در
   // TERMINAL_STATES باشد — یعنی چیزی که این UI هنوز نمی‌شناسد — باید دیده
   // شود، نه پنهان شود.
   unknownStateTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => !t.error && !KNOWN_STATES.has(t.state)); }
-  humanTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => !!t.awaitingHuman && !t.error); }
+  // منتظر ِ انسان: گیت‌ها + blocker ِ needs-human (TOOLING-051: سؤال ِ Reviewer / حلقه‌ی رد — نه «مسدود ِ فنی»).
+  humanTasks(): Task[] { return (this.board()?.tasks ?? []).filter(t => (!!t.awaitingHuman || needsHuman(t)) && !t.error); }
+  isNeedsHuman(t: Task): boolean { return !t.awaitingHuman && needsHuman(t); }
   queuedTasks(): RunningTask[] { return Object.values(this.running()).filter(x => x.queued); }
   gateKind(t: Task | null): string { return t?.awaitingHuman?.kind ?? ''; }
   gateLabel(t: Task): string {
+    if (!t.awaitingHuman && needsHuman(t)) return t.blocker?.stage === 'reviewer-clarification' ? 'سؤال ِ Reviewer' : t.blocker?.stage === 'rejection-loop' ? 'حلقه‌ی رد ِ Reviewer' : 'نیاز به انسان';
     return ({ 'spec-approval': 'تأیید spec', clarification: 'پاسخ به سؤال', 'merge-approval': 'تأیید merge', 'dependency-approval': 'تأیید وابستگی' } as Record<string, string>)[this.gateKind(t)] ?? 'اقدام انسانی';
   }
 
@@ -558,9 +563,18 @@ export class AppComponent implements OnInit, OnDestroy {
     catch (e) { this.fail(e); }
   }
 
+  /** «اجرا / ادامه» فقط از actions.run (TOOLING-051 ب). Manager ِ قدیمی (بدون این کلید): رفتار ِ قبلی. */
+  runOk(t: Task | null): boolean { return !t || (runInfo(t)?.allowed ?? true); }
+  runReason(t: Task | null): string {
+    const info = runInfo(t);
+    return info && !info.allowed ? `${info.reason}${info.code ? ` (${info.code})` : ''}` : '';
+  }
+  runTitle(t: Task): string { return this.executionDisabled() ? this.executionOffTitle : this.runReason(t); }
+
   async runTask(): Promise<void> {
     const t = this.selected();
     if (!t) return;
+    if (!this.runOk(t)) { this.error.set(`اجرا ممکن نیست — ${this.runReason(t)}`); return; }
     this.busy.set(true); this.error.set(''); this.streamEnded.set(undefined);
     try {
       const result = await firstValueFrom(this.api.run(this.repoId(), t.id));
@@ -1104,7 +1118,7 @@ export class AppComponent implements OnInit, OnDestroy {
   closePanel(): void { this.panel.set(null); this.closeStream(); }
 
   private notifyNewHumanTasks(tasks: Task[]): void {
-    const current = tasks.filter(t => !!t.awaitingHuman).map(t => t.id);
+    const current = tasks.filter(t => !!t.awaitingHuman || needsHuman(t)).map(t => t.id);
     if (!this.humanSnapshotReady) { current.forEach(id => this.knownHumanTasks.add(id)); this.humanSnapshotReady = true; return; }
     for (const task of tasks.filter(t => !!t.awaitingHuman)) {
       if (!this.knownHumanTasks.has(task.id) && this.notificationPermission() === 'granted' && typeof Notification !== 'undefined') {

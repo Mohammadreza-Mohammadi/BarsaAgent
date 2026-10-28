@@ -22,7 +22,7 @@
 `barsa set-runtime <id> <role> <provider>:<model>:<effort> --reason "…"` · `barsa set-runtime <id> --preset <name> --reason "…"` ·
 `barsa set-runtime <id> <role|preset|all> --reset --reason "…"` · `barsa retry-provision <id>` (و alias ِ `barsa retry-install <id>`) ·
 `barsa answer <id> --approve | --reject [--route implementer|architect] | --clarify [--respec] | --note | --raise-limit <field>=<n> | --unblock | --allow-shared-knowledge-file <path>`
-(متن از `--text-file <f>` یا `--stdin`) · `barsa recover <id> [--discard-residue]` · `barsa recheck <id>` · `barsa approve-deps <id> --reason "…"` · `barsa reject-deps <id> --reason "…"` · `barsa sync` ·
+(متن از `--text-file <f>` یا `--stdin`) · `barsa recover <id> [--discard-residue]` · `barsa recheck <id>` · `barsa approve-deps <id> --reason "…"` · `barsa reject-deps <id> --reason "…"` · `barsa reevaluate-review <id> --reason "…"` · `barsa changeset <id> <source> <C…> --reason "…" [--replace]` · `barsa sync` ·
 `barsa drain` · `barsa drain --off` · `barsa kill-stuck-install <id> [--minutes N]`.
 
 ### «بدون RDP»: دیدن، تشخیص، رفع گیر
@@ -41,6 +41,8 @@
 | `deps <id>` | `GET /api/repos/:repo/tasks/:id` | **allow.** دروازه‌ی تأیید ِ وابستگی: نام/نسخه/dev/دلیل/license، جدول ِ peerها، `hasInstallScript`، و وابستگی‌های تأییدشده؛ `info.known=false` ← دلیل |
 | `attachments <id>` | `GET /api/repos/:repo/tasks/:id` | **allow.** فهرست ِ پیوست‌ها (نام، نوع، اندازه، زمان؛ فریم‌ها زیر ویدیو؛ «فقط برای انسان»؛ «فایل روی دیسک نیست»). آپلود از راه دور **نیست** |
 | `approve-deps <id>` / `reject-deps <id>` | `POST /api/repos/:repo/tasks/:id/approve-dependencies` / `…/reject-dependencies` | **ask.** `answer --approve-dependencies\|--reject-dependencies --reason` (reason اجباری، از فایل ِ موقت؛ پیش‌سنجی از `actions.approveDependencies/rejectDependencies`). بعد از تصمیم مثل بقیه‌ی گیت‌ها اگر `run.autoResumeAfterAnswer` روشن است run می‌زند |
+| `reevaluate-review <id>` | `POST /api/repos/:repo/tasks/:id/reevaluate-review` | **ask.** `answer --reevaluate-review --reason` (TOOLING-051): بازیابی ِ بدون Implementer بعد از ردهای ِ فقط-ابزاری ِ Reviewer؛ budget ِ سوخته برمی‌گردد؛ پیش‌سنجی از `actions.reevaluateReview`؛ run ِ خودکار **ندارد** |
+| `changeset <id> <source> <C…>` | `POST /api/repos/:repo/tasks/:id/external-changeset` | **ask.** `answer --external-changeset <source> <C1[,C2…]> --reason [--replace]` بعد از integrated؛ پیش‌سنجی از `externalSources[].actions.canDeclareChangeset`؛ `--replace` فقط با مقدار ِ قبلی |
 | `recheck <id>` | `POST /api/remote/tasks/:id/recheck` | **ask.** `manager.js recheck <id>` (TOOLING-048): attempt ِ ردشده با گارد ِ Manager (یا خطای ابزار ِ نوشتن، TOOLING-049) دوباره سنجیده می‌شود، **بدون agent، بدون attempt ِ تازه، بدون مصرف ِ budget**. پیش‌سنجی از `actions.recheck`؛ نتیجه از رویداد ِ `attempt.rechecked` (`accepted` · `rejected` · `blocked` · `routed`) |
 | `retry-install <id>` | `POST /api/remote/tasks/:id/retry-install` | alias ِ یک نسخه‌ی `retry-provision` (همیشه هم‌مقدار) |
 | `runtime <id>` | `GET /api/repos/:repo/tasks/:id` + `GET …/running` | جدول ِ مؤثر ِ هر نقش (از کلیدهای `runtime.effective`) با منبع، نقش ِ جاری (attempt ِ زنده، وگرنه lastAttempt)، attempt ِ زنده، و تغییرهای در صف («در انتظار اعمال») |
