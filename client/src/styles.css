@@ -172,3 +172,10 @@
 .dep-reason{font-size:11px;color:#40506a;margin:6px 0}.dep-peers{width:100%;border-collapse:collapse;font-size:11px;margin:6px 0}
 .dep-peers th{text-align:right;color:#758196;font-weight:600;padding:4px 6px;border-bottom:1px solid #e1e6ed}.dep-peers td{padding:5px 6px;border-bottom:1px solid #eef1f5}
 .dep-peers tr.bad td{background:#fff0ef;color:#a32e29}.dep-peer-warning{margin-bottom:8px}
+
+/* TOOLING-051 */
+.spdd-line{display:flex;gap:10px;flex-wrap:wrap;color:#40506a;margin:6px 0}.spdd-line small{font-size:10px}
+.needs-human-card{border-color:#e6b84a;background:#fffaf0}.needs-human-card .nh-text{white-space:pre-wrap;margin:6px 0;font-size:12px;line-height:1.8}
+.run-blocked{color:#a35a00;font-size:10px;margin-inline-start:8px}
+.cs-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid #eef1f5}.cs-values{font-weight:700}.cs-none{color:#8a95a4}
+.cs-row .disabled-gate-warning{flex-basis:100%}

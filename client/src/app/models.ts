@@ -153,7 +153,9 @@ export interface ExternalSource {
   delivery?: string | null;
   staged?: { sha: string; at: string | null } | null;
   checkedIn?: { changesets: string[]; at: string | null } | null;
-  actions?: { canStageExternal: boolean; canMarkCheckedIn: boolean };
+  /** TOOLING-051 (و): changeset ِ مؤثر (بدون پیشوند C در بعضی مقدارها)؛ [] = ثبت نشده. */
+  declaredChangesets?: string[];
+  actions?: { canStageExternal: boolean; canMarkCheckedIn: boolean; canDeclareChangeset?: boolean };
 }
 
 /**
@@ -175,6 +177,10 @@ export interface TaskActions {
   setRuntime?: boolean;
   /** TOOLING-048: سنجش ِ دوباره‌ی attempt ِ ردشده با گارد ِ Manager (یا خطای ابزار ِ نوشتن)؛ بدون agent و بدون مصرف ِ budget. */
   recheck?: boolean;
+  /** TOOLING-051 (ب): `run <id>` الان کاری می‌کند؟ تنها منبع ِ «می‌شود اجرا کرد». false ⇒ دلیل در task.runBlocked. */
+  run?: boolean;
+  /** TOOLING-051 (ح-۵): answer --reevaluate-review --reason (بدون اجرای Implementer). */
+  reevaluateReview?: boolean;
   /** TOOLING-050 هـ: دروازه‌ی تأیید ِ وابستگی (answer --approve-dependencies / --reject-dependencies، با reason). */
   approveDependencies?: boolean;
   rejectDependencies?: boolean;
@@ -275,6 +281,10 @@ export interface Task {
   lastAttempt?: { n?: number; role?: string | null; outcome?: string | null; at?: string | null; runtime?: AttemptRuntime | null } | null;
   /** TOOLING-048: نقش ِ جاری و بعدی (از manifest)، در سطح ِ تسک؛ مقدار ِ خالی null. غایب = Manager قدیمی‌تر از ۰۴۸ (هیچ برجسته‌سازی). */
   roles?: { current: string | null; next: string | null } | null;
+  /** TOOLING-051 (ب): وقتی actions.run=false: { code, reason(فارسی) }؛ وگرنه null. */
+  runBlocked?: { code: 'terminal' | 'blocked' | 'manual-delegation' | 'awaiting-human' | 'sync-running' | 'live-lock' | 'stuck' | 'not-task' | 'execution-disabled' | string; reason: string } | null;
+  /** TOOLING-051 (ج): story ِ SPDD ِ رزروشده (پروژه، کد، شماره، slug، مسیر). */
+  spdd?: Array<{ project: string; code: string; number: number; slug: string; dir: string }>;
   /** TOOLING-050 ب: Caseهای tests.md (دستی/خودکار) و مشکلات ِ parser؛ null = tests.md نیست؛ غایب = Manager قدیمی‌تر. */
   tests?: TestsInfo | null;
   /** TOOLING-050 د: پیوست‌ها (فایل‌ها بیرون از git، زیر attachments.root ِ Manager). */

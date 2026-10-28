@@ -66,7 +66,7 @@
   <section class="human-strip" [class.clear]="humanTasks().length === 0">
     <div><span class="pulse"></span><b>منتظر تو: {{humanTasks().length}}</b></div>
     <div class="human-list">
-      <button *ngFor="let t of humanTasks()" (click)="openTask(t, true)"><b>#{{t.id}}</b> {{gateLabel(t)}} <span>←</span></button>
+      <button *ngFor="let t of humanTasks()" (click)="openTask(t, !isNeedsHuman(t))"><b>#{{t.id}}</b> {{gateLabel(t)}} <span>←</span></button>
       <span *ngIf="!humanTasks().length">درخواستی برای تصمیم انسانی وجود ندارد</span>
     </div>
   </section>
@@ -474,11 +474,13 @@
 
       <ng-container *ngIf="taskTab() === 'overview'">
 
-      <ba-task-ops [repoId]="repoId()" [task]="t" [running]="running()[t.id]" [actionsVersion]="actionsVersion()" (changed)="refresh(true)"></ba-task-ops>
+      <ba-task-ops [repoId]="repoId()" [task]="t" [running]="running()[t.id]" [events]="events()" [actionsVersion]="actionsVersion()" (changed)="onRuntimeChanged()"></ba-task-ops>
 
       <ba-task-runtime [repoId]="repoId()" [task]="t" [running]="running()[t.id]" [events]="events()" (changed)="onRuntimeChanged()"></ba-task-runtime>
 
       <ba-task-dependencies [repoId]="repoId()" [task]="t" (changed)="refresh(true)"></ba-task-dependencies>
+
+      <ba-external-changeset [repoId]="repoId()" [task]="t" [disabled]="executionDisabled()" (changed)="onRuntimeChanged()"></ba-external-changeset>
 
       <ba-task-attachments [repoId]="repoId()" [task]="t" [disabled]="executionDisabled()" (changed)="refresh(true)"></ba-task-attachments>
 
@@ -498,7 +500,8 @@
       <span class="footer-note">{{isQueued(t) ? 'در صف اجرا' : isRunning(t) ? 'فرآیند فعال است' : exitLabel(exitCodeFor(t))}}</span>
       <!-- task پایان‌یافته هیچ دکمه‌ی اکشنی ندارد: نمایش اکشن‌ها از actions ِ status --json است و Manager برای state پایانی هیچ‌کدام را نمی‌دهد -->
       <button class="secondary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || executionDisabled()" [title]="executionDisabled() ? executionOffTitle : 'معمولاً لازم نیست — حلقه خودش این کار را می‌کند'" (click)="rebaseTask()">rebase دستی</button>
-      <button class="primary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.error || executionDisabled()" [title]="executionDisabled() ? executionOffTitle : ''" (click)="runTask()">▶ اجرا / ادامه</button>
+      <button class="primary" *ngIf="!finished(t)" [disabled]="busy() || isRunning(t) || isQueued(t) || !!t.error || executionDisabled() || !runOk(t)" [title]="runTitle(t)" (click)="runTask()">▶ اجرا / ادامه</button>
+      <small class="run-blocked" *ngIf="!finished(t) && !runOk(t)">اجرا ممکن نیست — {{ runReason(t) }}</small>
     </footer>
   </ng-container>
 

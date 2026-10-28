@@ -188,6 +188,38 @@ export function extrasEventText(e: AgentEvent | Record<string, unknown>): { labe
       const deps = Array.isArray(e['dependencies']) ? e['dependencies'].map(String) : [];
       return { label: 'نصب ِ وابستگی شکست خورد', details: clip(`${String(e['reason'] ?? 'نامعلوم')}${deps.length ? ` · ${deps.join('، ')}` : ''}`, 260) };
     }
+
+    case 'baseline.lint-debt-in-scope': {
+      const files = Array.isArray(e['files']) ? e['files'].length : 0;
+      return { label: 'بدهی ِ lint ِ داخل scope به Implementer داده شد', details: `خطاهای lint ِ از قبل موجود در فایل‌های داخل scope به کار ِ Implementer اضافه شد (${String(e['totalErrors'] ?? '؟')} خطا در ${files} فایل)` };
+    }
+    case 'base.refreshed':
+      return { label: 'worktree به base ِ تازه رفت', details: `worktree به base ِ تازه رفت: ${shortSha(e['oldBase'])} → ${shortSha(e['newBase'])}${e['installInputsChanged'] === true ? ' · نصب ِ وابستگی‌ها دوباره انجام می‌شود' : ''}` };
+    case 'base.refresh-skipped':
+      return { label: 'به‌روزرسانی ِ base انجام نشد', details: clip(`base ِ worktree جلو نرفت: ${String(e['reason'] ?? 'علت ثبت نشده')}`, 240) };
+    case 'external.changeset-declared': {
+      const list = Array.isArray(e['changesets']) ? e['changesets'].map(c => changesetLabel(String(c))) : [];
+      const previous = Array.isArray(e['previous']) ? e['previous'].map(c => changesetLabel(String(c))) : [];
+      return { label: 'changeset اعلام شد', details: `«${String(e['source'] ?? '؟')}»: ${list.join('، ') || '—'}${e['replaced'] === true ? ` (جایگزین ِ ${previous.join('، ') || 'قبلی'})` : ''}${e['reason'] ? ` · ${clip(String(e['reason']), 120)}` : ''}` };
+    }
+    case 'review.needs-clarification':
+      return { label: 'Reviewer سؤال دارد (منتظر انسان)', details: clip(`attempt ${String(e['attempt'] ?? '؟')} · budget مصرف نشد · ${String(e['question'] ?? '')}`, 300) };
+    case 'review.rejection-loop': {
+      const failures = Array.isArray(e['failures']) ? e['failures'].map(String) : [];
+      return { label: 'Reviewer دو بار با همان مشکل رد کرد (منتظر انسان)', details: `attempt ${String(e['previousAttempt'] ?? '؟')} و ${String(e['attempt'] ?? '؟')} · ${failures.join('، ') || '—'} · budget مصرف نشد` };
+    }
+    case 'review.outcome-inconsistent':
+      return { label: 'خروجی ِ Reviewer ناسازگار بود', details: clip(`outcome=${String(e['outcome'] ?? '؟')} با requestedTransition=${String(e['requestedTransition'] ?? '؟')} نمی‌خواند؛ دوباره سنجیده می‌شود${Array.isArray(e['problems']) && e['problems'].length ? ` · ${clip(String(e['problems'][0]), 140)}` : ''}`, 260) };
+    case 'review.manual-case-by-reviewer': {
+      const cases = Array.isArray(e['cases']) ? e['cases'].map(String) : [];
+      return { label: 'Reviewer Case را «برای انسان» علامت زد', details: `${cases.join('، ') || '—'} — رد حساب نشد؛ در دروازه‌ی merge انسان می‌سنجد` };
+    }
+    case 'budget.refunded':
+      return { label: 'budget ِ سوخته برگشت', details: `${String(e['field'] ?? 'budget')}: ${String(e['from'] ?? '؟')} → ${String(e['to'] ?? '؟')} (${String(e['amount'] ?? '؟')} برگشت)` };
+    case 'review.re-evaluated': {
+      const cases = Array.isArray(e['manualCases']) ? e['manualCases'].map(String) : [];
+      return { label: 'review بدون اجرای Implementer دوباره سنجیده شد', details: `attempt ${String(e['attempt'] ?? '؟')} · Implementer اجرا نشد${cases.length ? ` · Case ِ دستی: ${cases.join('، ')}` : ''}${e['reason'] ? ` · ${clip(String(e['reason']), 120)}` : ''}` };
+    }
     case 'external.snapshot': {
       if (!('localEdits' in e) && !('diskChanged' in e) && !('cause' in e)) return null;
       const parts = [`ویرایش ِ دستی ِ محلی: ${localEditsText(e['localEdits'])}`];
@@ -197,4 +229,94 @@ export function extrasEventText(e: AgentEvent | Record<string, unknown>): { labe
     }
     default: return null;
   }
+}
+
+export interface NeedsHumanInfo { stage: string | null; title: string; text: string; failures: string[] | null; guide: string }
+export interface ExternalChangesetRow { id: string; access: string | null; declared: string[]; checkedIn: string[]; canDeclare: boolean; missing: boolean }
+
+// --- TOOLING-051 ------------------------------------------------------------------------------------------------
+
+const shortSha = (value: unknown): string => (typeof value === 'string' && value ? value.slice(0, 8) : '؟');
+
+/** «C17792» از «17792» یا «c17792»؛ مقدار ِ خالی/غیررشته ← ''. */
+export function changesetLabel(value: unknown): string {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  return /^c/i.test(text) ? `C${text.slice(1)}` : `C${text}`;
+}
+
+/** تسک ِ Manager ِ قدیمی (بدون actions.run) ← null (رفتار ِ قبلی)؛ وگرنه { allowed, code, reason }. */
+export function runInfo(task: Pick<Task, 'actions' | 'runBlocked'> | null | undefined): { allowed: boolean; code: string | null; reason: string | null } | null {
+  const actions = task?.actions;
+  if (!actions || typeof actions !== 'object' || !('run' in actions)) return null;
+  if (actions.run === true) return { allowed: true, code: null, reason: null };
+  return { allowed: false, code: task.runBlocked?.code ?? null, reason: task.runBlocked?.reason ?? 'Manager دلیلی برای ِ ممکن‌نبودن ِ اجرا نداد' };
+}
+
+/** «اجرا: ممکن» / «اجرا: ممکن نیست — <reason>» / null (Manager قدیمی). */
+export function runLine(task: Pick<Task, 'actions' | 'runBlocked'> | null | undefined): string | null {
+  const info = runInfo(task);
+  if (!info) return null;
+  return info.allowed ? 'اجرا: ممکن' : `اجرا: ممکن نیست — ${info.reason}`;
+}
+
+/** story ِ SPDD ِ رزروشده (tasks[].spdd). */
+export function spddStories(task: Pick<Task, 'spdd'> | null | undefined): Array<{ project: string | null; code: string; number: number | null; slug: string; dir: string | null }> {
+  return (Array.isArray(task?.spdd) ? task.spdd : []).filter(s => s && typeof s.code === 'string').map(s => ({ project: s.project ?? null, code: s.code, number: s.number ?? null, slug: s.slug ?? '', dir: s.dir ?? null }));
+}
+export const spddText = (story: { code: string; slug: string }): string => `story: ${story.code} (${story.slug})`;
+
+/** blocker ِ needs-human: منتظر ِ انسان است، نه خطای فنی. */
+export const needsHuman = (task: Pick<Task, 'blocker'> | null | undefined): boolean => task?.blocker?.kind === 'needs-human';
+
+const lastEvent = (events: unknown, name: string): Record<string, unknown> | null => ([...(Array.isArray(events) ? events : [])] as Array<Record<string, unknown>>).reverse().find(e => e && e['event'] === name) ?? null;
+
+/** reviewer-clarification | rejection-loop | عمومی؛ events اختیاری (متن ِ کامل ِ سؤال / مجموعه‌ی شکست‌ها). */
+export function needsHumanInfo(task: Pick<Task, 'blocker'> | null | undefined, events: unknown = null): NeedsHumanInfo | null {
+  if (!needsHuman(task)) return null;
+  const stage = task!.blocker!.stage ?? null;
+  const detail = String(task!.blocker!.detail ?? task!.blocker!.reason ?? '');
+  if (stage === 'reviewer-clarification') {
+    const question = lastEvent(events, 'review.needs-clarification')?.['question'];
+    return { stage, title: 'Reviewer سؤال دارد', text: typeof question === 'string' && question ? question : detail, failures: null, guide: 'جواب را به‌صورت یادداشت بنویس (note) و بعد unblock کن؛ Reviewer با یادداشت دوباره می‌سنجد.' };
+  }
+  if (stage === 'rejection-loop') {
+    const failures = lastEvent(events, 'review.rejection-loop')?.['failures'];
+    return { stage, title: 'Reviewer دو بار پشت‌سرهم با همان مشکل رد کرد', text: detail, failures: Array.isArray(failures) ? failures.map(String) : null, guide: 'یکی از این‌ها: سنجش دوباره‌ی review (اگر مجاز است)، یادداشت (note)، یا unblock.' };
+  }
+  return { stage, title: 'نیاز به تصمیم ِ انسان', text: detail, failures: null, guide: 'blocker را بررسی کن؛ بعد note و unblock.' };
+}
+
+/** خط‌های CLI برای blocker ِ needs-human. reevaluate: actions.reevaluateReview. */
+export function needsHumanLines(info: NeedsHumanInfo | null, id: string, { reevaluate = false }: { reevaluate?: boolean } = {}): string[] {
+  if (!info) return [];
+  const lines: string[] = [`⏳ ${info.title} (منتظر ِ انسان، نه خطای فنی):`];
+  if (info.text) lines.push(`  ${info.text}`);
+  if (info.failures?.length) lines.push(`  AC/Case ِ تکراری: ${info.failures.join('، ')}`);
+  if (info.stage === 'reviewer-clarification') lines.push(`  جواب: barsa answer ${id} --note --stdin  ← بعد: barsa answer ${id} --unblock --reason "…"`);
+  else {
+    if (reevaluate) lines.push(`  سنجش دوباره‌ی review (بدون Implementer): barsa reevaluate-review ${id} --reason "…"`);
+    lines.push(`  یادداشت: barsa answer ${id} --note --stdin · بازگشایی: barsa answer ${id} --unblock --reason "…"`);
+  }
+  return lines;
+}
+
+/** منبع‌های بیرونی با changeset ِ مؤثر؛ هشدار وقتی integrated و ثبت‌نشده (منبع ِ write). */
+export function externalChangesets(task: Pick<Task, 'externalSources' | 'state'> | null | undefined): ExternalChangesetRow[] {
+  return (Array.isArray(task?.externalSources) ? task!.externalSources! : []).filter(s => s && !s.error).map(s => {
+    const declared = (Array.isArray(s.declaredChangesets) ? s.declaredChangesets : []).map(changesetLabel).filter(Boolean);
+    return {
+      id: s.id, access: s.access ?? null, declared,
+      checkedIn: (Array.isArray(s.checkedIn?.changesets) ? s.checkedIn.changesets : []).map(changesetLabel).filter(Boolean),
+      canDeclare: s.actions?.canDeclareChangeset === true,
+      missing: task!.state === 'integrated' && declared.length === 0 && s.access !== 'read'
+    };
+  });
+}
+
+/** شماره‌ی changeset ِ ورودی ← 'C1,C2' یا null اگر نامعتبر. فقط ارقام (با C اختیاری)، جداشده با کاما/فاصله. */
+export function parseChangesetInput(text: unknown): string | null {
+  const parts = String(text ?? '').split(/[\s,،]+/).map(p => p.trim()).filter(Boolean);
+  if (!parts.length || parts.length > 20 || parts.some(p => !/^c?\d{1,9}$/i.test(p))) return null;
+  return [...new Set(parts.map(changesetLabel))].join(',');
 }

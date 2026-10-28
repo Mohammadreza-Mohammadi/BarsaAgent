@@ -3,20 +3,21 @@ import { FormsModule } from '@angular/forms';
 import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
-import { HealthStatus, RecheckResult, RunRecord, RunningTask, Task } from './models';
+import { AgentEvent, HealthStatus, RecheckResult, RunRecord, RunningTask, Task } from './models';
 import { failedWrites, lockNeedsForce, suggestedRecovery } from './task-health';
+import { needsHumanInfo, spddStories, spddText } from './task-extras';
 import { CardButton, allowed, can, conflictFiles, hasActions, opsButtons, provisionStageText, raiseLimitFields, supportsRaiseLimitList, unknownActionKeys } from './task-actions';
 
 type Pending =
   | 'abandon' | 'cancel' | 'void' | 'unlock' | 'unblock' | 'retry-rebase' | 'raise-limit' | 'close-orphan'
-  | 'allow-path' | 'allow-shared-knowledge-file' | 'external-access' | 'reset-external' | 'recover' | 'recheck' | 'retry-provision';
+  | 'allow-path' | 'allow-shared-knowledge-file' | 'external-access' | 'reset-external' | 'recover' | 'recheck' | 'reevaluate-review' | 'retry-provision';
 
 const BUTTON_LABELS: Record<string, string> = {
   unblock: '🔓 رفع blocker (unblock)', 'retry-rebase': '🔁 دوباره امتحان کن (main عوض شده)', 'raise-limit': '⬆ بالا بردن سقف',
   'allow-path': '➕ افزودن مسیر به scope', 'allow-shared-knowledge-file': '➕ فایل دانش مشترک', 'external-access': '🔑 دسترسی منبع بیرونی',
   'reset-external': '♻ بازنشانی worktree سایه', void: '↩ باطل کردن آخرین transition', unlock: '🔓 آزاد کردن قفل',
   cancel: 'بستن task (cancel)', abandon: 'کنار گذاشتن (abandon)',
-  recover: '🛟 بازیابی (recover)', recheck: '♻ سنجش دوباره (بدون اجرای agent)', 'retry-provision': '🔁 دوباره امتحان کن (نصب / build / baseline)'
+  recover: '🛟 بازیابی (recover)', recheck: '♻ سنجش دوباره (بدون اجرای agent)', 'reevaluate-review': '🔍 سنجش دوباره‌ی review (بدون اجرای Implementer)', 'retry-provision': '🔁 دوباره امتحان کن (نصب / build / baseline)'
 };
 
 const DANGEROUS = new Set<Pending>(['abandon', 'cancel', 'void', 'unlock', 'reset-external']);
@@ -27,7 +28,7 @@ const TITLES: Record<Pending, string> = {
   'raise-limit': 'بالا بردن سقف (raise-limit)', 'close-orphan': 'بستن attempt یتیم (close-orphan)',
   'allow-path': 'افزودن مسیر به scope.allow (allow-path)', 'allow-shared-knowledge-file': 'استثنای فایل دانش مشترک',
   'external-access': 'تغییر دسترسی منبع بیرونی', 'reset-external': 'بازنشانی worktree سایه (reset-external)',
-  recover: 'بازیابی ِ تسک (recover)', recheck: 'سنجش دوباره (recheck)', 'retry-provision': 'دوباره امتحان کن (provisioning)'
+  recover: 'بازیابی ِ تسک (recover)', recheck: 'سنجش دوباره (recheck)', 'reevaluate-review': 'سنجش دوباره‌ی review (بدون Implementer)', 'retry-provision': 'دوباره امتحان کن (provisioning)'
 };
 
 const RECHECK_RESULT: Record<string, string> = {
@@ -35,6 +36,7 @@ const RECHECK_RESULT: Record<string, string> = {
 };
 
 const HINTS: Partial<Record<Pending, string>> = {
+  'reevaluate-review': 'اگر ردهای اخیر فقط به‌خاطر Case ِ دستی یا یک خطای ابزاری بوده، تسک بدون اجرای دوباره‌ی Implementer به review یا دروازه‌ی merge می‌رسد، و budget ِ سوخته برمی‌گردد.',
   recheck: 'همان خروجی ِ موجود دوباره سنجیده می‌شود. budget مصرف نمی‌شود؛ agent اجرا نمی‌شود و attempt ِ تازه‌ای ساخته نمی‌شود.',
   abandon: 'task را برای همیشه کنار می‌گذارد؛ برنمی‌گردد.',
   cancel: 'task را می‌بندد؛ برنمی‌گردد.',
@@ -121,6 +123,19 @@ const HINTS: Partial<Record<Pending, string>> = {
             <div class="disabled-gate-warning">فهرست فایل‌ها ثبت نشده (<code>conflictFiles: null</code>) — رویداد <code>rebase.conflict</code> قدیمی‌تر از این قابلیت است.</div>
           }
           <small>ویرایشگر حل تعارض در این فاز نیست؛ حل با git در worktree یا «دوباره امتحان کن» وقتی main عوض شد.</small>
+        </div>
+      }
+
+      @if (spdd().length) {
+        <div class="spdd-line">@for (s of spdd(); track s.text) { <small dir="rtl"><b>{{ s.text }}</b>@if (s.dir) { — <code dir="ltr">{{ s.dir }}</code> }</small> }</div>
+      }
+
+      @if (needsHumanView(); as nh) {
+        <div class="conflict-card blocker-card needs-human-card">
+          <b>⏳ {{ nh.title }} — منتظر ِ تو (خطای فنی نیست)</b>
+          @if (nh.text) { <p class="nh-text">{{ nh.text }}</p> }
+          @if (nh.failures?.length) { <small>AC / Case ِ تکراری: <code dir="ltr">{{ nh.failures!.join('، ') }}</code></small> }
+          <small>{{ nh.guide }}</small>
         </div>
       }
 
@@ -238,6 +253,8 @@ export class TaskOpsComponent {
   readonly task = input.required<Task>();
   readonly running = input<RunningTask | undefined>(undefined);
   readonly changed = output<void>();
+  /** رویدادهای تسک (برای ِ متن ِ کامل ِ سؤال ِ Reviewer / مجموعه‌ی ِ شکست‌های حلقه‌ی رد). اختیاری. */
+  readonly events = input<AgentEvent[]>([]);
   /** `capabilities.status.actionsVersion` ِ Manager همین مخزن؛ نبودن = قدیمی (raise-limit پنهان). */
   readonly actionsVersion = input<number | null>(null);
 
@@ -283,6 +300,7 @@ export class TaskOpsComponent {
   }
   /** resume ِ خودکار فقط بعد از approve/reject/clarify (پنل گیت)؛ این‌جا فقط اکشن‌هایی که خودشان unblock + run هستند. */
   resumeNote(p: Pending): string {
+    if (p === 'reevaluate-review') return 'Implementer اجرا نمی‌شود و run ِ خودکار هم نیست؛ Manager تسک را به review یا دروازه‌ی merge می‌برد. رویدادهای review.re-evaluated و budget.refunded در تاریخچه می‌آیند.';
     if (p === 'recheck') return 'agent اجرا نمی‌شود، attempt ِ تازه‌ای ساخته نمی‌شود و budget مصرف نمی‌شود؛ ممکن است تا چند دقیقه طول بکشد (verify و commit ِ transition).';
     return p === 'retry-rebase' || p === 'retry-provision'
       ? 'بعد از رفع blocker، کانبان خودش run می‌زند (unblock + run).'
@@ -298,8 +316,11 @@ export class TaskOpsComponent {
   /** blocker ای که step/log/outputTail/stage دارد (شکست ِ provisioning و baseline، ۰۴۳–۰۴۵). */
   provisionBlocker() {
     const b = this.task().blocker;
-    return b && (b.step || b.log || b.outputTail?.length || b.stage) ? b : null;
+    return b && b.kind !== 'needs-human' && (b.step || b.log || b.outputTail?.length || b.stage) ? b : null;
   }
+  /** blocker ِ needs-human (TOOLING-051): منتظر ِ انسان، نه خطای فنی. */
+  needsHumanView() { return needsHumanInfo(this.task(), this.events()); }
+  spdd() { return spddStories(this.task()).map(story => ({ text: spddText(story), dir: story.dir })); }
   stageText(): string { return provisionStageText(this.task().blocker?.stage); }
   /** `blocker.log` وقتی زیر پوشه‌ی خود ِ تسک است از راه artifact خوانده می‌شود؛ وگرنه فقط مسیر نشان داده می‌شود. */
   logArtifact(): string | null {
@@ -405,6 +426,7 @@ export class TaskOpsComponent {
       case 'retry-rebase': return `node scripts/manager.js answer ${id} --unblock ${why}  ←  سپس  node scripts/manager.js run ${id}`;
       case 'retry-provision': return `node scripts/manager.js answer ${id} --unblock ${why}  ←  سپس  node scripts/manager.js run ${id}`;
       case 'recheck': return `node scripts/manager.js recheck ${id}`;
+      case 'reevaluate-review': return `node scripts/manager.js answer ${id} --reevaluate-review ${why}`;
       case 'recover': return `node scripts/manager.js recover ${id}${this.recoverMode() === 'discard-residue' ? ` --discard-residue --reason-file ‹متن دلیل›` : ''}`;
       case 'raise-limit': return `node scripts/manager.js answer ${id} --raise-limit ${this.limitField}=${this.limitValue} ${why}`;
       case 'close-orphan': return `node scripts/manager.js answer ${id} --close-orphan ${this.attempt} ${why}`;
@@ -448,6 +470,7 @@ export class TaskOpsComponent {
         case 'unblock': await firstValueFrom(this.api.unblockTask(repo, id, reason)); break;
         case 'retry-rebase': await firstValueFrom(this.api.retryRebase(repo, id, reason || undefined)); break;
         case 'retry-provision': await firstValueFrom(this.api.retryProvision(repo, id, reason || undefined)); break;
+        case 'reevaluate-review': await firstValueFrom(this.api.reevaluateReview(repo, id, reason)); this.info.set('review بدون اجرای Implementer دوباره سنجیده شد؛ budget ِ سوخته برگشت.'); break;
         case 'recheck': this.recheckResult.set(await firstValueFrom(this.api.recheckTask(repo, id))); break;
         case 'recover': await firstValueFrom(this.api.recoverTask(repo, id, this.recoverMode() === 'discard-residue' ? { discardResidue: true, reason } : {})); break;
         case 'raise-limit': await firstValueFrom(this.api.raiseLimit(repo, id, this.limitField, Number(this.limitValue), reason)); break;

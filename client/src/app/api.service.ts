@@ -109,6 +109,11 @@ export class ApiService {
   rejectDependencies = (repo: string, id: string, reason: string) =>
     this.http.post<{ ok: boolean; autoResumed?: boolean; queued?: boolean; started?: boolean }>(`${this.taskPath(repo, id)}/reject-dependencies`, { reason });
 
+  /** TOOLING-051 (ح-۵): answer --reevaluate-review --reason؛ Implementer اجرا نمی‌شود و run ِ خودکار هم نیست. */
+  reevaluateReview = (repo: string, id: string, reason: string) => this.http.post<{ ok: boolean }>(`${this.taskPath(repo, id)}/reevaluate-review`, { reason });
+  /** TOOLING-051 (و): answer --external-changeset <source> <C…> --reason [--replace]. */
+  declareChangeset = (repo: string, id: string, body: { sourceId: string; changesets: string; reason: string; replace: boolean }) =>
+    this.http.post<{ ok: boolean; sourceId: string; changesets: string[] }>(`${this.taskPath(repo, id)}/external-changeset`, body);
   /** TOOLING-048: `manager.js recheck <id>` — بدون agent و بدون مصرف ِ budget؛ نتیجه‌ی رویداد attempt.rechecked برمی‌گردد. */
   recheckTask = (repo: string, id: string) => this.http.post<RecheckResult>(`/api/remote/tasks/${encodeURIComponent(id)}/recheck`, {}, { params: new HttpParams().set('repo', repo) });
   retryRebase = (repo: string, id: string, reason?: string) => this.http.post<{ ok: boolean; queued?: boolean; started?: boolean; duplicate?: boolean }>(`${this.taskPath(repo, id)}/retry-rebase`, { reason });
