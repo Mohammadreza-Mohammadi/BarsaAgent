@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnDestroy, OnInit, effect, inject, signal, untracked } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
@@ -23,6 +23,7 @@ import { attemptModelCell, createRuntimePayload, duplicateText, runtimeEventText
 import { ArchiveComponent } from './archive.component';
 import { actionsVersionOf, allowed, can, canAnswerGate } from './task-actions';
 import { BOARD_DONE_STATES, archiveTasks, isFinished, isRecentlyDone, normalizeDoneDays } from './task-archive';
+import { probeUi, reuse, reuseIgnoring, shouldDeferRender, trackById, trackByKey, trackByPath } from './live-update';
 import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, DrainStatus, ExternalSource, HealthResult, Issue, Repo, RunningTask, RuntimeOptions, StagedUpload, StructuredFailure, Task } from './models';
 
 const LANES = [
@@ -90,6 +91,15 @@ type Panel = 'task' | 'action' | 'issues' | 'create' | 'recovery' | 'checkin' | 
 export class AppComponent implements OnInit, OnDestroy {
   readonly api = inject(ApiService);
   readonly auth = inject(AuthService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  /** trackBy ی ِ لیست‌های ِ قالب: DOM ِ آیتم با تازه‌شدن ِ داده دوباره ساخته نمی‌شود. */
+  readonly trackById = trackById;
+  readonly trackByKey = trackByKey;
+  readonly trackByPath = trackByPath;
+  readonly trackByTaskId = (_i: number, r: RunningTask): string => r.taskId;
+  readonly trackByPair = (_i: number, c: { left: Task; right: Task }): string => `${c.left.id}:${c.right.id}`;
+  /** داده‌ی ِ تازه رسیده ولی چون کاربر وسط ِ تایپ/انتخاب ِ متن است هنوز اعمال نشده. */
+  readonly freshPending = signal(false);
   // کانبان فاز ۱: صفحه‌های کنسول/نگهداری/سلامت/ممیزی کنار برد
   readonly view = signal<'board' | 'archive' | 'console' | 'maintenance' | 'bundles' | 'health' | 'audit'>(readStoredView());
   private started = false;
@@ -180,6 +190,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   async ngOnInit(): Promise<void> {
+    document.addEventListener('focusout', this.onUserIdle);
+    document.addEventListener('selectionchange', this.onUserIdle);
     await this.auth.init();
   }
 
@@ -214,16 +226,52 @@ export class AppComponent implements OnInit, OnDestroy {
       this.loading.set(false);
     }
     void this.refreshDrain();
+    // پنل ِ جزئیات هم زنده می‌ماند: داده‌ی ِ بی‌تغییر هیچ render ای نمی‌سازد و تغییر فقط شاخه‌ی ِ خودش را به‌روز می‌کند (live-update.ts).
     this.poll = window.setInterval(() => {
       if (this.auth.user()) void this.refreshDrain();
-      if (this.panel() === 'task' || this.panel() === 'action' || !this.auth.user() || (this.view() !== 'board' && this.view() !== 'archive')) return;
+      if (!this.auth.user() || (this.view() !== 'board' && this.view() !== 'archive')) return;
       void this.refresh(true);
     }, 3000);
   }
 
   ngOnDestroy(): void {
     if (this.poll) window.clearInterval(this.poll);
+    document.removeEventListener('focusout', this.onUserIdle);
+    document.removeEventListener('selectionchange', this.onUserIdle);
     this.closeStream();
+  }
+
+  /** فوکوس از فیلد رفت یا انتخاب ِ متن برداشته شد ⇒ تغییرات ِ به‌تعویق‌افتاده (داده و لاگ) اعمال شود. */
+  private readonly onUserIdle = (): void => {
+    if (!this.freshPending() && !this.pendingLogs.length) return;
+    window.setTimeout(() => {
+      if (this.uiBusy()) return;
+      this.flushLogs();
+      if (this.freshPending()) void this.refresh(true);
+    }, 0);
+  };
+
+  /** کاربر وسط ِ تایپ در فیلد یا انتخاب ِ متن است؟ */
+  private uiBusy(): boolean { return shouldDeferRender(probeUi(document, this.host.nativeElement)); }
+  private selecting(): boolean { return probeUi(document, this.host.nativeElement).selectionActive; }
+
+  /** نشانگر ِ «تغییرات تازه»: همین حالا اعمال شود (فوکوس را هم رها می‌کند). */
+  applyFresh(): void {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    window.getSelection?.()?.removeAllRanges();
+    this.flushLogs();
+    void this.refresh(true, true);
+  }
+
+  private pendingLogs: string[] = [];
+  private pushLog(line: string): void {
+    if (this.pendingLogs.length || this.selecting()) { this.pendingLogs.push(line); return; }
+    this.logs.update(lines => [...lines.slice(-1999), line]);
+  }
+  private flushLogs(): void {
+    if (!this.pendingLogs.length) return;
+    const extra = this.pendingLogs; this.pendingLogs = [];
+    this.logs.update(lines => [...lines, ...extra].slice(-2000));
   }
 
   async chooseRepo(id: string): Promise<void> {
@@ -239,45 +287,61 @@ export class AppComponent implements OnInit, OnDestroy {
   // این یکی شروع نمی‌شود (وگرنه چند فرآیند Manager روی هم انباشته می‌شود).
   private refreshInFlight = false;
 
-  async refresh(silent = false): Promise<void> {
+  async refresh(silent = false, force = false): Promise<void> {
     if (!this.repoId()) return;
     if (silent) {
       if (this.refreshInFlight) return;
     }
     this.refreshInFlight = true;
-    try { await this.refreshOnce(silent); }
+    try { await this.refreshOnce(silent, force); }
     finally { this.refreshInFlight = false; }
   }
 
-  private async refreshOnce(silent: boolean): Promise<void> {
+  // زمان ِ آخرین پاسخ ِ سرور (جدا از board تا «بدون تغییر» واقعاً هیچ‌چیز را عوض نکند).
+  readonly syncedAt = signal<string | null>(null);
+
+  /** فقط generatedAt فرق دارد ⇒ board ِ قبلی بدون تغییر می‌ماند؛ وگرنه شاخه‌های ِ بی‌تغییر reference ِ قبلی را نگه می‌دارند. */
+  private mergeBoard(prev: Board | null, next: Board): Board { return reuseIgnoring(prev, next, ['generatedAt']); }
+
+  private async refreshEvents(taskId: string): Promise<void> {
+    try {
+      const list = await firstValueFrom(this.api.events(this.repoId(), taskId));
+      if (this.selected()?.id === taskId) this.events.set(reuse(this.events(), list));
+    } catch { /* Timeline اختیاری است */ }
+  }
+
+  private async refreshOnce(silent: boolean, force: boolean): Promise<void> {
 
     // Health مستقل از board/running بارگذاری می‌شود. خرابی یا تأخیر یکی نباید
     // وضعیت دیگری را مبهم کند یا Health را به‌اشتباه «ناسالم» نشان دهد.
     const healthPromise = this.refreshHealth(false, true);
 
     try {
-      const [board, running] = await Promise.all([
+      const [fetched, runningList] = await Promise.all([
         firstValueFrom(this.api.board(this.repoId())),
         firstValueFrom(this.api.running(this.repoId()))
       ]);
-      this.board.set(board);
-      this.running.set(Object.fromEntries(running.map(x => [x.taskId, x])));
+      this.syncedAt.set(fetched.generatedAt);
+      // structural sharing: داده‌ی ِ بی‌تغییر ⇒ همان reference ⇒ signal چیزی را دوباره render نمی‌کند؛ تسک ِ تغییرکرده فقط خودش تازه می‌شود.
+      const prevBoard = this.board();
+      const board = this.mergeBoard(prevBoard, fetched);
+      const running = reuse(this.running(), Object.fromEntries(runningList.map(x => [x.taskId, x])));
       this.notifyNewHumanTasks(board.tasks);
       const selected = this.selected();
+      const freshTask = selected ? board.tasks.find(x => x.id === selected.id) : undefined;
+      const nextSelected = selected && freshTask ? reuse(selected, freshTask) : selected;
+      const changed = board !== prevBoard || running !== this.running() || nextSelected !== selected;
+      // کاربر وسط ِ تایپ یا انتخاب ِ متن است: زیر دستش چیزی عوض نشود؛ نشانگر ِ «تغییرات تازه».
+      if (silent && !force && changed && this.uiBusy()) { this.freshPending.set(true); await healthPromise; return; }
+      this.freshPending.set(false);
+      if (board !== prevBoard) this.board.set(board);
+      if (running !== this.running()) this.running.set(running);
       if (selected) {
-        const fresh = board.tasks.find(x => x.id === selected.id);
+        const fresh = freshTask;
         if (fresh) {
-          if (this.panel() === 'task') {
-            const detailBody = document.querySelector<HTMLElement>('.task-detail');
-            const scrollTop = detailBody?.scrollTop;
-            this.selected.set(fresh);
-            if (detailBody && scrollTop !== undefined) {
-              requestAnimationFrame(() => {
-                if (detailBody.isConnected) detailBody.scrollTop = scrollTop;
-              });
-            }
-          } else {
-            this.selected.set(fresh);
+          if (nextSelected !== selected) {
+            this.selected.set(nextSelected);
+            if (this.panel() === 'task' || this.panel() === 'action') void this.refreshEvents(fresh.id);
           }
           const watched = this.openedHeadCommit();
           if (
@@ -298,7 +362,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   async refreshDrain(): Promise<void> {
-    try { this.drain.set(await firstValueFrom(this.api.drain())); } catch { /* نوار ِ تخلیه اختیاری است؛ خطای شبکه را board نشان می‌دهد */ }
+    try { this.drain.set(reuse(this.drain(), await firstValueFrom(this.api.drain()))); } catch { /* نوار ِ تخلیه اختیاری است؛ خطای شبکه را board نشان می‌دهد */ }
   }
 
   draining(): boolean { return this.drain()?.draining === true; }
@@ -309,17 +373,20 @@ export class AppComponent implements OnInit, OnDestroy {
 
   async refreshHealth(force = true, silent = false): Promise<void> {
     if (!this.repoId()) return;
-    this.healthLoading.set(true);
-    this.healthError.set('');
+    // poll ِ بی‌صدا: نشانگر ِ «در حال بررسی» و پاک‌کردن ِ خطا بی‌دلیل در هر ۳ ثانیه چشمک نزند.
+    // (وقتی هنوز نتیجه‌ای نیست، نشانگر ِ اولیه مثل قبل نشان داده می‌شود.)
+    const showLoading = !silent || !this.health();
+    if (showLoading) { this.healthLoading.set(true); this.healthError.set(''); }
     try {
       const health = await firstValueFrom(this.api.health(this.repoId(), force));
-      this.health.set(health);
+      this.health.set(reuse(this.health(), health));
+      this.healthError.set('');
     } catch (e) {
       this.health.set(null);
       this.healthError.set(this.errorText(e));
       if (!silent) this.fail(e);
     } finally {
-      this.healthLoading.set(false);
+      if (showLoading) this.healthLoading.set(false);
     }
   }
 
@@ -828,8 +895,12 @@ export class AppComponent implements OnInit, OnDestroy {
     this.attemptArtifacts.set(Object.fromEntries(entries));
   }
 
-  actionArtifactEntries(): [string, string][] { return Object.entries(this.actionArtifacts()); }
-  attemptArtifactEntries(): [string, string][] { return Object.entries(this.attemptArtifacts()); }
+  // memoized: قبلاً در هر change detection آرایه‌ی ِ تازه از tuple های ِ تازه می‌ساخت و *ngFor همه‌ی ِ <details>ها را هر ۳ ثانیه
+  // خراب و دوباره می‌ساخت (باز/بسته‌شدن و اسکرول از دست می‌رفت).
+  private readonly actionArtifactList = computed(() => Object.entries(this.actionArtifacts()));
+  private readonly attemptArtifactList = computed(() => Object.entries(this.attemptArtifacts()));
+  actionArtifactEntries(): [string, string][] { return this.actionArtifactList(); }
+  attemptArtifactEntries(): [string, string][] { return this.attemptArtifactList(); }
   // فقط تغییرات زیر src/ برای بررسی مرتبط‌اند — چیزهایی مثل ai-context دفترداری‌اند، نه کد.
   diffFiles(t: Task): Array<{ path?: string; added?: number; deleted?: number; status?: string; inScope?: boolean }> {
     return (t.diff?.files ?? []).filter(f => this.isSourceFile(f.path));
@@ -1180,8 +1251,8 @@ export class AppComponent implements OnInit, OnDestroy {
       try {
         const parsed = JSON.parse(event.data) as { text?: string; stream?: string };
         const prefix = parsed.stream === 'stderr' ? '[stderr] ' : parsed.stream === 'system' ? '[system] ' : '';
-        this.logs.update(lines => [...lines.slice(-1999), `${prefix}${parsed.text ?? event.data}`]);
-      } catch { this.logs.update(lines => [...lines.slice(-1999), event.data]); }
+        this.pushLog(`${prefix}${parsed.text ?? event.data}`);
+      } catch { this.pushLog(event.data); }
     };
     this.source.addEventListener('end', event => {
       try { this.streamEnded.set((JSON.parse((event as MessageEvent<string>).data) as { code?: number | null }).code ?? null); }
@@ -1194,7 +1265,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.closeStream(); this.error.set(''); this.reason = ''; this.answerText = ''; this.respec = false; this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; this.mergeAck.set(false); this.openedHeadCommit.set(undefined);
     this.checkinSourceId = ''; this.checkinChangesets = ''; this.noteText = ''; this.stageSourceId = '';
     this.releaseNoteEditing.set(false); this.releaseNoteHeadline = ''; this.releaseNoteBody = ''; this.releaseNoteNoNote = false; this.releaseNoteReason = '';
-    this.events.set([]); this.logs.set([]); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
+    this.events.set([]); this.logs.set([]); this.pendingLogs = []; this.freshPending.set(false); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
     this.actionArtifacts.set({}); this.selectedAttempt.set(null); this.attemptArtifacts.set({});
     this.diffText.set(''); this.diffHeadCommit.set(null); this.diffSelectedFile.set(null); this.diffLoaded.set(false);
     this.taskTab.set('overview');

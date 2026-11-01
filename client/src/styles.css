@@ -179,3 +179,4 @@
 .run-blocked{color:#a35a00;font-size:10px;margin-inline-start:8px}
 .cs-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid #eef1f5}.cs-values{font-weight:700}.cs-none{color:#8a95a4}
 .cs-row .disabled-gate-warning{flex-basis:100%}
+.fresh-changes{border:1px solid #e0b24a;background:#fff6dc;color:#7a5200;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;margin-inline-end:8px}.fresh-changes:hover{background:#ffefbd}
