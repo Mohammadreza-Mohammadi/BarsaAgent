@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpEvent, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { HttpClient, HttpErrorResponse, HttpEvent, HttpHeaders, HttpParams } from '@angular/common/http';
+import { Observable, catchError, map, of, throwError } from 'rxjs';
 import {
   AgentEvent, AuditItem, Board, BundleItem, BundleResult, ConsoleExecResult, ConsoleHistoryItem, ConsoleParse, CreateTaskDraft, AttachmentPolicy, CreateTasksResponse, DrainStatus, EnvHealthReport, RecheckResult, StagedUpload,
   ExecInfo, GitInventory, GitStatus, HealthResult, Issue, ManagerInfoView, Repo, RunRecord, RunningTask, RuntimeOptions, StopResult, Task
@@ -12,6 +12,37 @@ export class ApiService {
 
   repos = () => this.http.get<Repo[]>('/api/repos');
   board = (repo: string) => this.http.get<Board>(`/api/repos/${encodeURIComponent(repo)}/board`);
+
+  // GET ِ شرطی (ETag / If-None-Match) برای ِ poll: سرور وقتی داده عوض نشده 304 می‌دهد؛ آن‌وقت نه parse ای هست نه render ای
+  // (`notModified: true` و همان نسخه‌ی قبلی). ETag ِ هر URL همین‌جا نگه داشته می‌شود.
+  private readonly etags = new Map<string, { etag: string; data: unknown }>();
+  conditional<T>(url: string): Observable<{ data: T; notModified: boolean }> {
+    const known = this.etags.get(url);
+    const headers = known ? new HttpHeaders({ 'If-None-Match': known.etag }) : undefined;
+    return this.http.get<T>(url, { headers, observe: 'response' }).pipe(
+      map(response => {
+        const etag = response.headers.get('ETag');
+        if (etag) this.etags.set(url, { etag, data: response.body }); else this.etags.delete(url);
+        return { data: response.body as T, notModified: false };
+      }),
+      catchError(error => (error instanceof HttpErrorResponse && error.status === 304 && known ? of({ data: known.data as T, notModified: true }) : throwError(() => error)))
+    );
+  }
+  /** نسخه‌ی ِ نگه‌داشته‌شده را فراموش کن تا poll ِ بعدی حتماً بدنه‌ی کامل بگیرد (مثلاً وقتی به‌روزرسانی به تعویق افتاده). */
+  forgetConditional(): void { this.etags.clear(); }
+  boardIfChanged = (repo: string) => this.conditional<Board>(`/api/repos/${encodeURIComponent(repo)}/board`);
+  runningIfChanged = (repo: string) => this.conditional<RunningTask[]>(`/api/repos/${encodeURIComponent(repo)}/running`);
+  eventsIfChanged = (repo: string, id: string) => this.conditional<AgentEvent[]>(`/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/events`);
+
+  /** artifact ِ بریده: فقط `lines` خط از ابتدا/انتها (سرور می‌برد)؛ هدرها می‌گویند چقدر بریده شده. */
+  artifactClipped = (repo: string, id: string, path: string, lines: number, from: 'head' | 'tail') => this.http.get(
+    `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/artifact`,
+    { params: { path, lines: String(lines), from }, responseType: 'text', observe: 'response' }
+  ).pipe(map(response => ({
+    text: response.body ?? '',
+    clipped: (response.headers.get('X-Artifact-Clipped') as 'head' | 'tail' | null),
+    totalLines: response.headers.get('X-Artifact-Total-Lines') ? Number(response.headers.get('X-Artifact-Total-Lines')) : null
+  })));
   task = (repo: string, id: string) => this.http.get<Task>(`/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}`);
   running = (repo: string) => this.http.get<RunningTask[]>(`/api/repos/${encodeURIComponent(repo)}/running`);
   health = (repo: string, refresh = false) => this.http.get<HealthResult>(
@@ -136,5 +167,6 @@ export class ApiService {
   createBundle = (repo: string, id: string) => this.http.post<BundleResult>(`/api/remote/tasks/${encodeURIComponent(id)}/bundle`, {}, { params: { repo } });
   audit = (limit = 100) => this.http.get<AuditItem[]>('/api/audit', { params: { limit } });
 
-  streamUrl(repo: string, id: string) { return `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/stream`; }
+  /** `tail`: فقط N خط ِ آخر ِ بافر ِ سرور replay شود. */
+  streamUrl(repo: string, id: string, tail?: number) { return `/api/repos/${encodeURIComponent(repo)}/tasks/${encodeURIComponent(id)}/stream${tail ? `?tail=${tail}` : ''}`; }
 }

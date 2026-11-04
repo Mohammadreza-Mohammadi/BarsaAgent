@@ -1,4 +1,4 @@
-import { Component, computed, input, output, signal } from '@angular/core';
+import { Component, computed, input, output, signal, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Task } from './models';
 import { ArchiveSortKey, FINISHED_STATES, archiveTasks, finishedAt, queryArchive } from './task-archive';
@@ -11,6 +11,7 @@ const PAGE_SIZE = 25;
  * کلیک روی ردیف همان کشوی جزئیات task را باز می‌کند (رویدادها، شواهد، zip).
  */
 @Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'ba-archive',
   standalone: true,
   imports: [FormsModule],

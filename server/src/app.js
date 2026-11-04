@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { collect, collectJson, validateAgentWork } from './cli.js';
 import { fetchIssues } from './issues.js';
@@ -62,6 +62,28 @@ function send(res, status, value, type = JSON_TYPE, extraHeaders = {}) {
   const body = type.startsWith('application/json') ? JSON.stringify(value) : String(value);
   res.writeHead(status, baseHeaders({ 'Content-Type': type, 'Content-Length': Buffer.byteLength(body), ...extraHeaders }));
   res.end(body);
+}
+// ETag برای پاسخ‌های poll: بدنه‌ی بی‌تغییر ⇒ 304 بدون بدنه (کلاینت parse و render نمی‌کند). کلیدهای ِ ناپایدار (مثل generatedAt
+// که Manager در هر اجرا عوض می‌کند) در هش نمی‌آیند؛ وگرنه هر پاسخ ETag ِ تازه داشت و هیچ‌وقت 304 نمی‌شد.
+export function etagOf(value, volatileKeys = []) {
+  const stable = volatileKeys.length && value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).filter(([key]) => !volatileKeys.includes(key)))
+    : value;
+  return `W/"${createHash('sha1').update(JSON.stringify(stable) ?? '').digest('base64url').slice(0, 22)}"`;
+}
+const bareEtag = tag => String(tag).trim().replace(/^W\//, '');
+export function etagMatches(header, etag) {
+  if (!header) return false;
+  const want = bareEtag(etag);
+  return String(header).split(',').some(part => part.trim() === '*' || bareEtag(part) === want);
+}
+function sendConditional(req, res, value, { volatile = [] } = {}) {
+  const etag = etagOf(value, volatile);
+  if (etagMatches(req.headers['if-none-match'], etag)) {
+    res.writeHead(304, baseHeaders({ ETag: etag }));
+    return res.end();
+  }
+  return send(res, 200, value, JSON_TYPE, { ETag: etag });
 }
 async function readBody(req) {
   let data = '';
@@ -216,22 +238,36 @@ export function createApp(config, deps = {}) {
   // دیگر (poll ِ تب دیگر، /api/issues) همان اجرا را می‌گیرد، نه یک فرآیند Manager تازه.
   const boardInflight = new Map();
   const lastBoard = new Map();
+  // نسل ِ board: هر درخواست ِ تغییردهنده آن را بالا می‌برد؛ اجرای ِ status ای که پیش از تغییر شروع شده نتیجه‌اش را در cache نمی‌گذارد.
+  let boardGeneration = 0;
+  // آخرین board (حتی کهنه) برای نمایش ِ state ِ drain می‌ماند؛ فقط به‌عنوان «تازه» به‌کار نمی‌رود.
+  const invalidateBoards = () => { boardGeneration += 1; };
+  const freshBoard = repo => { const c = lastBoard.get(repo.id); return c && c.generation === boardGeneration ? c : null; };
   const boardFor = repo => {
     const running = boardInflight.get(repo.id);
     if (running) return running;
+    const generation = boardGeneration;
     const promise = (async () => {
       const board = await collectJson(repo, ['status', '--json']);
       board.repo = { ...(board.repo || {}), id: repo.id, path: repo.path };
-      lastBoard.set(repo.id, { at: Date.now(), board });
+      if (generation === boardGeneration) lastBoard.set(repo.id, { at: Date.now(), board, generation });
       return board;
     })().finally(() => boardInflight.delete(repo.id));
     boardInflight.set(repo.id, promise);
     return promise;
   };
+  // poll ِ بورد (هر کلاینت هر ۳ ثانیه): چند کلاینت و درخواست ِ پشت‌سرهم در بازه‌ی cache یک اجرای status می‌گیرند، نه یک پروسه‌ی
+  // node ِ تازه برای هر poll. 0 = خاموش (تست‌هایی که status را وسط ِ کار عوض می‌کنند).
+  const boardCacheMs = Number(config.server?.boardCacheMs ?? 2000);
+  const boardShared = repo => {
+    const cached = freshBoard(repo);
+    return boardCacheMs > 0 && cached && Date.now() - cached.at < boardCacheMs ? Promise.resolve(cached.board) : boardFor(repo);
+  };
   // قفل اجرا (TOOLING-040، repository.execution): با enabled=false هر مسیر کانبان که task می‌سازد یا اجرا می‌کند
   // پیش از هر کاری با پیام خود Manager رد می‌شود (Manager هم همین‌ها را با exit 41 رد می‌کند؛ این فقط زودتر و بدون
   // صف/فایل ناقص است). نخواندنِ status (خطا) هرگز مانع نیست: تصمیم نهایی با خود Manager است.
   const executionOf = async repo => {
+    // قفل ِ اجرا از mutation عوض نمی‌شود؛ تا ۵ ثانیه کهنگی مثل قبل پذیرفته است (invalidate ِ بورد نباید هر run ِ پشت‌سرهم را به یک اجرای status ِ کند وصل کند).
     const cached = lastBoard.get(repo.id);
     let board = cached && Date.now() - cached.at < 5_000 ? cached.board : null;
     if (!board) {
@@ -247,7 +283,7 @@ export function createApp(config, deps = {}) {
   };
   // کش ِ status برای endpointهای سبک (waiting/tasks): تا maxAgeMs قدیمی را می‌پذیرد، وگرنه یک اجرای (مشترک) ِ status.
   const boardCached = (repo, maxAgeMs) => {
-    const cached = lastBoard.get(repo.id);
+    const cached = freshBoard(repo);
     return cached && Date.now() - cached.at <= maxAgeMs ? Promise.resolve(cached.board) : boardFor(repo);
   };
   const refreshIssues = async force => {
@@ -372,7 +408,11 @@ export function createApp(config, deps = {}) {
     }));
     res.write(': connected\n\n');
     const endPayload = () => ({ code: source.exitCode, at: source.finishedAt, ...(source.stopped ? { stopped: true } : {}) });
-    for (const line of source.lines) res.write(`data: ${JSON.stringify(line)}\n\n`);
+    // ?tail=N: فقط N خط ِ آخر ِ بافر replay شود (UI فقط انتهای لاگ را نشان می‌دهد)؛ رویداد ِ replay می‌گوید چند خط کنار گذاشته شد.
+    const tail = Number(new URL(req.url, 'http://127.0.0.1').searchParams.get('tail'));
+    const replay = Number.isInteger(tail) && tail > 0 && source.lines.length > tail ? source.lines.slice(-tail) : source.lines;
+    if (replay.length < source.lines.length) res.write(`event: replay\ndata: ${JSON.stringify({ skipped: source.lines.length - replay.length, total: source.lines.length })}\n\n`);
+    for (const line of replay) res.write(`data: ${JSON.stringify(line)}\n\n`);
     if (source.finished) {
       res.write(`event: end\ndata: ${JSON.stringify(endPayload())}\n\n`);
       return res.end();
@@ -443,6 +483,8 @@ export function createApp(config, deps = {}) {
         audit.reject({ user: session?.user ?? null, action: `http ${req.method} ${pathname}`, status: res.statusCode, ip: req.socket.remoteAddress }, res.errorMessage || `HTTP ${res.statusCode}`);
       } catch { /* ممیزی نباید پاسخ را بشکند */ }
     });
+    // هر درخواست ِ تغییردهنده، board ِ cache‌شده را باطل می‌کند تا poll ِ بعدی وضعیت ِ تازه ببیند.
+    if (mutating) res.on('finish', invalidateBoards);
     try {
       // --- احراز هویت: هر چیزی زیر /api/ جز ورود/وضعیت نشست پشت نشست است ---------------
       if (pathname.startsWith('/api/')) {
@@ -509,7 +551,7 @@ export function createApp(config, deps = {}) {
 
       let p;
       if (req.method === 'GET' && (p = route('/api/repos/:repo/board', pathname))) {
-        return send(res, 200, await boardFor(repoFor(p.repo)));
+        return sendConditional(req, res, await boardShared(repoFor(p.repo)), { volatile: ['generatedAt'] });
       }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/tasks/:id', pathname))) {
         const repo = repoFor(p.repo);
@@ -519,12 +561,25 @@ export function createApp(config, deps = {}) {
         return send(res, 200, task);
       }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/tasks/:id/events', pathname))) {
-        return send(res, 200, await collectJson(repoFor(p.repo), ['events', p.id, '--json']));
+        return sendConditional(req, res, await collectJson(repoFor(p.repo), ['events', p.id, '--json']));
       }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/tasks/:id/artifact', pathname))) {
         const artifact = url.searchParams.get('path');
         if (!validArtifactPath(artifact)) return send(res, 400, { error: 'مسیر artifact نامعتبر است.' });
         const result = await collect(repoFor(p.repo), ['artifact', p.id, '--path', artifact]);
+        // ?lines=N&from=head|tail: artifact ِ چند مگابایتی (build.log) کامل به مرورگر نمی‌رود؛ بریدن سمت ِ سرور،
+        // و هدرها می‌گویند چقدر بریده شد تا UI «نمایش کامل» را فقط با درخواست ِ صریح ِ کاربر بگیرد.
+        const wanted = Number(url.searchParams.get('lines'));
+        if (Number.isInteger(wanted) && wanted > 0) {
+          const text = result.stdout;
+          const lines = text.split('\n');
+          if (lines.length > wanted) {
+            const tail = url.searchParams.get('from') === 'tail';
+            const clipped = (tail ? lines.slice(-wanted) : lines.slice(0, wanted)).join('\n');
+            return send(res, 200, clipped, 'text/plain; charset=utf-8', { 'X-Artifact-Total-Lines': String(lines.length), 'X-Artifact-Clipped': tail ? 'tail' : 'head' });
+          }
+          return send(res, 200, text, 'text/plain; charset=utf-8', { 'X-Artifact-Total-Lines': String(lines.length) });
+        }
         return send(res, 200, result.stdout, 'text/plain; charset=utf-8');
       }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/open-editor', pathname))) {
@@ -566,7 +621,7 @@ export function createApp(config, deps = {}) {
         return send(res, 200, { ok: true, worktreePath });
       }
       if (req.method === 'GET' && (p = route('/api/repos/:repo/running', pathname))) {
-        return send(res, 200, registry.list(repoFor(p.repo)));
+        return sendConditional(req, res, registry.list(repoFor(p.repo)));
       }
       if (req.method === 'POST' && (p = route('/api/repos/:repo/tasks/:id/run', pathname))) {
         const repo = repoFor(p.repo);
@@ -783,7 +838,7 @@ export function createApp(config, deps = {}) {
       if (req.method === 'GET' && (p = route('/api/repos/:repo/health', pathname))) {
         const repo = repoFor(p.repo);
         const cached = healthCache.get(repo.id);
-        if (cached && Date.now() - cached.at < 20_000 && url.searchParams.get('refresh') !== '1') return send(res, 200, cached.value);
+        if (cached && Date.now() - cached.at < 20_000 && url.searchParams.get('refresh') !== '1') return sendConditional(req, res, cached.value, { volatile: ['checkedAt'] });
         let value;
         try {
           const result = await validateAgentWork(repo);
@@ -792,13 +847,13 @@ export function createApp(config, deps = {}) {
           value = { ok: false, checkedAt: new Date().toISOString(), code: error.code ?? 1, output: [error.stdout, error.stderr, error.message].filter(Boolean).join('\n').trim() };
         }
         healthCache.set(repo.id, { at: Date.now(), value });
-        return send(res, 200, value);
+        return sendConditional(req, res, value, { volatile: ['checkedAt'] });
       }
 
       if (req.method === 'GET' && pathname === '/api/issues') {
         const issues = await refreshIssues(url.searchParams.get('refresh') === '1');
         const boards = await Promise.all(config.repos.map(async repo => {
-          try { return { repo: repo.id, board: await boardFor(repo) }; }
+          try { return { repo: repo.id, board: await boardShared(repo) }; }
           catch { return { repo: repo.id, board: { tasks: [] } }; }
         }));
         const imported = new Map();

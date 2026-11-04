@@ -3,6 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
+import { PollerService } from './poller.service';
 import { DrainStatus, GitInventory, GitStatus, GitWorktree, ManagerInfoView } from './models';
 import { LiveOutputComponent } from './live-output.component';
 
@@ -168,7 +169,8 @@ export class MaintenanceComponent implements OnInit, OnDestroy {
   readonly drain = signal<DrainStatus | null>(null);
   /** وقتی run ِ زنده هست و کاربر sync را زد: به‌جای رد شدن ِ بی‌توضیح، تخلیه را پیشنهاد می‌دهیم. */
   readonly syncHint = signal('');
-  private drainTimer?: number;
+  private readonly poller = inject(PollerService);
+  private stopDrain?: () => void;
   readonly streamUrl = signal<string | null>(null);
   newBranch = '';
   newDir = '';
@@ -176,10 +178,14 @@ export class MaintenanceComponent implements OnInit, OnDestroy {
 
   async ngOnInit(): Promise<void> {
     await this.reload();
-    this.drainTimer = window.setInterval(() => void this.refreshDrain(), 5000);
+    // زمان‌بند ِ مرکزی: tab ِ پنهان ⇒ درخواستی نیست؛ با بسته‌شدن ِ component برداشته می‌شود
+    this.stopDrainPoll();
+    this.stopDrain = this.poller.add({ name: 'maintenance-drain', everyMs: 5000, run: () => this.refreshDrain() });
   }
 
-  ngOnDestroy(): void { if (this.drainTimer) window.clearInterval(this.drainTimer); }
+  ngOnDestroy(): void { this.stopDrainPoll(); }
+
+  private stopDrainPoll(): void { this.stopDrain?.(); this.stopDrain = undefined; }
 
   queuedText(d: DrainStatus): string { return d.queued.map(x => '#' + x.taskId).join('، '); }
 

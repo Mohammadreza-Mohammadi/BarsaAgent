@@ -1,4 +1,4 @@
-import { Component, DestroyRef, OnDestroy, OnInit, computed, effect, inject, input, model, signal } from '@angular/core';
+import { Component, DestroyRef, OnDestroy, OnInit, computed, effect, inject, input, model, signal, ChangeDetectionStrategy } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse, HttpEventType } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
@@ -18,6 +18,7 @@ const MIME_EXT: Record<string, string> = { 'image/png': '.png', 'image/jpeg': '.
  * پیش‌سنجی با **سیاست ِ خود ِ Manager** (GET /api/attachments/policy)؛ تصمیم ِ نهایی با Manager و خطایش عیناً نشان داده می‌شود.
  */
 @Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'ba-attachment-picker',
   standalone: true,
   template: `

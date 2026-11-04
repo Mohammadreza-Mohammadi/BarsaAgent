@@ -1,8 +1,9 @@
-import { Component, ElementRef, OnDestroy, effect, input, output, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, OnDestroy, effect, input, output, signal, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { StreamLine } from './models';
 
 /** خروجی زنده‌ی یک اجرا از SSE (/api/execs/:id/stream یا /api/repos/:repo/tasks/:id/stream). */
 @Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'ba-live-output',
   standalone: true,
   template: `

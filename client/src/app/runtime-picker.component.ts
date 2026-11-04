@@ -1,4 +1,4 @@
-import { Component, computed, input, output } from '@angular/core';
+import { Component, computed, input, output, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CreateRuntimeDraft, presetBaseline, providerChoices, modelsFor, effortsFor, reconcileSelection, Selection } from './runtime';
 import { RuntimeOptions } from './models';
@@ -9,6 +9,7 @@ import { RuntimeOptions } from './models';
  * اعتبارسنجی ِ نهایی با Manager است و خطا کنار همان ردیف نشان داده می‌شود.
  */
 @Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'ba-runtime-picker',
   standalone: true,
   imports: [FormsModule],

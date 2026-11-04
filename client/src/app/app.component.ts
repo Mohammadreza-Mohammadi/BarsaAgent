@@ -24,6 +24,17 @@ import { ArchiveComponent } from './archive.component';
 import { actionsVersionOf, allowed, can, canAnswerGate } from './task-actions';
 import { BOARD_DONE_STATES, archiveTasks, isFinished, isRecentlyDone, normalizeDoneDays } from './task-archive';
 import { probeUi, reuse, reuseIgnoring, shouldDeferRender, trackById, trackByKey, trackByPath } from './live-update';
+import { PollerService } from './poller.service';
+import { LOG_TAIL_DEFAULT, LOG_TAIL_MAX, LOG_TAIL_STEP, LogBuffer, clipText } from './log-buffer';
+
+// فهرست‌های ِ بلند فقط صفحه‌ی اول را می‌سازند؛ بقیه با «نمایش بیشتر». artifact ها هم بریده (سرور می‌برد، این پشتوانه است).
+const EVENTS_PAGE = 100;
+const ATTEMPTS_PAGE = 20;
+/** حداکثر هر چند ms یک‌بار متن ِ لاگ در DOM جایگزین می‌شود (با ۲۰ خط/ثانیه: ۱ به‌روزرسانی/ثانیه به‌جای ۲۰). */
+const LOG_FLUSH_MS = 1000;
+const ARTIFACT_LINES = 500;
+const ROOT_ARTIFACT_LINES = 1500;
+type ClipInfo = { clipped: 'head' | 'tail'; totalLines: number | null };
 import { AgentEvent, Attempt, Board, CreateTaskDraft, CreateTaskResult, DrainStatus, ExternalSource, HealthResult, Issue, Repo, RunningTask, RuntimeOptions, StagedUpload, StructuredFailure, Task } from './models';
 
 const LANES = [
@@ -96,6 +107,8 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly trackById = trackById;
   readonly trackByKey = trackByKey;
   readonly trackByPath = trackByPath;
+  /** رویدادها با structural sharing هویت ِ پایدار دارند؛ trackBy هویت همان رفتار ِ پیش‌فرض را صریح می‌کند. */
+  readonly trackByEvent = (_i: number, e: AgentEvent): AgentEvent => e;
   readonly trackByTaskId = (_i: number, r: RunningTask): string => r.taskId;
   readonly trackByPair = (_i: number, c: { left: Task; right: Task }): string => `${c.left.id}:${c.right.id}`;
   /** داده‌ی ِ تازه رسیده ولی چون کاربر وسط ِ تایپ/انتخاب ِ متن است هنوز اعمال نشده. */
@@ -103,8 +116,15 @@ export class AppComponent implements OnInit, OnDestroy {
   // کانبان فاز ۱: صفحه‌های کنسول/نگهداری/سلامت/ممیزی کنار برد
   readonly view = signal<'board' | 'archive' | 'console' | 'maintenance' | 'bundles' | 'health' | 'audit'>(readStoredView());
   private started = false;
-  private poll?: number;
+  private readonly poller = inject(PollerService);
+  private stopPolls: Array<() => void> = [];
   private source?: EventSource;
+  // لاگ ِ زنده: فقط ِ انتها (سقف‌دار)، با batch ِ ۲۵۰ms — نه یک render به‌ازای هر خط. «نمایش بیشتر» فقط با درخواست ِ صریح.
+  private readonly logBuf = new LogBuffer(LOG_TAIL_DEFAULT);
+  readonly logTail = signal(LOG_TAIL_DEFAULT);
+  readonly logOlder = signal(0);
+  private logFlushTimer?: number;
+  private streamTask: string | null = null;
 
   readonly repos = signal<Repo[]>([]);
   readonly repoId = signal('');
@@ -122,7 +142,19 @@ export class AppComponent implements OnInit, OnDestroy {
   readonly selected = signal<Task | null>(null);
   readonly panel = signal<Panel>(null);
   readonly events = signal<AgentEvent[]>([]);
+  readonly eventsShown = signal(EVENTS_PAGE);
+  readonly visibleEvents = computed(() => { const all = this.events(); return all.length > this.eventsShown() ? all.slice(-this.eventsShown()) : all; });
+  readonly hiddenEvents = computed(() => Math.max(0, this.events().length - this.eventsShown()));
+  showMoreEvents(): void { this.eventsShown.update(n => n + EVENTS_PAGE * 2); }
+  readonly attemptsShown = signal(ATTEMPTS_PAGE);
+  visibleAttempts(t: Task): Attempt[] { const all = t.attempts ?? []; return all.length > this.attemptsShown() ? all.slice(-this.attemptsShown()) : all; }
+  hiddenAttempts(t: Task): number { return Math.max(0, (t.attempts?.length ?? 0) - this.attemptsShown()); }
+  showMoreAttempts(): void { this.attemptsShown.update(n => n + ATTEMPTS_PAGE); }
+  /** artifact هایی که بریده نمایش داده می‌شوند (فقط کلیدِ بریده‌شده‌ها هست). */
+  readonly attemptArtifactClip = signal<Record<string, ClipInfo>>({});
+  readonly rootClip = signal<ClipInfo | null>(null);
   readonly logs = signal<string[]>([]);
+  readonly logsText = computed(() => this.logs().join('\n'));
   readonly streamEnded = signal<number | null | undefined>(undefined);
 
   readonly rootArtifactName = signal('');
@@ -199,8 +231,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private stop(): void {
     this.started = false;
-    if (this.poll) window.clearInterval(this.poll);
-    this.poll = undefined;
+    this.stopPolling();
     this.closeStream();
     this.board.set(null);
     this.selected.set(null);
@@ -226,16 +257,25 @@ export class AppComponent implements OnInit, OnDestroy {
       this.loading.set(false);
     }
     void this.refreshDrain();
+    // همه‌ی polling ها از زمان‌بند ِ مرکزی (یک timer؛ tab ِ پنهان = صفر درخواست و بستن ِ stream ِ لاگ؛ برگشتن = به‌روزرسانی ِ فوری).
     // پنل ِ جزئیات هم زنده می‌ماند: داده‌ی ِ بی‌تغییر هیچ render ای نمی‌سازد و تغییر فقط شاخه‌ی ِ خودش را به‌روز می‌کند (live-update.ts).
-    this.poll = window.setInterval(() => {
-      if (this.auth.user()) void this.refreshDrain();
-      if (!this.auth.user() || (this.view() !== 'board' && this.view() !== 'archive')) return;
-      void this.refresh(true);
-    }, 3000);
+    this.stopPolling();
+    this.stopPolls = [
+      this.poller.add({ name: 'board', everyMs: 3000, run: () => this.pollBoard() }),
+      this.poller.add({ name: 'drain', everyMs: 3000, run: () => (this.auth.user() ? this.refreshDrain() : undefined) }),
+      this.poller.add({ name: 'health', everyMs: 30_000, run: () => this.pollHealth() }),
+      this.poller.add({ name: 'log-stream', everyMs: Infinity, onHide: () => this.pauseStream(), onShow: () => this.resumeStream() })
+    ];
   }
 
+  private boardViewActive(): boolean { return !!this.auth.user() && (this.view() === 'board' || this.view() === 'archive'); }
+  private pollBoard(): Promise<void> | undefined { return this.boardViewActive() ? this.refresh(true) : undefined; }
+  private pollHealth(): Promise<void> | undefined { return this.boardViewActive() ? this.refreshHealth(false, true) : undefined; }
+  private stopPolling(): void { for (const stop of this.stopPolls) stop(); this.stopPolls = []; }
+
   ngOnDestroy(): void {
-    if (this.poll) window.clearInterval(this.poll);
+    this.stopPolling();
+    window.clearTimeout(this.logFlushTimer);
     document.removeEventListener('focusout', this.onUserIdle);
     document.removeEventListener('selectionchange', this.onUserIdle);
     this.closeStream();
@@ -243,7 +283,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   /** فوکوس از فیلد رفت یا انتخاب ِ متن برداشته شد ⇒ تغییرات ِ به‌تعویق‌افتاده (داده و لاگ) اعمال شود. */
   private readonly onUserIdle = (): void => {
-    if (!this.freshPending() && !this.pendingLogs.length) return;
+    if (!this.freshPending() && !this.logDirty) return;
     window.setTimeout(() => {
       if (this.uiBusy()) return;
       this.flushLogs();
@@ -263,15 +303,29 @@ export class AppComponent implements OnInit, OnDestroy {
     void this.refresh(true, true);
   }
 
-  private pendingLogs: string[] = [];
+  // خط‌ها در بافر ِ سقف‌دار جمع می‌شوند و حداکثر هر ثانیه یک‌بار به signal می‌روند (قبلاً هر خط یک کپی ِ ۲۰۰۰تایی + render)؛
+  // وقتی کاربر متنی در لاگ انتخاب کرده، flush تا رها شدن ِ انتخاب عقب می‌افتد.
+  private logDirty = false;
   private pushLog(line: string): void {
-    if (this.pendingLogs.length || this.selecting()) { this.pendingLogs.push(line); return; }
-    this.logs.update(lines => [...lines.slice(-1999), line]);
+    this.logBuf.push(line);
+    this.logDirty = true;
+    if (this.logFlushTimer === undefined) this.logFlushTimer = window.setTimeout(() => { this.logFlushTimer = undefined; this.flushLogs(); }, LOG_FLUSH_MS);
   }
   private flushLogs(): void {
-    if (!this.pendingLogs.length) return;
-    const extra = this.pendingLogs; this.pendingLogs = [];
-    this.logs.update(lines => [...lines, ...extra].slice(-2000));
+    if (!this.logDirty || this.selecting()) return;
+    this.logDirty = false;
+    this.logs.set(this.logBuf.snapshot());
+    this.logOlder.set(this.logBuf.olderLines);
+  }
+
+  /** «نمایش بیشتر»: فقط با درخواست ِ صریح، بافر ِ سرور را با tail ِ بزرگ‌تر دوباره می‌خواند. */
+  showMoreLog(): void {
+    this.logTail.update(n => Math.min(LOG_TAIL_MAX, n + LOG_TAIL_STEP));
+    if (this.streamTask) this.connectStream(this.streamTask);
+  }
+  private pauseStream(): void { this.closeStream(); }
+  private resumeStream(): void {
+    if (this.streamTask && this.streamEnded() === undefined && (this.panel() === 'task' || this.panel() === 'action')) this.connectStream(this.streamTask);
   }
 
   async chooseRepo(id: string): Promise<void> {
@@ -314,25 +368,33 @@ export class AppComponent implements OnInit, OnDestroy {
 
     // Health مستقل از board/running بارگذاری می‌شود. خرابی یا تأخیر یکی نباید
     // وضعیت دیگری را مبهم کند یا Health را به‌اشتباه «ناسالم» نشان دهد.
-    const healthPromise = this.refreshHealth(false, true);
+    // (poll ِ بی‌صدا health را نمی‌خواند؛ health کار ِ جدای ِ ۳۰ثانیه‌ای ِ زمان‌بند است.)
+    const healthPromise = silent ? Promise.resolve() : this.refreshHealth(false, true);
 
     try {
-      const [fetched, runningList] = await Promise.all([
-        firstValueFrom(this.api.board(this.repoId())),
-        firstValueFrom(this.api.running(this.repoId()))
+      const [boardRes, runningRes] = await Promise.all([
+        firstValueFrom(this.api.boardIfChanged(this.repoId())),
+        firstValueFrom(this.api.runningIfChanged(this.repoId()))
       ]);
-      this.syncedAt.set(fetched.generatedAt);
+      this.syncedAt.set(boardRes.notModified ? new Date().toISOString() : boardRes.data.generatedAt);
+      // هر دو 304: چیزی عوض نشده — نه parse، نه مقایسه، نه render.
+      if (silent && !force && boardRes.notModified && runningRes.notModified) { await healthPromise; return; }
       // structural sharing: داده‌ی ِ بی‌تغییر ⇒ همان reference ⇒ signal چیزی را دوباره render نمی‌کند؛ تسک ِ تغییرکرده فقط خودش تازه می‌شود.
       const prevBoard = this.board();
-      const board = this.mergeBoard(prevBoard, fetched);
-      const running = reuse(this.running(), Object.fromEntries(runningList.map(x => [x.taskId, x])));
+      const board = boardRes.notModified && prevBoard ? prevBoard : this.mergeBoard(prevBoard, boardRes.data);
+      const running = runningRes.notModified
+        ? this.running()
+        : reuse(this.running(), Object.fromEntries(runningRes.data.map(x => [x.taskId, x])));
       this.notifyNewHumanTasks(board.tasks);
       const selected = this.selected();
       const freshTask = selected ? board.tasks.find(x => x.id === selected.id) : undefined;
       const nextSelected = selected && freshTask ? reuse(selected, freshTask) : selected;
       const changed = board !== prevBoard || running !== this.running() || nextSelected !== selected;
       // کاربر وسط ِ تایپ یا انتخاب ِ متن است: زیر دستش چیزی عوض نشود؛ نشانگر ِ «تغییرات تازه».
-      if (silent && !force && changed && this.uiBusy()) { this.freshPending.set(true); await healthPromise; return; }
+      if (silent && !force && changed && this.uiBusy()) {
+        // اعمال نشد: ETag ِ همین پاسخ را فراموش می‌کنیم تا poll ِ بعدی دوباره بدنه‌ی کامل بگیرد (وگرنه 304 می‌شد و هیچ‌وقت اعمال نمی‌شد).
+        this.freshPending.set(true); this.api.forgetConditional(); await healthPromise; return;
+      }
       this.freshPending.set(false);
       if (board !== prevBoard) this.board.set(board);
       if (running !== this.running()) this.running.set(running);
@@ -645,8 +707,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.busy.set(true); this.error.set(''); this.streamEnded.set(undefined);
     try {
       const result = await firstValueFrom(this.api.run(this.repoId(), t.id));
-      this.logs.set([result.queued ? `در صف اجرا قرار گرفت${result.queuePosition ? ` · جایگاه ${result.queuePosition}` : ''}` : 'اجرا آغاز شد…']);
       this.connectStream(t.id);
+      this.pushLog(result.queued ? `در صف اجرا قرار گرفت${result.queuePosition ? ` · جایگاه ${result.queuePosition}` : ''}` : 'اجرا آغاز شد…');
       await this.refresh(true);
     } catch (e) { this.fail(e); }
     finally { this.busy.set(false); }
@@ -881,18 +943,53 @@ export class AppComponent implements OnInit, OnDestroy {
   async loadRootArtifact(path: string): Promise<void> {
     const t = this.selected(); if (!t) return;
     this.rootArtifactName.set(path);
-    try { this.rootArtifact.set(await firstValueFrom(this.api.artifact(this.repoId(), t.id, path))); }
-    catch (e) { this.rootArtifact.set(''); this.fail(e); }
+    this.rootClip.set(null);
+    try {
+      const r = await firstValueFrom(this.api.artifactClipped(this.repoId(), t.id, path, ROOT_ARTIFACT_LINES, 'head'));
+      const c = this.clipOf(r, ROOT_ARTIFACT_LINES, 'head');
+      this.rootArtifact.set(c.text); this.rootClip.set(c.info);
+    } catch (e) { this.rootArtifact.set(''); this.fail(e); }
+  }
+
+  /** نمایش ِ کامل (فقط با کلیک ِ صریح). */
+  async showFullRoot(): Promise<void> {
+    const t = this.selected(); const name = this.rootArtifactName(); if (!t || !name) return;
+    const text = await this.tryArtifact(t.id, name);
+    if (text !== null) { this.rootArtifact.set(text); this.rootClip.set(null); }
   }
 
   async chooseAttempt(attempt: Attempt): Promise<void> {
     const t = this.selected(); if (!t) return;
     this.selectedAttempt.set(attempt);
+    const clips: Record<string, ClipInfo> = {};
     const entries = await Promise.all(attempt.artifacts.map(async name => {
       const p = `attempts/${attempt.id}/${name}`;
-      return [name, await this.tryArtifact(t.id, p) ?? 'در دسترس نیست'] as const;
+      // لاگ‌ها (build/test/lint) از انتها مهم‌اند؛ بقیه از ابتدا. چند مگابایت build.log هیچ‌وقت کامل در DOM نمی‌آید.
+      const from = name.endsWith('.log') ? 'tail' : 'head';
+      let text = 'در دسترس نیست';
+      try {
+        const c = this.clipOf(await firstValueFrom(this.api.artifactClipped(this.repoId(), t.id, p, ARTIFACT_LINES, from)), ARTIFACT_LINES, from);
+        text = c.text; if (c.info) clips[name] = c.info;
+      } catch { /* artifact ِ در دسترس نیست */ }
+      return [name, text] as const;
     }));
     this.attemptArtifacts.set(Object.fromEntries(entries));
+    this.attemptArtifactClip.set(clips);
+  }
+
+  async showFullArtifact(name: string): Promise<void> {
+    const t = this.selected(); const a = this.selectedAttempt(); if (!t || !a) return;
+    const text = await this.tryArtifact(t.id, `attempts/${a.id}/${name}`);
+    if (text === null) return;
+    this.attemptArtifacts.update(m => ({ ...m, [name]: text }));
+    this.attemptArtifactClip.update(m => { const { [name]: _gone, ...rest } = m; return rest; });
+  }
+
+  /** پاسخ ِ سرور را به متن + اطلاعات ِ بریدگی تبدیل می‌کند؛ اگر سرور نبرید (قدیمی) همین‌جا می‌بُرد تا DOM سقف داشته باشد. */
+  private clipOf(r: { text: string; clipped: 'head' | 'tail' | null; totalLines: number | null }, lines: number, from: 'head' | 'tail'): { text: string; info: ClipInfo | null } {
+    if (r.clipped) return { text: r.text, info: { clipped: r.clipped, totalLines: r.totalLines } };
+    const local = clipText(r.text, lines, from);
+    return { text: local.text, info: local.clipped ? { clipped: from, totalLines: local.totalLines } : null };
   }
 
   // memoized: قبلاً در هر change detection آرایه‌ی ِ تازه از tuple های ِ تازه می‌ساخت و *ngFor همه‌ی ِ <details>ها را هر ۳ ثانیه
@@ -1186,7 +1283,7 @@ export class AppComponent implements OnInit, OnDestroy {
     try { this.events.set(await firstValueFrom(this.api.events(this.repoId(), t.id))); } catch { /* Timeline اختیاری است */ }
   }
 
-  closePanel(): void { this.panel.set(null); this.closeStream(); }
+  closePanel(): void { this.panel.set(null); this.closeStream(); this.streamTask = null; }
 
   private notifyNewHumanTasks(tasks: Task[]): void {
     const current = tasks.filter(t => !!t.awaitingHuman || needsHuman(t)).map(t => t.id);
@@ -1246,7 +1343,14 @@ export class AppComponent implements OnInit, OnDestroy {
     try { return await firstValueFrom(this.api.artifact(this.repoId(), taskId, path)); } catch { return null; }
   }
   private connectStream(taskId: string): void {
-    this.closeStream(); this.source = new EventSource(this.api.streamUrl(this.repoId(), taskId));
+    this.closeStream();
+    // replay فقط ِ انتها (tail)؛ بافر ِ کلاینت هم سقف دارد. هر اتصال ِ تازه لاگ را از نو می‌سازد (سرور دوباره replay می‌کند).
+    this.streamTask = taskId;
+    this.logBuf.reset(); this.logBuf.setLimit(this.logTail()); this.logDirty = true; this.flushLogs();
+    this.source = new EventSource(this.api.streamUrl(this.repoId(), taskId, this.logTail()));
+    this.source.addEventListener('replay', event => {
+      try { this.logBuf.noteSkipped((JSON.parse((event as MessageEvent<string>).data) as { skipped?: number }).skipped ?? 0); } catch { /* اختیاری */ }
+    });
     this.source.onmessage = event => {
       try {
         const parsed = JSON.parse(event.data) as { text?: string; stream?: string };
@@ -1257,7 +1361,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.source.addEventListener('end', event => {
       try { this.streamEnded.set((JSON.parse((event as MessageEvent<string>).data) as { code?: number | null }).code ?? null); }
       catch { this.streamEnded.set(null); }
-      this.closeStream(); void this.refresh(true);
+      this.flushLogs(); this.closeStream(); void this.refresh(true);
     });
   }
   private closeStream(): void { this.source?.close(); this.source = undefined; }
@@ -1265,7 +1369,8 @@ export class AppComponent implements OnInit, OnDestroy {
     this.closeStream(); this.error.set(''); this.reason = ''; this.answerText = ''; this.respec = false; this.dangerOpen.set(null); this.dangerReason = ''; this.dangerForce = false; this.mergeAck.set(false); this.openedHeadCommit.set(undefined);
     this.checkinSourceId = ''; this.checkinChangesets = ''; this.noteText = ''; this.stageSourceId = '';
     this.releaseNoteEditing.set(false); this.releaseNoteHeadline = ''; this.releaseNoteBody = ''; this.releaseNoteNoNote = false; this.releaseNoteReason = '';
-    this.events.set([]); this.logs.set([]); this.pendingLogs = []; this.freshPending.set(false); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
+    this.events.set([]); this.logs.set([]); this.logBuf.reset(); this.logDirty = false; this.logOlder.set(0); this.logTail.set(LOG_TAIL_DEFAULT); this.streamTask = null;
+    this.eventsShown.set(EVENTS_PAGE); this.attemptsShown.set(ATTEMPTS_PAGE); this.attemptArtifactClip.set({}); this.rootClip.set(null); this.freshPending.set(false); this.streamEnded.set(undefined); this.rootArtifactName.set(''); this.rootArtifact.set('');
     this.actionArtifacts.set({}); this.selectedAttempt.set(null); this.attemptArtifacts.set({});
     this.diffText.set(''); this.diffHeadCommit.set(null); this.diffSelectedFile.set(null); this.diffLoaded.set(false);
     this.taskTab.set('overview');
