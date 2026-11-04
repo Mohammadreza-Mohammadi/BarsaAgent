@@ -180,3 +180,9 @@
 .cs-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid #eef1f5}.cs-values{font-weight:700}.cs-none{color:#8a95a4}
 .cs-row .disabled-gate-warning{flex-basis:100%}
 .fresh-changes{border:1px solid #e0b24a;background:#fff6dc;color:#7a5200;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;margin-inline-end:8px}.fresh-changes:hover{background:#ffefbd}
+.more-btn{border:1px solid #c9d3e0;background:#fff;color:#2a4a7a;border-radius:6px;padding:3px 10px;font:inherit;font-size:12px;cursor:pointer}
+.more-btn:hover{background:#eef3fa}
+.clip-note{margin:6px 0 0;font-size:12px;color:#7a5a12;background:#fff7e0;border-radius:6px;padding:4px 8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.log-controls{display:flex;gap:8px;align-items:center;font-size:12px;color:#5a6b85;margin:4px 0}
+@media (prefers-reduced-motion:reduce){.exec-live i,.run-badge span{animation:none}}
+.logs{contain:content}

@@ -1,4 +1,4 @@
-import { Component, computed, effect, input, signal } from '@angular/core';
+import { Component, computed, effect, input, signal, ChangeDetectionStrategy } from '@angular/core';
 import { Task } from './models';
 import { atMergeGate, checklistStorageKey, manualChecklist, testsProblemsWarning } from './task-extras';
 
@@ -7,6 +7,7 @@ import { atMergeGate, checklistStorageKey, manualChecklist, testsProblemsWarning
  * همین کاربر** می‌مانند (localStorage) و یادآوری‌اند، نه شرط ِ approve — تصمیم‌گیرنده Manager است و این کامپوننت هیچ چیز را غیرفعال نمی‌کند.
  */
 @Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'ba-manual-tests',
   standalone: true,
   template: `

@@ -51,6 +51,8 @@ export async function seedUser(config) {
 
 export async function startAuthedServer(t, config, deps) {
   withDataDir(t, config);
+  // cache ِ ۲ثانیه‌ای ِ board در تست‌ها خاموش است (تست‌ها status را وسط ِ کار عوض می‌کنند)؛ تست ِ خودِ cache صریح روشنش می‌کند.
+  config.server = { boardCacheMs: 0, ...(config.server || {}) };
   await seedUser(config);
   const server = createApp(config, deps);
   server.listen(0, '127.0.0.1');

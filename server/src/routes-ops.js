@@ -395,7 +395,7 @@ export function createOpsRoutes(ctx) {
     }
 
     // --- تخلیه (drain): run ِ تازه شروع نشود، در جریان‌ها ادامه بدهند، صف بماند (و بعد از restart هم بماند) ---------------
-    if (method === 'GET' && pathname === '/api/drain') return send(res, 200, drain.status()), true;
+    if (method === 'GET' && pathname === '/api/drain') return send(res, 200, drain.status()), true; // مدت‌ها (durationMs) در هر پاسخ عوض می‌شوند؛ بدنه‌ی کوچک است، ETag ندارد
     if (method === 'POST' && pathname === '/api/drain') return send(res, 200, drain.enable(session)), true;
     if (method === 'POST' && pathname === '/api/drain/off') return send(res, 200, drain.disable(session)), true;
 

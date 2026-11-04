@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from './api.service';
@@ -6,6 +6,7 @@ import { AuditItem, EnvHealthReport, HealthCheckItem } from './models';
 
 /** سلامت محیط (بند هـ): هر چیزی که کم است همان‌جا می‌گوید چیست و چه کنم. */
 @Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'ba-env-health',
   standalone: true,
   template: `
@@ -58,6 +59,7 @@ export class EnvHealthComponent implements OnInit {
 
 /** نمای فقط‌خواندنی دفتر ممیزی (خود فایل append-only است و از اینجا قابل تغییر نیست). */
 @Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
   selector: 'ba-audit',
   standalone: true,
   template: `
